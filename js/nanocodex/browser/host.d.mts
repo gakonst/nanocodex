@@ -69,6 +69,9 @@ export type BrowserSocketObservation = {
   egress_request_id?: string;
   provider_request_id?: string;
   response_id?: string;
+  runtime_turn_id?: string;
+  runtime_session_id?: string;
+  agent_id?: number;
   socket_request_index?: number;
   model_call_index?: number;
   phase?: "generation" | "compaction" | "warmup";

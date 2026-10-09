@@ -424,6 +424,19 @@ impl ToolRuntimeControl {
             });
     }
 
+    /// Keeps reporting nested-tool updates from cells the current turn left
+    /// running after it completed normally. `observer` receives each cell's
+    /// origin call ID and returns an owned observer for that cell. The cells
+    /// continue to run, and a later wait observes them without repeating any
+    /// update the relay already delivered.
+    pub async fn detach_turn_with_updates(
+        &self,
+        observer: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
+    ) {
+        let turn_id = self.current_turn.load(Ordering::Acquire);
+        self.code_mode.detach_turn(turn_id, observer).await;
+    }
+
     #[doc(hidden)]
     pub async fn cancel_turn(&self) {
         let turn_id = self.current_turn.load(Ordering::Acquire);

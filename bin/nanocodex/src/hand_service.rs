@@ -645,7 +645,7 @@ fn screen_ready(catalog: &Value) -> bool {
 fn warn_unavailable_screen(catalog: &Value) -> Result<()> {
     if !screen_ready(catalog) {
         eprintln!(
-            "Warning: Hand is connected; screen sharing is unavailable or still starting. The service will keep retrying. Check Screen Recording permission and {} for details.",
+            "Warning: Hand is connected; screen sharing is unavailable or still starting. The service will keep retrying. If macOS has not allowed this Hand build, run `nanocodex hand permissions`, allow it under Screen & System Audio Recording, then `nanocodex hand restart`. Details: {}",
             home()?.join(".nanocodex/service/daemon.log").display()
         );
     }

@@ -18,7 +18,7 @@ export function createSocketObservations(observe) {
     map.set(key, value);
   };
   return {
-    runtime(encoded) {
+    runtime(encoded, agentId) {
       if (typeof encoded === "string" && !/"(?:input\.accepted|model\.(?:call|compaction|warmup)\.|run\.)/.test(encoded.slice(0, 512))) return;
       let event;
       try { event = typeof encoded === "string" ? JSON.parse(encoded) : encoded; } catch { return; }
@@ -30,6 +30,7 @@ export function createSocketObservations(observe) {
       const sessionId = turns.get(p.turn_id) ?? event.request_id;
       const correlation = {
         turnId: p.turn_id,
+        agentId,
         index: p.call_index ?? p.after_model_call_index,
         phase: event.type.startsWith("model.compaction.") ? "compaction" : event.type.startsWith("model.warmup.") ? "warmup" : "generation",
       };
@@ -53,7 +54,7 @@ export function createSocketObservations(observe) {
       for (const [key, start] of starts) if (start.sessionId === sessionId) starts.delete(key);
       for (const [turn, session] of turns) if (session === sessionId) turns.delete(turn);
     },
-    connect(sessionId, snapshot) {
+    connect(sessionId, snapshot, requestId = sessionId) {
       const measure = () => { try { return snapshot(); } catch { return {}; } };
       const socketId = crypto.randomUUID();
       const began = performance.now();
@@ -61,7 +62,7 @@ export function createSocketObservations(observe) {
       let handshake = {};
       let active, last, timer, ordinal = 0, closed = false;
       const record = (event, fields = {}, request = active ?? last) => emit({
-        event, socket_id: socketId, request_id: sessionId,
+        event, socket_id: socketId, request_id: requestId, runtime_session_id: sessionId,
         ...(uuid(handshake.egressRequestId) ? { egress_request_id: handshake.egressRequestId } : {}),
         ...(identifier(handshake.requestId, "req_") || uuid(handshake.requestId) ? { provider_request_id: handshake.requestId } : {}),
         ...(request ? { socket_request_index: request.index, ...request.context,
@@ -110,6 +111,8 @@ export function createSocketObservations(observe) {
           if (operation) operation.requests++;
           active = { index: ++ordinal, operation, context: operation ? {
             phase: operation.phase,
+            ...(Number.isSafeInteger(operation.agentId) ? { agent_id: operation.agentId } : {}),
+            ...(typeof operation.turnId === "string" ? { runtime_turn_id: operation.turnId } : {}),
             ...(Number.isSafeInteger(operation.index) ? { model_call_index: operation.index } : {}),
           } : {}, started: performance.now(), messages: 0 };
           record("request.send_started", measure());
@@ -171,9 +174,11 @@ export function createSocketObservations(observe) {
         },
         matches(operation, responseId) {
           if (!active || !sameOperation(active.operation, operation)) return false;
-          if (responseId !== undefined && responseId !== null) {
+          if (active.responseId !== undefined && responseId !== undefined && responseId !== null) {
             return identifier(responseId, "resp_") && active.responseId === responseId;
           }
+          // Large provider envelopes may leave the wire response ID unobserved.
+          // Do not bind the completion ID; fall back to operation evidence.
           // Index/turn can be reused by retries. Only a single observed start
           // with a single send can support completion without a response ID.
           return typeof operation.turnId === "string" && Number.isSafeInteger(operation.index)

@@ -578,7 +578,10 @@ impl Conversation {
         self.materialize_code_parent(&payload.call_id);
         let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
         let name = present_tool_name(&payload.tool, &payload.arguments);
-        self.status = format!("Running {name}");
+        // A detached Code Mode cell can start nested calls after its turn ended.
+        if self.running {
+            self.status = format!("Running {name}");
+        }
         let call_id = payload.call_id;
         let status = ToolStatus::Running;
         if self.transcript.has_tool_parent(&call_id) {
@@ -749,7 +752,12 @@ impl Conversation {
                 .set_raw_tool_result(&payload.call_id, payload.result.clone());
         }
         self.note_unseen_output();
-        "Working".clone_into(&mut self.status);
+        // Late results from a detached Code Mode cell arrive after the turn ended.
+        self.status = if self.running {
+            "Working".to_owned()
+        } else {
+            "Ready".to_owned()
+        };
         true
     }
 
@@ -1227,6 +1235,8 @@ fn smooth_scroll_drain(pending_rows: usize) -> usize {
 pub(super) struct BtwPane {
     pub(super) id: u64,
     pub(super) request_id: Option<Arc<str>>,
+    /// Whether another process can read or resume this fork from a rollout.
+    pub(super) resumable: bool,
     collapsing: bool,
     splitting: bool,
     pub(super) conversation: Conversation,
@@ -2392,6 +2402,7 @@ impl App {
         self.btw = Some(BtwPane {
             id,
             request_id: None,
+            resumable: false,
             collapsing: false,
             splitting: false,
             conversation,
@@ -2589,9 +2600,10 @@ impl App {
         }
     }
 
-    pub(super) fn btw_opened(&mut self, id: u64, request_id: Arc<str>) {
+    pub(super) fn btw_opened(&mut self, id: u64, request_id: Arc<str>, resumable: bool) {
         if let Some(btw) = self.btw.as_mut().filter(|btw| btw.id == id) {
             btw.request_id = Some(request_id);
+            btw.resumable = resumable;
             btw.conversation.status = if btw.conversation.pending_turns == 0 {
                 "Ready".to_owned()
             } else {
@@ -4519,7 +4531,7 @@ mod tests {
         assert!(!app.begin_btw_split(id));
         assert!(!app.btw_splitting(id));
 
-        app.btw_opened(id, Arc::from("btw-thread"));
+        app.btw_opened(id, Arc::from("btw-thread"), true);
         assert!(app.begin_btw_split(id));
         assert!(app.btw_busy());
         app.btw_split_failed(id, "no terminal".to_owned(), false);
@@ -4533,7 +4545,7 @@ mod tests {
         assert_eq!(app.main.status, "BTW moved to the right tmux pane");
 
         let id = app.begin_btw();
-        app.btw_opened(id, Arc::from("second-btw-thread"));
+        app.btw_opened(id, Arc::from("second-btw-thread"), true);
         assert!(app.begin_btw_split(id));
         app.btw_split_failed(id, "launch failed; resume manually".to_owned(), true);
         assert!(app.btw.is_none());

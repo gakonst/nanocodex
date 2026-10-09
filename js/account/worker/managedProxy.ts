@@ -221,11 +221,13 @@ async function directAgentRun(request: Request, env: ManagedProxyEnv, context?: 
   if (resolved === INELIGIBLE) return;
   const principal = resolved;
   const authFinishedAt = Date.now();
+  const authMs = performance.now() - started;
   const failure = liveAgentFailure(request, principal);
   if (failure) return failure;
   const internal = await runAgentRequest(request, principal!, run, colo);
-  const dispatchAt = Date.now();
+  const dispatchAt = Date.now(), sessionStarted = performance.now();
   const response = await env.NANOCODEX_LIVE_SESSIONS.getByName(internal.agentId).fetch(internal.request);
+  const sessionMs = performance.now() - sessionStarted;
   if (response.ok && (!response.headers.get("content-type")?.startsWith("text/event-stream")
     || response.headers.get("x-nanocodex-agent-id") !== internal.agentId
     || response.headers.get("x-nanocodex-turn-id") !== internal.turnId)) {
@@ -234,14 +236,35 @@ async function directAgentRun(request: Request, env: ManagedProxyEnv, context?: 
   }
   const headers = new Headers(response.headers);
   let phases: Record<string, unknown> = {};
-  try { phases = JSON.parse(headers.get("x-nanocodex-run-phases") ?? "{}"); } catch { /* Timing is optional. */ }
-  headers.delete("x-nanocodex-run-phases");
-  headers.set("x-nanocodex-request-id", crypto.randomUUID());
   try {
-    console.info({ type: "managed.agent.run_created", route: "direct_run", thread_id: internal.agentId,
+    const value: unknown = JSON.parse(headers.get("x-nanocodex-run-phases") ?? "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) phases = value as Record<string, unknown>;
+  } catch { /* Timing is optional. */ }
+  headers.delete("x-nanocodex-run-phases");
+  const requestId = crypto.randomUUID();
+  headers.set("x-nanocodex-request-id", requestId);
+  // Forward only bounded numeric durations, never the private phase header.
+  // These are observations of existing work, not additional awaited barriers.
+  const createMs = performance.now() - started;
+  headers.append("server-timing", `managed_create;dur=${createMs.toFixed(1)}, managed_auth;dur=${authMs.toFixed(1)};desc="live", managed_session;dur=${sessionMs.toFixed(1)}`);
+  for (const [name, field] of [
+    ["managed_session_handler", "handler_ms"],
+    ["managed_first_turn_admit", "first_turn_admit_ms"],
+    ["managed_session_storage_sync", "storage_sync_ms"],
+    ["managed_session_constructor", "constructor_ms"],
+  ] as const) {
+    const value = phases[field];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000) {
+      headers.append("server-timing", `${name};dur=${value}`);
+    }
+  }
+  try {
+    console.info({ type: "managed.agent.run_created", route: "direct_run", request_id: requestId, thread_id: internal.agentId,
       turn_id: internal.turnId, status: response.status, auth_started_at_ms: startedAt,
       auth_finished_at_ms: authFinishedAt, session_dispatch_at_ms: dispatchAt, response_ready_at_ms: Date.now(),
-      create_ms: performance.now() - started,
+      create_ms: createMs, auth_ms: authMs, session_create_ms: sessionMs,
+      session_storage_sync_ms: typeof phases.storage_sync_ms === "number" && Number.isFinite(phases.storage_sync_ms) && phases.storage_sync_ms >= 0 && phases.storage_sync_ms <= 86_400_000
+        ? phases.storage_sync_ms : undefined,
       session_constructor_entered_at_ms: phases.constructor_entered_at_ms,
       session_handler_entered_at_ms: phases.handler_entered_at_ms,
       session_handler_ms: phases.handler_ms, first_turn_admit_ms: phases.first_turn_admit_ms });

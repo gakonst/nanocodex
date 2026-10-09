@@ -696,7 +696,25 @@ pub struct TurnView {
     /// Current failure detail, when present.
     pub error: Option<String>,
     /// Typed terminal durable event, when present.
+    #[serde(default, deserialize_with = "deserialize_turn_terminal")]
     pub terminal: Option<ManagedEventData>,
+}
+
+// AgentRunReceipt flattens TurnView. Serde's flatten buffer cannot provide a
+// RawValue to ManagedEventData, even when the response is valid JSON. Bridge
+// only this terminal field through Value; large input and streamed events keep
+// their existing decoding paths.
+fn deserialize_turn_terminal<'de, D>(deserializer: D) -> Result<Option<ManagedEventData>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            let raw = serde_json::value::to_raw_value(&value).map_err(de::Error::custom)?;
+            ManagedEventData::decode(&raw).map_err(de::Error::custom)
+        })
+        .transpose()
 }
 
 /// Receipt returned by a steer or cancel action.

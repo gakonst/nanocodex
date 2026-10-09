@@ -344,6 +344,11 @@ Hosted WebSocket diagnostics are always enabled in Workers Logs. The
 `transport.socket.opened`, `transport.request.sent`,
 `transport.request.first_message`, `transport.request.first_output`, and
 `transport.request.finished` describe each socket/request lifecycle.
+The managed `session_id`, `thread_id`, and `turn_id` retain owner correlation;
+`runtime_session_id`, `runtime_turn_id`, and child `agent_id` distinguish concurrent
+agent operations. Group `model_call_index` by runtime session and turn.
+Completion uses an observed response ID when available, otherwise a uniquely
+attributable operation; oversized provider envelopes are never parsed just for diagnostics.
 `first_message` and `first_output` include an allowlisted `provider_event_type`;
 `first_output` also identifies its `output_kind`. This historical output marker
 includes empty item announcements, so it is not a first-token measurement.
@@ -810,11 +815,38 @@ still occurs at dispatch.
 Run `node js/managed/benchmark/curl-ttft.mjs --mode=stream --family=codex` from
 the repository root to measure the normal account proxy, Managed API, Session
 and Egress path with curl against local workerd and a synthetic external provider.
+The default `--ingress=direct` exercises direct namespaces; use
+`--ingress=managed` to measure the managed fallback. These are local fixture
+clock measurements of the selected source checkout, distinct from live latency.
 Use `--mode=combined` for the existing JSON-then-events path, `--mode=legacy`
 for separate create/submit/events, and `--root=/path/to/checkout` for a baseline.
 The harness records first assistant text, durable completion, source hashes and
 raw traces under ignored `output/managed-api-ttft/`; it does not measure live
 inference, network geography or production cold activation.
+
+For live API latency and a bounded disconnect/retry journey, export
+`NANOCODEX_ORIGIN` and `NANOCODEX_API_KEY`, then run:
+
+```sh
+NANOCODEX_LATENCY_SAMPLES=3 \
+  corepack pnpm --filter nanocodex-managed-service benchmark:api:live
+# Alternatively load an existing authorized env file explicitly from the repo root:
+node --env-file=/path/to/authorized.env js/managed/scripts/curl-api-latency.mjs
+```
+
+This creates fresh synthetic sessions and uses live inference. It never reads
+an env file implicitly and supplies the bearer to curl through stdin. Set
+`NANOCODEX_TEST_MODEL` (default `gpt-6.1-sol`),
+`NANOCODEX_LATENCY_SAMPLES` (1–100, default 3), and
+`NANOCODEX_LATENCY_OUTPUT` (default repository `output/managed-api-latency`).
+Each run has a unique evidence directory with source metadata, UTC intervals,
+request identities, headers including server timing/request IDs, raw responses,
+and frame timestamps. It checks exact current-turn text, absence of tool calls,
+same-identity retry after disconnect, changed-input conflict, subsequent work,
+and paginated history. Admission, first text, and EOF timings include client and
+network overhead; a fresh session does not establish a cold Worker. On failure,
+reconcile the saved request identity before retrying; the harness does not
+silently retry uncertain writes. Sessions are retained for inspection.
 
 Durability changes use curl-backed public HTTP journeys:
 

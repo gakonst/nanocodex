@@ -20,6 +20,7 @@
     "test:browser-receipt": "node --test test/browser-receipt-journey.test.mjs",
     "test:browser-login": "node --experimental-strip-types scripts/browser-login-chrome.mjs",
     "test:apps": "vitest run --config vitest.apps.config.ts",
+    "test:large-run-receipt": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/large-run-receipt-journey.test.mjs",
     "test:agent-runs": "node ../egress/scripts/prepare-whatsapp.mjs && node scripts/prepare-code-evaluator.mjs && node scripts/prepare-just-bash-lazy.mjs && node --test test/agent-run-stream-journey.test.mjs",
     "test:apps:native": "node --test test/native-app-validation-journey.test.mjs",
     "test:discovery-cache": "node --test test/account-discovery-isolates.test.mjs",
@@ -85,7 +86,8 @@
     "test:openrouter-video": "node --test test/openrouter-video-journey.test.mjs",
     "test:hand-paths": "node --test test/hand-paths-journey.test.mjs",
     "test:hand-reconnect-agent": "node --test test/hand-reconnect-agent-journey.test.mjs",
-    "test:company-teams": "node --test test/company-teams-journey.test.mjs test/company-context-journey.test.mjs"
+    "test:company-teams": "node --test test/company-teams-journey.test.mjs test/company-context-journey.test.mjs",
+    "benchmark:api:live": "node scripts/curl-api-latency.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",

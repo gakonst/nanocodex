@@ -708,6 +708,30 @@ pub(crate) async fn request_onboarding_permissions() -> bool {
     false
 }
 
+/// After an interactive update or restart starts the macOS Hand from a new
+/// versioned executable, macOS keys Screen Recording and Accessibility to that
+/// executable's path and code signature, so earlier grants do not carry over.
+/// Re-request them from the new owner instead of leaving screen sharing
+/// silently unavailable. Already-allowed owners print nothing.
+pub(crate) async fn request_permissions_after_update() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    if let Ok((_, executable, reply)) = ask_daemon_permissions(true).await {
+        if PERMISSIONS
+            .iter()
+            .all(|(key, ..)| reply["permissions"][key]["granted"] == true)
+        {
+            return;
+        }
+        eprintln!(
+            "macOS has not allowed this Hand build ({}). It keys Screen Recording and Accessibility to the exact executable, so a new versioned Hand needs them again.",
+            executable.display()
+        );
+    }
+    request_onboarding_permissions().await;
+}
+
 /// `hand permissions --check`: read-only, safe to poll from the permission guide.
 async fn check_permissions(json: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {

@@ -6,7 +6,7 @@ mod output;
 use crate::code_mode_spec as spec;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     path::PathBuf,
     sync::{
         Arc, Mutex as StdMutex,
@@ -21,7 +21,7 @@ use serde_json::Value;
 #[cfg(test)]
 use tokio::sync::Semaphore;
 use tokio::{
-    sync::{Mutex, OwnedMutexGuard, mpsc, oneshot, watch},
+    sync::{Mutex, Notify, OwnedMutexGuard, mpsc, oneshot, watch},
     task::JoinHandle,
     time::Duration,
 };
@@ -139,6 +139,16 @@ struct LiveCell {
     lifecycle: Arc<CellLifecycle>,
     terminate: StdMutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    relay: StdMutex<Option<CellRelay>>,
+}
+
+// A cell left running when its turn ended has no exec/wait observer, so its
+// nested starts and completions would otherwise stay invisible until a later
+// wait. The relay holds the observation lease, forwards those nested updates
+// as they happen, and queues every update for replay to the next observer.
+struct CellRelay {
+    stop: Arc<Notify>,
+    task: JoinHandle<()>,
 }
 
 // The session owns this state for the cell's full lifetime. An observation
@@ -146,6 +156,9 @@ struct LiveCell {
 // lease while preserving both unread updates and already-consumed output.
 struct CellObservationState {
     updates: mpsc::UnboundedReceiver<CellUpdate>,
+    // Updates a detached relay already received, in order. Nested lifecycle
+    // updates it delivered are marked so the next observer does not repeat them.
+    replay: VecDeque<CellUpdate>,
     buffered: ObservationBuffer,
 }
 
@@ -172,6 +185,7 @@ enum CellUpdate {
         call_id: String,
         name: String,
         input: Value,
+        delivered: bool,
     },
     NestedCall(ObservedNestedCall),
     Notification(CodeModeNotification),
@@ -244,6 +258,7 @@ struct ObservedNestedCall {
     id: u64,
     call: NestedToolCall,
     shell_session_id: Option<i64>,
+    delivered: bool,
 }
 
 // Every observed start gets one terminal receipt, including root completion or
@@ -264,6 +279,7 @@ impl Drop for PendingCallReceipts {
                     id,
                     call,
                     shell_session_id: None,
+                    delivered: false,
                 }));
         }
     }
@@ -511,7 +527,7 @@ impl CodeModeRuntime {
         };
         cell.turn_id
             .store(self.current_turn.load(Ordering::Acquire), Ordering::Release);
-        let observation = match cell.begin_observation() {
+        let observation = match cell.begin_observation().await {
             Ok(observation) => observation,
             Err(CellError::Busy) => {
                 return failed_execution(
@@ -592,6 +608,27 @@ impl CodeModeControl {
         let turn = self.current_turn.load(Ordering::Acquire);
         self.preempt
             .send_modify(|generation| *generation = (turn, generation.1.wrapping_add(1)));
+    }
+
+    /// Relays nested-tool updates of cells the finished turn left running.
+    /// The cells keep running; a later wait takes over their observation.
+    pub(super) async fn detach_turn(
+        &self,
+        turn_id: u64,
+        sink: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
+    ) {
+        let cells = self
+            .cells
+            .lock()
+            .await
+            .live_cells
+            .values()
+            .filter(|cell| cell.turn_id.load(Ordering::Acquire) == turn_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for cell in cells {
+            cell.detach(sink(&cell.origin_call_id));
+        }
     }
 
     pub(super) async fn terminate_turn(
@@ -828,15 +865,52 @@ impl LiveCell {
             turn_id: AtomicU64::new(turn_id),
             observation: Arc::new(Mutex::new(CellObservationState {
                 updates,
+                replay: VecDeque::new(),
                 buffered: ObservationBuffer::default(),
             })),
             lifecycle,
             terminate: StdMutex::new(Some(terminate)),
             task: Mutex::new(Some(task)),
+            relay: StdMutex::new(None),
         }
     }
 
-    fn begin_observation(&self) -> Result<OwnedMutexGuard<CellObservationState>, CellError> {
+    /// Starts relaying nested updates when no exec/wait currently observes the cell.
+    fn detach(&self, sink: Box<dyn CodeModeObserver>) {
+        let mut relay = self
+            .relay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if relay.is_some() {
+            return;
+        }
+        let Ok(observation) = Arc::clone(&self.observation).try_lock_owned() else {
+            return;
+        };
+        let stop = Arc::new(Notify::new());
+        let task = tokio::spawn(relay_cell_updates(observation, Arc::clone(&stop), sink));
+        *relay = Some(CellRelay { stop, task });
+    }
+
+    /// Ends the relay and returns its lease. Stopping hands the queue to a new
+    /// observer at once; otherwise the relay drains until the actor closes it.
+    async fn finish_relay(&self, stop: bool) {
+        let relay = self
+            .relay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(relay) = relay {
+            if stop {
+                relay.stop.notify_one();
+            }
+            let _ = relay.task.await;
+        }
+    }
+
+    async fn begin_observation(&self) -> Result<OwnedMutexGuard<CellObservationState>, CellError> {
+        // A detached relay is not an observer: hand its lease to this one.
+        self.finish_relay(true).await;
         Arc::clone(&self.observation)
             .try_lock_owned()
             .map_err(|_| CellError::Busy)
@@ -856,7 +930,8 @@ impl LiveCell {
     }
 
     async fn join_and_observe(&self, observer: &mut dyn CodeModeObserver) {
-        self.join().await;
+        self.join_actor().await;
+        self.finish_relay(true).await;
         // Observation owns the queue cursor; an active observer releases its
         // lease before cancellation delivers only the remaining updates.
         let observation = Arc::clone(&self.observation).lock_owned().await;
@@ -872,6 +947,12 @@ impl LiveCell {
     }
 
     async fn join(&self) {
+        self.join_actor().await;
+        // Without an observer, let a relay deliver the final receipts it owns.
+        self.finish_relay(false).await;
+    }
+
+    async fn join_actor(&self) {
         let mut task = self.task.lock().await;
         if let Some(task) = task.take() {
             let _ = task.await;
@@ -924,6 +1005,44 @@ enum ObservationMode {
     Terminate,
 }
 
+async fn relay_cell_updates(
+    mut observation: OwnedMutexGuard<CellObservationState>,
+    stop: Arc<Notify>,
+    mut sink: Box<dyn CodeModeObserver>,
+) {
+    loop {
+        let update = tokio::select! {
+            biased;
+            () = stop.notified() => break,
+            update = observation.updates.recv() => update,
+        };
+        let Some(mut update) = update else {
+            break;
+        };
+        match &mut update {
+            CellUpdate::NestedCallStarted {
+                call_id,
+                name,
+                input,
+                delivered,
+            } => {
+                sink.update(CodeModeUpdate::NestedCallStarted {
+                    call_id,
+                    name,
+                    input,
+                });
+                *delivered = true;
+            }
+            CellUpdate::NestedCall(call) => {
+                sink.update(CodeModeUpdate::NestedCallCompleted(&call.call));
+                call.delivered = true;
+            }
+            _ => {}
+        }
+        observation.replay.push_back(update);
+    }
+}
+
 // Keep every lifecycle update in one exhaustive, order-preserving observation loop.
 #[allow(clippy::too_many_lines)]
 async fn observe_cell(
@@ -952,7 +1071,7 @@ async fn observe_cell(
             })
         {
             // Drain only the already queued prefix, not an unbounded busy producer.
-            preempt_remaining = Some(observation.updates.len());
+            preempt_remaining = Some(observation.updates.len() + observation.replay.len());
         }
         let preempted = preempt_remaining.is_some();
         if preempt_remaining == Some(0) {
@@ -966,7 +1085,9 @@ async fn observe_cell(
                 buffered.notifications,
             );
         }
-        let update = if preempted {
+        let update = if let Some(update) = observation.replay.pop_front() {
+            Some(update)
+        } else if preempted {
             // The snapshot prefix is already queued and has a single receiver.
             // Drain it without borrowing that receiver in two select branches.
             observation.updates.recv().await
@@ -981,7 +1102,10 @@ async fn observe_cell(
                     },
                     None => std::future::pending().await,
                 }
-            }, if !preempted => { preempt_remaining = Some(observation.updates.len()); continue; }
+            }, if !preempted => {
+                preempt_remaining = Some(observation.updates.len() + observation.replay.len());
+                continue;
+            }
 
             () = async {
                 match yield_timer.as_mut() {
@@ -1010,15 +1134,20 @@ async fn observe_cell(
                 call_id,
                 name,
                 input,
+                delivered,
             }) => {
-                observer.update(CodeModeUpdate::NestedCallStarted {
-                    call_id: &call_id,
-                    name: &name,
-                    input: &input,
-                });
+                if !delivered {
+                    observer.update(CodeModeUpdate::NestedCallStarted {
+                        call_id: &call_id,
+                        name: &name,
+                        input: &input,
+                    });
+                }
             }
             Some(CellUpdate::NestedCall(call)) => {
-                observer.update(CodeModeUpdate::NestedCallCompleted(&call.call));
+                if !call.delivered {
+                    observer.update(CodeModeUpdate::NestedCallCompleted(&call.call));
+                }
                 observation.buffered.nested_calls.push(call);
             }
             Some(CellUpdate::Notification(notification)) => {
@@ -1286,6 +1415,7 @@ impl EmbeddedHost {
                                 call_id: nested_call_id,
                                 name: name.clone(),
                                 input: input.clone(),
+                                delivered: false,
                             });
                             let nested_call = execute_nested_call(
                                 tools,
@@ -1354,6 +1484,7 @@ impl EmbeddedHost {
                 id,
                 call,
                 shell_session_id,
+                delivered: false,
             }));
         self.send_tool_result(cell_id, id, value, success)
             .map_err(HostFailure::new)

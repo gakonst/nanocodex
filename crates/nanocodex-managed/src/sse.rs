@@ -177,6 +177,7 @@ impl ManagedEventStream {
     pub(crate) async fn from_run_response(
         client: ManagedClient,
         mut response: Response,
+        request_bytes: usize,
     ) -> Result<(crate::AgentRunReceipt, Self), ManagedError> {
         let deadline = Instant::now() + RESPONSE_LEASE;
         if !response
@@ -190,49 +191,60 @@ impl ManagedEventStream {
                 "agent run response is not text/event-stream",
             ));
         }
+        // The receipt echoes the input already serialized in the request. Keep
+        // the existing 1 MiB allowance for metadata, in addition to those known
+        // bytes, rather than imposing an unrelated prompt-size limit. This also
+        // bounds malformed responses independently of transport fragmentation.
+        let receipt_limit = request_bytes.saturating_add(1024 * 1024);
         let mut buffer = Vec::new();
         let mut search_from = 0;
         loop {
-            if let Some(frame) = take_sse_frame(&mut buffer, &mut search_from) {
-                let parsed = parse_sse_frame(&frame)?;
-                let Some(data) = parsed.data else {
-                    continue;
-                };
-                if parsed.event.as_deref() != Some("run") || parsed.id.is_some() {
-                    return Err(ManagedError::InvalidResponse(
-                        "agent run omitted its initial receipt",
-                    ));
-                }
-                let receipt: crate::AgentRunReceipt = serde_json::from_str(&data)
-                    .map_err(|_| ManagedError::InvalidResponse("invalid agent run receipt"))?;
-                let mut stream =
-                    Self::new(client, receipt.agent_id.clone(), EventCursor::parse("0")?);
-                stream.response = Some((response, deadline));
-                stream.buffer = buffer;
-                stream.search_from = search_from;
-                return Ok((receipt, stream));
-            }
-            if buffer.len() > 1024 * 1024 {
-                return Err(ManagedError::InvalidResponse(
-                    "agent run receipt exceeds size limit",
-                ));
-            }
-            if Instant::now() >= deadline {
-                return Err(ManagedError::InvalidResponse(
-                    "agent run stream lease expired before receipt",
-                ));
-            }
-            match timeout_at(deadline, response.chunk())
+            let chunk = timeout_at(deadline, response.chunk())
                 .await
                 .map_err(|_| {
                     ManagedError::InvalidResponse("agent run stream lease expired before receipt")
                 })?
                 .map_err(ManagedError::Transport)?
-            {
-                Some(chunk) => buffer.extend_from_slice(&chunk),
-                None => {
+                .ok_or(ManagedError::InvalidResponse(
+                    "agent run disconnected before receipt",
+                ))?;
+            // Check between bounded copies, even if the transport hands us one
+            // enormous chunk. Following event bytes are not part of the receipt.
+            const COPY_BYTES: usize = 16 * 1024;
+            for (index, bytes) in chunk.chunks(COPY_BYTES).enumerate() {
+                buffer.extend_from_slice(bytes);
+                while let Some(frame) = take_sse_frame(&mut buffer, &mut search_from) {
+                    if frame.len() > receipt_limit {
+                        return Err(ManagedError::InvalidResponse(
+                            "agent run receipt exceeds size limit",
+                        ));
+                    }
+                    let parsed = parse_sse_frame(&frame)?;
+                    let Some(data) = parsed.data else {
+                        continue;
+                    };
+                    if parsed.event.as_deref() != Some("run") || parsed.id.is_some() {
+                        return Err(ManagedError::InvalidResponse(
+                            "agent run omitted its initial receipt",
+                        ));
+                    }
+                    let receipt: crate::AgentRunReceipt = serde_json::from_str(&data)
+                        .map_err(|_| ManagedError::InvalidResponse("invalid agent run receipt"))?;
+                    let mut stream =
+                        Self::new(client, receipt.agent_id.clone(), EventCursor::parse("0")?);
+                    stream.response = Some((response, deadline));
+                    stream.buffer = buffer;
+                    // Preserve every byte coalesced after the receipt, including
+                    // complete events and a partial next frame.
+                    let consumed = ((index + 1) * COPY_BYTES).min(chunk.len());
+                    stream.buffer.extend_from_slice(&chunk[consumed..]);
+                    stream.search_from = search_from;
+                    return Ok((receipt, stream));
+                }
+                // Allow a split CRLF delimiter after a frame at the bound.
+                if buffer.len() > receipt_limit.saturating_add(3) {
                     return Err(ManagedError::InvalidResponse(
-                        "agent run disconnected before receipt",
+                        "agent run receipt exceeds size limit",
                     ));
                 }
             }

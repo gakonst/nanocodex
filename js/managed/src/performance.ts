@@ -215,6 +215,8 @@ export function performanceSocketEvent(sessionId: string, observation: unknown, 
   if (typeof event !== "string" || !SOCKET_EVENTS.has(event) || !correlationId(input.socket_id)) return;
   const safe: Record<string, string | number | boolean> = { socket_id: input.socket_id };
   if (correlationId(input.request_id)) safe.request_id = input.request_id;
+  if (correlationId(input.runtime_session_id)) safe.runtime_session_id = input.runtime_session_id;
+  if (correlationId(input.runtime_turn_id)) safe.runtime_turn_id = input.runtime_turn_id;
   if (correlationId(input.egress_request_id)) safe.egress_request_id = input.egress_request_id;
   if (correlationId(turnId)) safe.turn_id = turnId;
   if (typeof input.provider_request_id === "string" && (correlationId(input.provider_request_id)
@@ -225,7 +227,7 @@ export function performanceSocketEvent(sessionId: string, observation: unknown, 
     const value = input[key];
     if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000) safe[key] = value;
   }
-  for (const key of ["socket_request_index", "model_call_index", "received_message_count", "queued_message_count",
+  for (const key of ["agent_id", "socket_request_index", "model_call_index", "received_message_count", "queued_message_count",
     "socket_delivered_message_count", "buffered_send_bytes"]) {
     const value = input[key];
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) safe[key] = value;

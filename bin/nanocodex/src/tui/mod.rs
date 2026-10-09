@@ -212,6 +212,8 @@ enum WorkerCommand {
     CollapseBtw {
         id: u64,
         delivery: CollapseDelivery,
+        /// The delivery carries the BTW exchanges instead of a rollout pointer.
+        inline: bool,
     },
     SplitBtw {
         id: u64,
@@ -320,6 +322,7 @@ enum WorkerEvent {
     BtwOpened {
         id: u64,
         request_id: Arc<str>,
+        resumable: bool,
     },
     BtwModelSelectionRejected {
         id: u64,
@@ -1623,7 +1626,11 @@ fn handle_worker_update(
         WorkerEvent::InterruptedSteersKept { target, prompt_id } => {
             app.interrupted_steers_kept(target, prompt_id);
         }
-        WorkerEvent::BtwOpened { id, request_id } => app.btw_opened(id, request_id),
+        WorkerEvent::BtwOpened {
+            id,
+            request_id,
+            resumable,
+        } => app.btw_opened(id, request_id, resumable),
         WorkerEvent::BtwOpenFailed { id, error } => app.btw_failed(id, error),
         WorkerEvent::BtwModelSelectionRejected { id } => {
             app.close_btw(id);
@@ -1985,8 +1992,12 @@ impl AgentWorker {
                     self.btw = None;
                 }
             }
-            WorkerCommand::CollapseBtw { id, delivery } => {
-                self.collapse_btw(id, delivery).await;
+            WorkerCommand::CollapseBtw {
+                id,
+                delivery,
+                inline,
+            } => {
+                self.collapse_btw(id, delivery, inline).await;
             }
             WorkerCommand::SplitBtw { id, cwd } => self.split_btw(id, &cwd).await,
             WorkerCommand::EditHistorical {
@@ -2467,7 +2478,7 @@ impl AgentWorker {
         }
     }
 
-    async fn collapse_btw(&mut self, id: u64, delivery: CollapseDelivery) {
+    async fn collapse_btw(&mut self, id: u64, delivery: CollapseDelivery, inline: bool) {
         let failure = self.btw.as_ref().filter(|branch| branch.id == id).map_or(
             Some("BTW branch is not available"),
             |branch| {
@@ -2475,7 +2486,7 @@ impl AgentWorker {
                     Some("BTW has an active turn; wait for it to finish before /collapse")
                 } else if !branch.has_durable_turn {
                     Some("BTW needs one completed turn before /collapse")
-                } else if branch.agent.rollout().is_none() {
+                } else if !inline && branch.agent.rollout().is_none() {
                     Some("/collapse requires rollout recording; restart without `--rollouts false`")
                 } else {
                     None
@@ -2516,12 +2527,13 @@ impl AgentWorker {
                     error,
                 }));
             }
-            CollapseDelivery::Prompt { .. } => {
-                drop(self.updates.send(WorkerEvent::TurnFinished {
+            // The prompt was queued but never started; dequeue it with the error.
+            CollapseDelivery::Prompt { id, .. } => {
+                drop(self.updates.send(WorkerEvent::ExternalRejected {
                     target: PaneId::Main,
-                    main_branch_id: Some(self.main.id),
-                    turn_id: None,
-                    error: Some(error),
+                    input_id: *id,
+                    steer: false,
+                    error,
                 }));
             }
         }
@@ -2661,6 +2673,7 @@ impl AgentWorker {
                 drop(self.updates.send(WorkerEvent::BtwOpened {
                     id,
                     request_id: Arc::clone(&request_id),
+                    resumable: agent.rollout().is_some(),
                 }));
                 let mut branch = BtwWorker {
                     id,
@@ -2741,14 +2754,12 @@ impl AgentWorker {
             return;
         }
         let Some(rollout) = branch.agent.rollout() else {
-            drop(
-                self.updates.send(WorkerEvent::BtwSplitFailed {
-                    id,
-                    error: "/split requires rollout recording; restart without `--rollouts false`"
-                        .to_owned(),
-                    detached: false,
-                }),
-            );
+            // Forks keep their history in the running parent, not a resumable session.
+            drop(self.updates.send(WorkerEvent::BtwSplitFailed {
+                id,
+                error: "/split needs a resumable session, but this BTW is not saved to disk; use /collapse to bring it into main".to_owned(),
+                detached: false,
+            }));
             return;
         };
         let thread_id = rollout.thread_id().to_owned();
@@ -4029,12 +4040,18 @@ fn execute_submission(
                 app.reject_btw_collapse_while_busy();
                 return Ok(());
             }
-            let Some(thread_id) = app
-                .btw
-                .as_ref()
-                .filter(|btw| btw.id == id)
-                .and_then(|btw| btw.request_id.as_deref())
-                .map(ToOwned::to_owned)
+            let Some((thread_id, resumable, exchanges)) =
+                app.btw.as_ref().filter(|btw| btw.id == id).and_then(|btw| {
+                    let thread_id = btw.request_id.as_deref()?.to_owned();
+                    let exchanges = btw
+                        .conversation
+                        .transcript
+                        .exchange_messages()
+                        .into_iter()
+                        .map(|(user, text)| (user, text.to_owned()))
+                        .collect::<Vec<_>>();
+                    Some((thread_id, btw.resumable, exchanges))
+                })
             else {
                 let _ = app.begin_btw_collapse(id);
                 return Ok(());
@@ -4042,7 +4059,15 @@ fn execute_submission(
             if !app.begin_btw_collapse(id) {
                 return Ok(());
             }
-            let prompt = collapse_btw_prompt(&thread_id);
+            // Claude forks (and Codex without rollouts) have no session another
+            // turn can read, so carry the side exchanges inline, as Claude Code
+            // threads its /btw question/answer history.
+            let inline = !resumable;
+            let prompt = if inline {
+                inline_collapse_btw_prompt(&exchanges)
+            } else {
+                collapse_btw_prompt(&thread_id)
+            };
             let delivery = if app.is_running(PaneId::Main) {
                 let Some(id) = app.queue_steer(PaneId::Main, prompt.clone()) else {
                     app.push_active_error("main thread is not available");
@@ -4056,7 +4081,14 @@ fn execute_submission(
                 };
                 CollapseDelivery::Prompt { id, prompt }
             };
-            send_command(commands, WorkerCommand::CollapseBtw { id, delivery })?;
+            send_command(
+                commands,
+                WorkerCommand::CollapseBtw {
+                    id,
+                    delivery,
+                    inline,
+                },
+            )?;
         }
         Submission::SplitBtw => {
             let Some(id) = app.btw_id() else {
@@ -4305,6 +4337,71 @@ fn collapse_btw_prompt(thread_id: &str) -> SubmittedPrompt {
     let mut prompt = SubmittedPrompt::text(format!("BTW Codex thread ID: {thread_id}"));
     prompt.set_instruction(format!(
         "The user completed a /btw side exploration in local Codex thread {thread_id}. Read that thread and incorporate its relevant findings into the main task. Use `read_session` with source `local` and session_id `{thread_id}` when available; otherwise locate the local Codex rollout by this thread ID and inspect it with local tools."
+    ));
+    prompt
+}
+
+/// Bounds the inline collapse so a long side thread cannot crowd out main context.
+const MAX_INLINE_COLLAPSE_BYTES: usize = 48 * 1024;
+
+fn inline_collapse_btw_prompt(exchanges: &[(bool, String)]) -> SubmittedPrompt {
+    let first_question = exchanges
+        .iter()
+        .find_map(|(user, text)| user.then_some(text.trim()))
+        .unwrap_or_default();
+    let mut display = String::from("Collapsed /btw");
+    if !first_question.is_empty() {
+        display.push_str(": ");
+        let mut end = first_question.len().min(120);
+        while !first_question.is_char_boundary(end) {
+            end -= 1;
+        }
+        display.push_str(&first_question[..end]);
+        if end < first_question.len() {
+            display.push('…');
+        }
+    }
+
+    // Keep the newest exchanges when the side thread exceeds the budget.
+    let mut kept = Vec::new();
+    let mut used = 0;
+    let mut omitted = false;
+    for (user, text) in exchanges.iter().rev() {
+        let mut block = format!(
+            "{}:\n{}\n\n",
+            if *user { "User" } else { "Assistant" },
+            text.trim()
+        );
+        if used + block.len() > MAX_INLINE_COLLAPSE_BYTES {
+            omitted = true;
+            if kept.is_empty() {
+                // Keep the start of an oversized newest exchange rather than nothing.
+                let mut end = MAX_INLINE_COLLAPSE_BYTES;
+                while !block.is_char_boundary(end) {
+                    end -= 1;
+                }
+                block.truncate(end);
+                block.push_str("…\n\n");
+                kept.push(block);
+            }
+            break;
+        }
+        used += block.len();
+        kept.push(block);
+    }
+    kept.reverse();
+    let mut transcript = String::new();
+    if omitted {
+        transcript.push_str("[Earlier BTW exchanges omitted for length.]\n\n");
+    }
+    for block in kept {
+        transcript.push_str(&block);
+    }
+
+    let mut prompt = SubmittedPrompt::text(display);
+    prompt.set_instruction(format!(
+        "The user finished a /btw side conversation forked from this conversation. It ran separately while this thread continued, so its answers may reflect earlier context and any tool activity in it is not shown. Incorporate its relevant findings into the main task; do not repeat work it already settled unless current evidence contradicts it.\n\n<btw_conversation>\n{}</btw_conversation>",
+        transcript
     ));
     prompt
 }
@@ -4787,7 +4884,7 @@ mod tests {
         let (commands, mut worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         let id = app.begin_btw();
-        app.btw_opened(id, Arc::from("btw-thread"));
+        app.btw_opened(id, Arc::from("btw-thread"), true);
         app.input = "/split".to_owned();
         app.cursor = app.input.len();
 
@@ -4806,7 +4903,7 @@ mod tests {
         let (commands, mut worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         let id = app.begin_btw();
-        app.btw_opened(id, Arc::from("btw-thread-id"));
+        app.btw_opened(id, Arc::from("btw-thread-id"), true);
         app.input = "/collapse".to_owned();
         app.cursor = app.input.len();
 
@@ -4828,6 +4925,7 @@ mod tests {
                     id: prompt_id,
                     prompt,
                 },
+            inline: false,
         } = worker.try_recv().unwrap()
         else {
             panic!("idle collapse must enter main through its prompt queue");
@@ -4858,7 +4956,7 @@ mod tests {
         let (commands, mut worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         let id = app.begin_btw();
-        app.btw_opened(id, Arc::from("btw-thread-id"));
+        app.btw_opened(id, Arc::from("btw-thread-id"), true);
         app.btw.as_mut().unwrap().conversation.running = true;
         app.input = "/collapse".to_owned();
         app.cursor = app.input.len();
@@ -4879,7 +4977,7 @@ mod tests {
         let (commands, mut worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         let id = app.begin_btw();
-        app.btw_opened(id, Arc::from("btw-thread-id"));
+        app.btw_opened(id, Arc::from("btw-thread-id"), true);
         app.main.running = true;
         app.input = "/collapse".to_owned();
         app.cursor = app.input.len();
@@ -5049,7 +5147,7 @@ mod tests {
 
         let btw_id = app.begin_btw();
         assert_eq!(active_session_id(&app, "main-session"), None);
-        app.btw_opened(btw_id, std::sync::Arc::from("btw session/&"));
+        app.btw_opened(btw_id, std::sync::Arc::from("btw session/&"), true);
         let session_id = active_session_id(&app, "main-session").unwrap();
         assert_eq!(session_id, "btw session/&");
 

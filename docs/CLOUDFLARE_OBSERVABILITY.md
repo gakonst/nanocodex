@@ -105,6 +105,65 @@ Add `AND deployment_sha = "..."` or another identity field to narrow any query.
 Cloudflare source maps make exception stacks readable in the dashboard without
 publishing source maps to application clients.
 
+## Correlating public API curl runs
+
+Retain each synthetic run's request body, response headers, timestamped SSE
+frames, and terminal receipt under ignored `output/`. Use the same request body
+and idempotency key to reconcile a disconnected admission. Record these client
+boundaries independently: request start, HTTP headers, `run` admission receipt,
+first nonempty assistant text for the requested turn, and terminal event.
+HTTP time-to-first-byte and reasoning/tool deltas are not assistant text TTFT.
+
+The connected `cloudflare_request` tool can query retained logs with
+`POST /client/v4/accounts/ACCOUNT_ID/workers/observability/telemetry/query`.
+Use a narrow UTC interval covering the curl request; `from` and `to` are Unix
+milliseconds. A minimal request is:
+
+```json
+{
+  "queryId": "managed-curl-investigation",
+  "timeframe": { "from": 1791538800000, "to": 1791539100000 },
+  "view": "events",
+  "limit": 200,
+  "ignoreSeries": true,
+  "parameters": {
+    "datasets": ["cloudflare-workers"],
+    "filterCombination": "and",
+    "filters": [
+      { "key": "thread_id", "operation": "eq", "type": "string", "value": "THREAD_ID" }
+    ]
+  }
+}
+```
+
+Replace the example interval and thread ID. Discover fields from returned
+`events.fields` or the telemetry keys endpoint before adding filters. Returned
+application fields are in each event's `source`; native invocation metadata is
+in `$workers` and `$metadata`. Save the query and results with the curl evidence.
+If the page reaches the limit, continue with `offset` set to the final event's
+`$metadata.id` and `offsetDirection: "next"`, preserving the filters and interval.
+A missing record can reflect retention, ingestion delay, sampling, or an
+incomplete query; it does not establish zero duration or successful execution.
+
+Use the SSE receipt's `agent_id` as the thread ID and its `turn_id` for turn
+correlation. Capture `x-nanocodex-request-id`, `cf-ray`, and `server-timing` from
+response headers when present. `managed.proxy` records correlate by
+`request_id`; performance scopes may instead use the turn ID as `trace_id`.
+That application `trace_id` is distinct from Cloudflare's `$metadata.traceId`.
+Follow a matching event's native trace ID to inspect related invocations and
+record `$workers.scriptVersion.id` to identify the deployed Worker version.
+Request IDs are boundary-specific: do not assume the HTTP request ID, runtime
+request ID, and `egress_request_id` are interchangeable.
+
+Keep provider connection, provider first output, first answer delta, client
+first text, and durable completion separate. Parent and child model calls can
+share a thread; group transport records by `socket_id` and
+`socket_request_index` before comparing durations. Use only explicit terminal
+observations for completion timing. Local synthetic-provider runs isolate
+runtime overhead; production runs additionally include inference, geography,
+and network variability. Compare matching models and settings and report the
+sample count rather than presenting one run as a benchmark.
+
 ## Embedded shell diagnostics
 
 See [Just Bash execution logs](just-bash-observability.md) for `/brain` exit codes,

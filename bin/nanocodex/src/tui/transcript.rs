@@ -161,6 +161,20 @@ impl Transcript {
         self.entries.len()
     }
 
+    /// User prompts and assistant answers in display order; `true` marks a user prompt.
+    pub(super) fn exchange_messages(&self) -> Vec<(bool, &str)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match (&entry.kind, &entry.content) {
+                (EntryKind::User, _) => entry.user_message().map(|text| (true, text)),
+                (EntryKind::Assistant, EntryContent::Markdown(markdown)) => {
+                    Some((false, markdown.source.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn push(&mut self, item: TranscriptItem) {
         if matches!(&item, TranscriptItem::Reasoning(_))
             && let Some(entry) = self.entries.last_mut()

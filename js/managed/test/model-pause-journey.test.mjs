@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { appendFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,6 +24,7 @@ import { DurableObject } from 'cloudflare:workers';
 import * as Agent from '../nanocodex/cloudflare/Agent.mjs';
 import wasm from './nanocodex.wasm';
 import { performanceSocketEvent, performanceSocketTiming } from './src/performance.ts';
+import { managedCodeEvaluator } from './src/code-evaluator.ts';
 import { DiagnosticJournal } from './src/diagnostic-journal.ts';
 import { transportObservation } from './src/transport-observation.ts';
 import { watchManagedAgentFamilyEvents } from './src/agent-event-watcher.ts';
@@ -34,7 +38,7 @@ export class FixtureAgent extends DurableObject {
     if (!this.agent) {
       this.journal = new DiagnosticJournal(this.ctx.storage, 'managed');
       this.agent = await Agent.create(wasm, this, {
-        eventPersistence: 'caller', tools: { fixture: { description: 'Return a synthetic fixture result.',
+        codeEvaluator: managedCodeEvaluator(), eventPersistence: 'caller', tools: { fixture: { description: 'Return a synthetic fixture result.',
           parameters: { type: 'object', properties: {}, additionalProperties: false },
           handler: () => 'TOOL_OK',
         } }, instructions: 'Synthetic diagnostics fixture.',
@@ -53,7 +57,7 @@ export class FixtureAgent extends DurableObject {
       });
       this.watcher = watchManagedAgentFamilyEvents(this.agent, {
         replay() {},
-        observe(event) { console.info(JSON.stringify({ type: 'managed.agent.transport', session_id: '${sessionId}',
+        observe(event) { if (event.type?.startsWith("model.call.")) console.info(JSON.stringify({type: "fixture.runtime", event})); console.info(JSON.stringify({ type: 'managed.agent.transport', session_id: '${sessionId}',
           ...transportObservation(event, '${turnId}') })); },
       });
     }
@@ -78,13 +82,13 @@ const provider = `export default { fetch(request) {
   server.addEventListener('close', () => server.close(1000, 'fixture close acknowledged'));
   server.addEventListener('message', event => {
     const call = ++index, id = 'resp_synthetic_' + call;
-    server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress'}}));
+    server.send(JSON.stringify({type:'response.created',response:{id,status:'in_progress',instructions:'synthetic-private-marker'.repeat(1000)}}));
     server.send(JSON.stringify({type:'responsesapi.websocket_timing',response_id:id,timing_metrics:{
       pre_inference_ms:210,engine_queue_max_ms:120,engine_service_ttft_total_ms:80,
       authorization:'synthetic-private-marker',arbitrary_ms:999,
     }}));
     const finish = () => {
-      server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:true,output:[{
+      server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',instructions:'synthetic-private-marker'.repeat(1000),end_turn:true,output:[{
         type:'message',role:'assistant',content:[{type:'output_text',text:'PAUSE_OK'}]
       }],usage:{input_tokens:2,output_tokens:1,total_tokens:3}}}));
     };
@@ -100,15 +104,15 @@ const provider = `export default { fetch(request) {
         server.send(JSON.stringify({type:'response.output_text.delta',output_index:0,delta:'PAUSE_OK'})); finish();
       }, 3_200);
     } else if (call === 2) {
-      const item = {type:'function_call',id:'fc_synthetic',name:'fixture',call_id:'call_synthetic',arguments:'{}'};
-      server.send(JSON.stringify({type:'response.output_item.added',output_index:0,item:{...item,arguments:''}}));
-      server.send(JSON.stringify({type:'response.function_call_arguments.delta',output_index:0,item_id:item.id,delta:''}));
+      const item = {type:'custom_tool_call',id:'fc_synthetic',name:'exec',call_id:'call_synthetic',input:'text(await tools.fixture());'};
+      server.send(JSON.stringify({type:'response.output_item.added',output_index:0,item:{...item,input:''}}));
+      server.send(JSON.stringify({type:'response.custom_tool_call_input.delta',output_index:0,item_id:item.id,delta:''}));
       setTimeout(() => {
-        for (const delta of ['{', '}']) server.send(JSON.stringify({
-          type:'response.function_call_arguments.delta',output_index:0,item_id:item.id,delta,
+        for (const delta of ['text(await ', 'tools.fixture());']) server.send(JSON.stringify({
+          type:'response.custom_tool_call_input.delta',output_index:0,item_id:item.id,delta,
         }));
         server.send(JSON.stringify({type:'response.output_item.done',output_index:0,item}));
-        server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',end_turn:false,output:[item],
+        server.send(JSON.stringify({type:'response.completed',response:{id,status:'completed',instructions:'synthetic-private-marker'.repeat(1000),end_turn:false,output:[item],
           usage:{input_tokens:2,output_tokens:1,total_tokens:3}}}));
       }, 150);
     } else {
@@ -132,6 +136,7 @@ test("a silent model request has live correlated diagnostics before completion a
   const records = [], raw = [];
   const capture = message => {
     raw.push(message);
+    appendFileSync(join(output, "live.log"), message + "\n");
     const start = message.indexOf('{"type":');
     if (start >= 0) {
       try { records.push(JSON.parse(message.slice(start))); } catch { /* Preserve original log below. */ }
@@ -145,7 +150,7 @@ test("a silent model request has live correlated diagnostics before completion a
   }
   const bundle = await build({
     stdin: { contents: source, resolveDir: root }, bundle: true, write: false, format: "esm", platform: "node",
-    target: "es2022", conditions: ["workerd"], external: ["cloudflare:*", "node:*", "./nanocodex.wasm"],
+    target: "es2022", conditions: ["workerd"], external: ["cloudflare:*", "node:*", "./nanocodex.wasm", "./quickjs.wasm"],
     alias: { "node-rsa": join(root, "../nanocodex/tools/browser/unsupportedNodeRsa.mjs") }, logLevel: "warning",
   });
   const common = { compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat"] };
@@ -155,10 +160,27 @@ test("a silent model request has live correlated diagnostics before completion a
   }, workers: [
     { ...common, name: "agent", modules: [
       { type: "ESModule", path: "worker.mjs", contents: bundle.outputFiles[0].text },
+      { type: "CompiledWasm", path: "quickjs.wasm", contents: await readFile(join(root, "src/quickjs.wasm")) },
       { type: "CompiledWasm", path: "nanocodex.wasm", contents: await readFile(join(root, "../nanocodex/pkg-web/nanocodex_bg.wasm")) },
     ], durableObjects: { AGENTS: { className: "FixtureAgent", useSQLite: true } }, serviceBindings: { NANOCODEX: "provider" } },
     { ...common, name: "provider", modules: true, script: provider },
   ] });
+  const address = await mf.ready;
+  let httpIndex = 0;
+  const request = async (path, options = {}) => {
+    const prefix = join(output, `http-${++httpIndex}`);
+    const args = ["--silent", "--show-error", "--max-time", "40", "--request", options.method ?? "GET",
+      "--dump-header", prefix + ".headers", "--output", prefix + ".body", "--write-out", "%{http_code}"];
+    if (options.body !== undefined) {
+      await writeFile(prefix + ".input", options.body);
+      args.push("--data-binary", "@" + prefix + ".input");
+    }
+    args.push(new URL(new URL(path).pathname, address).href);
+    await writeFile(prefix + ".command.json", JSON.stringify(["curl", ...args], null, 2));
+    const { stdout } = await promisify(execFile)("curl", args);
+    const status = Number(stdout);
+    return new Response(status === 204 ? null : await readFile(prefix + ".body"), { status });
+  };
   let firstFinished = false;
   let firstFailure;
   const waitFor = async predicate => {
@@ -169,7 +191,7 @@ test("a silent model request has live correlated diagnostics before completion a
     }
   };
   try {
-    const first = mf.dispatchFetch("https://fixture.internal/turns", { method: "POST", body: "synthetic-private-prompt-marker" })
+    const first = request("https://fixture.internal/turns", { method: "POST", body: "synthetic-private-prompt-marker" })
       .then(async response => {
         if (response.status !== 200) throw Error(`Fixture turn HTTP ${response.status}: ${await response.text()}`);
         firstFinished = true; return response.json();
@@ -192,7 +214,12 @@ test("a silent model request has live correlated diagnostics before completion a
     assert.equal(waiting.first_reasoning_delta_ms, undefined, "empty reasoning delta counted as text");
     assert.equal(waiting.first_answer_delta_ms, undefined, "empty answer delta counted as text");
     assert.equal((await first).final_message, "PAUSE_OK");
-    const second = await mf.dispatchFetch("https://fixture.internal/turns", { method: "POST", body: "synthetic follow-up" });
+    const waitingAtCompletion = records.filter(x => x.stage === "transport.request.waiting").length;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(records.filter(x => x.stage === "transport.request.waiting").length, waitingAtCompletion,
+      "completed request continued reporting silence while idle");
+    assert.equal(records.filter(x => x.stage === "transport.request.finished" && x.outcome === "completed").length, 1);
+    const second = await request("https://fixture.internal/turns", { method: "POST", body: "synthetic follow-up" });
     assert.equal(second.status, 200); assert.equal((await second.json()).final_message, "PAUSE_OK");
     const completed = records.filter(x => x.type === "managed.agent.transport" && x.message_type === "model.call.completed");
     assert.equal(completed.length, 3);
@@ -200,7 +227,7 @@ test("a silent model request has live correlated diagnostics before completion a
     // The existing Rust output milestone includes the empty item declaration.
     assert.ok(completed[0].time_to_first_output_ms < 1000);
     const firstEvent = records.find(x => x.stage === "transport.request.first_message");
-    assert.equal(firstEvent.provider_event_type, "response.created");
+    assert.equal(firstEvent.provider_event_type, "unclassified");
     const outputEvent = records.find(x => x.stage === "transport.request.first_output");
     assert.equal(outputEvent.provider_event_type, "response.output_item.added");
     assert.equal(outputEvent.output_kind, "item");
@@ -213,7 +240,7 @@ test("a silent model request has live correlated diagnostics before completion a
     assert.equal(answerEvents[0].provider_event_type, "response.output_text.delta");
     const toolEvents = records.filter(x => x.stage === "transport.request.first_tool_delta");
     assert.equal(toolEvents.length, 1, "tool milestone must occur only once for multiple argument deltas");
-    assert.equal(toolEvents[0].provider_event_type, "response.function_call_arguments.delta");
+    assert.equal(toolEvents[0].provider_event_type, "response.custom_tool_call_input.delta");
     assert.equal(toolEvents[0].socket_request_index, 2);
     assert.ok(toolEvents[0].elapsed_ms >= 100, "empty tool delta counted as input");
     const toolFinished = records.find(x => x.stage === "transport.request.finished" && x.socket_request_index === 2);
@@ -222,7 +249,7 @@ test("a silent model request has live correlated diagnostics before completion a
     const finished = records.find(x => x.stage === "transport.request.finished");
     assert.equal(finished.first_reasoning_delta_ms, reasoningEvent.elapsed_ms);
     assert.equal(finished.first_answer_delta_ms, answerEvents[0].elapsed_ms);
-    const persisted = await (await mf.dispatchFetch("https://fixture.internal/diagnostics")).json();
+    const persisted = await (await request("https://fixture.internal/diagnostics")).json();
     assert.equal(persisted.write_failed, false);
     const savedAnswer = persisted.events.find(x => x.stage === "transport.request.first_answer_delta");
     assert.equal(savedAnswer.provider_event_type, answerEvents[0].provider_event_type);
@@ -233,18 +260,20 @@ test("a silent model request has live correlated diagnostics before completion a
     assert.equal(savedFinished.first_answer_delta_ms, answerEvents[0].elapsed_ms);
     assert.equal(completed[0].model_call_index, 1);
     assert.equal(records.filter(x => x.stage === "transport.socket.opened").length, 1);
+    assert.deepEqual(records.filter(x => x.stage === "transport.request.finished").map(x => x.outcome), ["completed", "completed", "completed"]);
     const timings = records.filter(x => x.stage === "transport.provider.timing");
     assert.equal(timings.length, 3);
-    assert.deepEqual(timings.map(x => x.socket_request_index), [1, 2, 3]);
+    assert.deepEqual(timings.map(x => x.socket_request_index), [undefined, undefined, undefined], "large envelopes leave provider response timing unlinked");
     assert.deepEqual(timings.map(x => x.response_id), ["resp_synthetic_1", "resp_synthetic_2", "resp_synthetic_3"]);
     assert.equal(records.filter(x => x.stage === 'transport.request.waiting' && x.socket_request_index >= 2).length, 0);
-    assert.equal((await mf.dispatchFetch("https://fixture.internal/turns", { method: "DELETE" })).status, 204);
+    assert.equal((await request("https://fixture.internal/turns", { method: "DELETE" })).status, 204);
     assert.equal(records.filter(x => x.stage === "transport.socket.closed").length, 1);
     assert.doesNotMatch(JSON.stringify(records), /synthetic-private|arbitrary_ms|authorization|close_reason|body/);
     console.log(JSON.stringify({ evidence: output, observed: { first_event_ms: completed[0].time_to_first_event_ms,
       first_output_ms: completed[0].time_to_first_output_ms, reasoning_delta_ms: reasoningEvent.elapsed_ms,
       answer_delta_ms: answerEvents[0].elapsed_ms, tool_delta_ms: toolEvents[0].elapsed_ms, waiting, reused_socket: true, exact_answers: true } }));
   } finally {
+    await request("https://fixture.internal/turns", { method: "DELETE" });
     await mf.dispose();
     await writeFile(join(output, "records.json"), JSON.stringify(records, null, 2) + "\n");
     await writeFile(join(output, "runtime.log"), raw.join("\n") + "\n");

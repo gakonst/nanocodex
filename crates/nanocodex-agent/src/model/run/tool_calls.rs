@@ -137,6 +137,52 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
     }
 }
 
+/// Owned nested-tool event emitter for a cell left running after its turn
+/// completed. It emits the same events an exec/wait observer would.
+pub(super) struct DetachedNestedToolEvents {
+    events: EventSink,
+    tool_call_indices: HashMap<Box<str>, u32>,
+    progress: Mutex<ActiveToolProgress>,
+    parent_call_id: String,
+}
+
+impl DetachedNestedToolEvents {
+    pub(super) fn new(
+        events: EventSink,
+        tool_call_indices: HashMap<Box<str>, u32>,
+        parent_call_id: &str,
+    ) -> Self {
+        Self {
+            events,
+            tool_call_indices,
+            progress: Mutex::default(),
+            parent_call_id: parent_call_id.to_owned(),
+        }
+    }
+}
+
+impl CodeModeObserver for DetachedNestedToolEvents {
+    fn update(&mut self, update: CodeModeUpdate<'_>) {
+        let fallback_call_index = self
+            .tool_call_indices
+            .get(self.parent_call_id.as_str())
+            .copied()
+            .unwrap_or_default();
+        let mut observer = NestedToolEventObserver {
+            events: &self.events,
+            tool_call_indices: &self.tool_call_indices,
+            progress: &self.progress,
+            fallback_call_index,
+            parent_call_id: &self.parent_call_id,
+            error: None,
+        };
+        observer.update(update);
+        if let Some(error) = observer.error {
+            tracing::debug!(%error, "detached Code Mode update was not emitted");
+        }
+    }
+}
+
 impl NestedToolEventObserver<'_> {
     fn event_context(&self, nested_call_id: &str) -> (String, u32) {
         let embedded_parent = nested_call_id

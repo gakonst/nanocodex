@@ -288,6 +288,21 @@ where
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
+                if let Some(tools) = &self.active_tools {
+                    // A yielded cell may still run nested tools the model never
+                    // waited for. Keep reporting them so their calls terminate.
+                    let events = self.events.clone();
+                    let indices = self.tool_call_indices.clone();
+                    tools
+                        .detach_turn_with_updates(&mut |origin| {
+                            Box::new(DetachedNestedToolEvents::new(
+                                events.clone(),
+                                indices.clone(),
+                                origin,
+                            ))
+                        })
+                        .await;
+                }
                 self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);

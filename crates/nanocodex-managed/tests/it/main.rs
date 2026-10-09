@@ -5,3 +5,4 @@ mod voice;
 
 mod claude;
 mod session_done;
+mod worker_receipt;

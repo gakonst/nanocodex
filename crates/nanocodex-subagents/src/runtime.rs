@@ -127,6 +127,10 @@ pub struct Registry {
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
     progress_captures: std::sync::Mutex<HashMap<(String, AgentId), bool>>,
     pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
+    /// Terminal results each caller session already received from `wait`.
+    wait_reported: std::sync::Mutex<HashMap<(String, AgentId), u64>>,
+    /// Consecutive waits per caller with nothing new and nothing left active.
+    idle_waits: std::sync::Mutex<HashMap<String, (Vec<AgentId>, u32)>>,
 }
 
 #[derive(Default)]
@@ -772,6 +776,30 @@ impl RegistryState {
         self.summaries_in_scope(root_session_id, ids)
     }
 
+    /// Summaries plus each child's instruction revision, so a resumed child's
+    /// next terminal result is distinguishable from one already reported.
+    fn wait_snapshot(
+        &self,
+        session_id: &str,
+        ids: &[AgentId],
+    ) -> std::io::Result<Vec<(AgentSummary, u64)>> {
+        let summaries = self.summaries(session_id, ids)?;
+        let sessions = &self
+            .scopes
+            .get(self.root_session_id(session_id))
+            .ok_or_else(|| std::io::Error::other("subagent scope disappeared"))?
+            .sessions;
+        Ok(summaries
+            .into_iter()
+            .map(|summary| {
+                let revision = sessions
+                    .get(&summary.agent_id)
+                    .map_or(0, |session| session.next_instruction_revision);
+                (summary, revision)
+            })
+            .collect())
+    }
+
     fn summaries_in_scope(
         &self,
         root_session_id: &str,
@@ -1004,6 +1032,25 @@ impl RegistryState {
 }
 
 const AGENT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Identical waits allowed to re-read already-reported terminal agents.
+const IDLE_WAIT_LIMIT: u32 = 2;
+
+fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Identifies one terminal result of one child turn.
+fn wait_mark(status: &AgentStatus, revision: u64) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    revision.hash(&mut hasher);
+    serde_json::to_string(status)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
 
 impl Registry {
     pub(super) fn new(
@@ -1031,6 +1078,8 @@ impl Registry {
             pending_checkpoints: std::sync::Mutex::new(HashMap::new()),
             progress_captures: std::sync::Mutex::new(HashMap::new()),
             pending_resume: std::sync::Mutex::new(HashMap::new()),
+            wait_reported: std::sync::Mutex::new(HashMap::new()),
+            idle_waits: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -2341,13 +2390,55 @@ impl Registry {
         let mut revision = self.revision.subscribe();
         let deadline = Instant::now() + duration;
         loop {
-            let summaries = self.state.lock().await.summaries(session_id, ids)?;
-            if summaries
+            let snapshot = self.state.lock().await.wait_snapshot(session_id, ids)?;
+            let terminal = snapshot
                 .iter()
-                .any(|summary| summary.status.is_wait_terminal())
-            {
+                .filter(|(summary, _)| summary.status.is_wait_terminal())
+                .map(|(summary, revision)| {
+                    (summary.agent_id, wait_mark(&summary.status, *revision))
+                })
+                .collect::<Vec<_>>();
+            let all_terminal = terminal.len() == snapshot.len();
+            let summaries = snapshot.into_iter().map(|(summary, _)| summary).collect();
+            // Only results this caller has not seen end a wait. Re-reporting
+            // seen results instantly turned code-mode wait loops into spins.
+            let fresh = {
+                let mut reported = lock_unpoisoned(&self.wait_reported);
+                terminal.iter().fold(false, |fresh, &(id, mark)| {
+                    reported.insert((session_id.to_owned(), id), mark) != Some(mark) || fresh
+                })
+            };
+            if fresh {
+                lock_unpoisoned(&self.idle_waits).remove(session_id);
                 return Ok((summaries, false));
             }
+            if all_terminal {
+                // Nothing new can arrive: return the snapshot so a re-read
+                // works, but reject a loop that keeps asking.
+                let mut key = ids.to_vec();
+                key.sort_unstable();
+                key.dedup();
+                let mut idle = lock_unpoisoned(&self.idle_waits);
+                let entry = idle
+                    .entry(session_id.to_owned())
+                    .or_insert_with(|| (key.clone(), 0));
+                if entry.0 != key {
+                    *entry = (key, 0);
+                }
+                entry.1 += 1;
+                if entry.1 > IDLE_WAIT_LIMIT {
+                    let ids = entry.0.iter().map(ToString::to_string).collect::<Vec<_>>();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "agent_ids [{}] are all terminal and every result was already returned by an earlier wait_agent call; nothing is left to wait for. Stop waiting: read each agents[i].status.state from that result, or call list_agents({{include_completed:true}}).",
+                            ids.join(", ")
+                        ),
+                    ));
+                }
+                return Ok((summaries, false));
+            }
+            lock_unpoisoned(&self.idle_waits).remove(session_id);
             if timeout_at(deadline, revision.changed()).await.is_err() {
                 let summaries = self.state.lock().await.summaries(session_id, ids)?;
                 return Ok((summaries, true));

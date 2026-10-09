@@ -2389,6 +2389,7 @@ async fn dropped_observer_preserves_consumed_output_for_the_next_observation() -
     let cell = test_live_cell(1, updates, terminate, task);
     let observation = cell
         .begin_observation()
+        .await
         .expect("first observer should acquire the cell");
     let observed_cell = Arc::clone(&cell);
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -2417,6 +2418,7 @@ async fn dropped_observer_preserves_consumed_output_for_the_next_observation() -
             call_id: "call/code-1".to_owned(),
             name: "test".to_owned(),
             input: Value::Null,
+            delivered: false,
         })
         .expect("test cell should receive the observation barrier");
     tokio::time::timeout(Duration::from_secs(1), started_rx)
@@ -2435,6 +2437,7 @@ async fn dropped_observer_preserves_consumed_output_for_the_next_observation() -
         .expect("test cell should receive completion");
     let observation = cell
         .begin_observation()
+        .await
         .expect("dropping an observer should release the cell");
     let (completed, running) = observe_cell(
         &cell,
@@ -2475,6 +2478,7 @@ async fn yield_deadline_preempts_already_buffered_runtime_output() {
         .expect("test cell should receive output");
     let observation = cell
         .begin_observation()
+        .await
         .expect("test cell should not already have an observer");
 
     let (yielded, running) = observe_cell(
@@ -2495,6 +2499,7 @@ async fn yield_deadline_preempts_already_buffered_runtime_output() {
         .expect("test cell should receive completion");
     let observation = cell
         .begin_observation()
+        .await
         .expect("yielded observer should release the cell");
     let (completed, running) = observe_cell(
         &cell,
@@ -2525,6 +2530,7 @@ async fn nested_tool_start_does_not_extend_the_outer_yield() {
                 call_id: "call/code-1".to_owned(),
                 name: "write_stdin".to_owned(),
                 input: serde_json::Value::Null,
+                delivered: false,
             })
             .expect("observer should receive the nested call");
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -2535,6 +2541,7 @@ async fn nested_tool_start_does_not_extend_the_outer_yield() {
     let cell = test_live_cell(1, updates, terminate, task);
     let observation = cell
         .begin_observation()
+        .await
         .expect("test cell should not already have an observer");
 
     let (execution, running) = observe_cell(
@@ -2606,11 +2613,13 @@ fn test_live_cell(
         turn_id: AtomicU64::new(0),
         observation: Arc::new(tokio::sync::Mutex::new(CellObservationState {
             updates,
+            replay: std::collections::VecDeque::new(),
             buffered: ObservationBuffer::default(),
         })),
         lifecycle: Arc::new(CellLifecycle::new()),
         terminate: std::sync::Mutex::new(Some(terminate)),
         task: tokio::sync::Mutex::new(Some(task)),
+        relay: std::sync::Mutex::new(None),
     })
 }
 

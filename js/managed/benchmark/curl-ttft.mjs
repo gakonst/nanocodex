@@ -17,6 +17,7 @@ import { claudeProvider } from '../../egress/test/claude-provider.fixture.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const opts = Object.fromEntries(process.argv.slice(2).map(arg => { assert.match(arg,/^--[^=]+=/); const i=arg.indexOf('=');return [arg.slice(2,i),arg.slice(i+1)]; }));
 const root=resolve(opts.root??join(here,'../../..')), label=opts.label??`run-${Date.now()}`, mode=opts.mode??'combined';
+const ingress = opts.ingress ?? 'direct'; assert.ok(['direct', 'managed'].includes(ingress));
 assert.match(label,/^[a-zA-Z0-9_-]+$/); assert.ok(['legacy','combined','stream'].includes(mode));
 const count=Number(opts.samples??5), processCount=Number(opts['process-samples']??2);
 assert.ok(Number.isSafeInteger(count)&&count>0&&count<=100);assert.ok(Number.isSafeInteger(processCount)&&processCount>=0&&processCount<=30);
@@ -32,7 +33,7 @@ let catalogModel = settings.model;
 const bootstrap=`import managed from './src/index.ts';export * from './src/index.ts';import {ensureAccount,createApiKey} from './src/account-auth.ts';export default {async fetch(request,env,ctx){if(new URL(request.url).pathname==='/__fixture/disconnect'){await env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/chatgpt',{method:'DELETE'});return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/openai',{method:'DELETE'});}if(new URL(request.url).pathname==='/__fixture/chatgpt'){const expires_at=(Math.ceil(Date.now()/1000)+3600)*1000;const payload={exp:Math.ceil(expires_at/1000),'https://api.openai.com/auth':{chatgpt_account_id:'synthetic-account',chatgpt_account_is_fedramp:false}};const jwt=btoa(JSON.stringify({alg:'none'})).replaceAll('=','')+'.'+btoa(JSON.stringify(payload)).replaceAll('=','')+'.fixture';return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/chatgpt',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({access_token:jwt,refresh_token:'synthetic-refresh',account_id:'synthetic-account',expires_at,fedramp:false})});}if(new URL(request.url).pathname==='/__fixture/openai')return env.NANOCODEX.fetch('https://broker.internal/users/${owner}/credentials/openai',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({api_key:'sk-synthetic-openai-runtime'})});if(new URL(request.url).pathname==='/__fixture'){const {user,capabilities}=await request.json();await ensureAccount(env,user,true);const auth=await(await env.NANOCODEX_USERS.getByName(user).fetch('https://user.internal/authorization')).json();return Response.json(await createApiKey(env,{kind:'api_key',userId:user,...auth.grant,...(capabilities?{capabilities}:{}),subjectId:'fixture:'+user,credentialId:'fixture'},'synthetic-ttft'));}return managed.fetch(request,env,ctx);}};`;
 await mkdir(output,{recursive:true});
 const git=args=>{try{return execFileSync('git',['-C',root,...args],{encoding:'utf8'});}catch{return null;}};
-const config={label,root,mode,family,credential,samples:count,process_samples:processCount,command:[process.execPath,...process.argv.slice(1)],git_head:git(['rev-parse','HEAD'])?.trim(),node:process.version,curl:execFileSync('curl',['--version'],{encoding:'utf8'}).split('\n')[0],started_at:new Date().toISOString(),methodology:'Actual js/account routeManaged front proxy, normal js/managed and js/egress production workers, real account/API-key authorization, account and Session SQLite DOs, Rust WASM runtime and SessionModelEgress. Only synthetic account bootstrap and external OAuth/catalog/model HTTP are fixtures. No live inference, Internet/TLS, Cloudflare geography, production latency claim. Local workerd on loopback. Stopwatch begins before first curl spawn and ends on first nonempty current-turn assistant.delta.text. Headers and initial SSE receipt are not TTFT. Legacy fresh=POST create + POST turn + GET SSE; combined fresh=POST agent-runs JSON + GET SSE; stream fresh=one POST agent-runs SSE. Warm existing sessions use one POST turn SSE in stream mode and POST turn + GET SSE otherwise. Process samples restart workerd; account/key/OAuth setup excluded and warms API/account/Egress before first Session. Fresh-session samples reuse process after recorded untimed warmup; warm samples are second turns of paired fresh sessions. No synthetic latency added during timing. Contract-only disconnect case holds provider text 100ms to verify receipt precedes completion.'};
+const config={label,root,mode,family,credential,ingress,samples:count,process_samples:processCount,command:[process.execPath,...process.argv.slice(1)],git_head:git(['rev-parse','HEAD'])?.trim(),node:process.version,curl:execFileSync('curl',['--version'],{encoding:'utf8'}).split('\n')[0],started_at:new Date().toISOString(),methodology:'Actual js/account routeManaged front proxy, normal js/managed and js/egress production workers, real account/API-key authorization, account and Session SQLite DOs, Rust WASM runtime and SessionModelEgress. Only synthetic account bootstrap and external OAuth/catalog/model HTTP are fixtures. No live inference, Internet/TLS, Cloudflare geography, production latency claim. Local workerd on loopback. Stopwatch begins before first curl spawn and ends on first nonempty current-turn assistant.delta.text. Headers and initial SSE receipt are not TTFT. Legacy fresh=POST create + POST turn + GET SSE; combined fresh=POST agent-runs JSON + GET SSE; stream fresh=one POST agent-runs SSE. Warm existing sessions use one POST turn SSE in stream mode and POST turn + GET SSE otherwise. Process samples restart workerd; account/key/OAuth setup excluded and warms API/account/Egress before first Session. Fresh-session samples reuse process after recorded untimed warmup; warm samples are second turns of paired fresh sessions. No synthetic latency added during timing. Contract-only disconnect case holds provider text 100ms to verify receipt precedes completion.'};
 await writeFile(join(output,'config.json'),JSON.stringify(config,null,2));
 await writeFile(join(output,'harness.mjs'),await readFile(fileURLToPath(import.meta.url)));
 await writeFile(join(output,'source.patch'),git(['diff','--','js/managed/src','js/egress/src','js/nanocodex'])??'unavailable');
@@ -75,7 +76,7 @@ const providerSource=`export default {async fetch(request,env){
  });return new Response(null,{status:101,webSocket:client});
 }};`;
 await writeFile(join(output,'provider.mjs'),providerSource);
-const account=await accountProxyWorker(root);await writeFile(join(output,'account.mjs'),account.script);await writeFile(join(output,'account-source-hash.json'),JSON.stringify({bundle_sha256:hash(account.script),source_sha256:hash(await readFile(join(root,'js/account/worker/managedProxy.ts')))},null,2));
+const account=await accountProxyWorker(root,{direct:ingress==='direct'});await writeFile(join(output,'account.mjs'),account.script);await writeFile(join(output,'account-source-hash.json'),JSON.stringify({bundle_sha256:hash(account.script),source_sha256:hash(await readFile(join(root,'js/account/worker/managedProxy.ts')))},null,2));
 let processId=0;
 async function boot(){
  const process=++processId;
@@ -120,6 +121,11 @@ async function sample(server,regime,index,existing){
   }
   stream=mode==='stream'?curl(server,existing?`/v1/agents/${agent}/turns`:'/v1/agent-runs','POST',existing?{input}:{input,settings},{'Idempotency-Key':key,Accept:'text/event-stream'},observe):curl(server,`/v1/agents/${agent}/events?cursor=${cursor}`,'GET',undefined,{Accept:'text/event-stream'},observe);
   const result=await stream.done;calls.push(result);assert.ok(!result.headers.includes('x-nanocodex-run-phases'),'internal timing header leaked');if(mode==='stream')assert.equal(result.code,0,'finite stream must EOF: '+result.stderr);assert.ok([200,201,202].includes(result.status),result.stdout);assert.notEqual(firstText,null,'No assistant text: '+result.stdout);assert.equal(firstTextValue,text);
+  if(ingress==='direct'&&mode==='stream'&&!existing){
+   assert.match(result.headers,/^x-nanocodex-request-id: [0-9a-f-]{36}\r?$/im,'direct response has a correlation ID');
+   assert.match(result.headers,/managed_auth;dur=[0-9.]+;desc="live"/,'direct response reports live authority timing');
+   assert.match(result.headers,/managed_session_storage_sync;dur=[0-9.]+/,'direct response reports its durable commit');
+  }
   let completion;for(let n=0;n<200;n++){completion=await request(server,`/v1/agents/${agent}/turns/${turn}`);assert.equal(completion.status,200,JSON.stringify(completion));if(['completed','failed','cancelled'].includes(completion.value.state))break;await delay(10);}assert.equal(completion.value.state,'completed',JSON.stringify(completion));assert.match(JSON.stringify(completion.value),/BENCHMARK_ASSISTANT_TEXT/);
   const history=await request(server,`/v1/agents/${agent}/events/history?after=0&limit=256`);assert.equal(history.status,200);cursor=history.value.latest_cursor;
   const row={regime,index,process:server.process,agent,turn,key,input,ttft_ms:firstText,client_requests:calls.length,cursor,receipt,first_text:firstTextValue,stream_first_headers_ms:result.first_headers_ms,stream_first_body_ms:result.first_body_ms};rows.push(row);
@@ -301,10 +307,16 @@ function summarize(values){const a=values.toSorted((a,b)=>a-b);return a.length?{
 let server;
 try{
  for(let i=0;i<processCount;i++){server=await boot();try{await sample(server,'new_process_first_session',i);}finally{await server.mf.dispose();server=undefined;}}
- server=await boot();await sample(server,'shared_process_warmup',0);
+ server=await boot();
+ if(opts['receipt-sdk']) {
+  const { verifyLargeRunReceipt } = await import('../test/support/large-run-receipt.mjs');
+  await verifyLargeRunReceipt({server,output,settings,providerCalls,sdk:opts['receipt-sdk']});
+ } else {
+ await sample(server,'shared_process_warmup',0);
  for(let i=0;i<count;i++){const fresh=await sample(server,'fresh_session',i);await sample(server,'warm_session',i,fresh);}
  if(mode==='stream')await verifyStreamContract(server);
  const summary={...config,completed_at:new Date().toISOString(),groups:Object.fromEntries(['new_process_first_session','fresh_session','warm_session'].map(regime=>[regime,summarize(rows.filter(r=>r.regime===regime).map(r=>r.ttft_ms))]))};await writeFile(join(output,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary.groups,null,2));
+ }
 }catch(error){await writeFile(join(output,'failure.txt'),error.stack??String(error));throw error;}finally{if(server)await server.mf.dispose();await writeFile(join(output,'runtime.json'),JSON.stringify(runtime,null,2));await writeFile(join(output,'provider-calls.json'),JSON.stringify(providerCalls,null,2));}
 
 // Opt-in creation policy exercised through the real public Worker/DO/SSE path.

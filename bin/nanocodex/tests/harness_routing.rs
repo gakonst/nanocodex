@@ -48,6 +48,7 @@ enum Journey {
     SubscriptionRecovery,
     ProjectContext,
     ContextRouting,
+    WaitLoop,
 }
 
 struct Provider {
@@ -284,6 +285,49 @@ text('subscription-child-ok');
         }
         if self.journey == Journey::Smoke {
             return Reply::Text("claude-only-answer".into());
+        }
+        if self.journey == Journey::WaitLoop {
+            // A parent that re-waits on the full ID list must block on the
+            // still-running child instead of re-reading the finished one.
+            let spawn = |task: &str| {
+                json!({"role":task,"task":task,"output_contract":contract(),"thinking":null})
+                    .to_string()
+            };
+            return match (label, stage) {
+                ("root", 0) => Reply::Code(format!(r#"
+const fast=await tools.spawn_agent({}); const slow=await tools.spawn_agent({});
+const ids=[fast.agent_id, slow.agent_id]; const seen=new Set(); let calls=0, timeouts=0;
+const t0=Date.now();
+while(Date.now()-t0<1500) {{
+  const w=await tools.wait_agent({{agent_ids:ids,timeout_ms:250}}); calls++;
+  if(w.timed_out) timeouts++;
+  for(const a of w.agents) if(a.status.state==='completed') seen.add(a.agent_id);
+}}
+if(!seen.has(fast.agent_id)) throw Error('fast result never reported');
+if(calls>12 || timeouts<calls-1) throw Error('full-list wait did not block: calls='+calls+' timeouts='+timeouts);
+await tools.close_agent({{agent_id:slow.agent_id}});
+const closed=await tools.wait_agent({{agent_ids:ids,timeout_ms:250}});
+if(closed.timed_out || closed.agents[1].status.state!=='closed') throw Error('close was not reported');
+const r0=Date.now(); const reread=await tools.wait_agent({{agent_ids:ids,timeout_ms:20000}});
+if(reread.timed_out || Date.now()-r0>2000) throw Error('re-read of terminal agents blocked');
+let stuck='';
+try {{ await tools.wait_agent({{agent_ids:ids,timeout_ms:20000}}); await tools.wait_agent({{agent_ids:ids,timeout_ms:20000}}); }} catch(e) {{ stuck=String(e.message||e); }}
+if(!stuck.includes('nothing is left to wait for')) throw Error('stuck wait loop was not rejected: '+stuck);
+text({{calls,timeouts,stuck}}); text('wait-loop-ok');
+"#, spawn("WAIT_FAST_CHILD"), spawn("WAIT_SLOW_CHILD"))),
+                ("root", _) => Reply::Text(
+                    if last_tool_result(request).to_string().contains("wait-loop-ok") {
+                        "wait-loop-answer"
+                    } else {
+                        "wait-loop-failed"
+                    }
+                    .into(),
+                ),
+                ("wait-fast", 0) => Reply::Code("const r=await tools.submit_result({output:{answer:'fast'}}); if(!r.accepted) throw Error('fast rejected');".into()),
+                ("wait-fast", _) => Reply::Text("fast child finished".into()),
+                ("wait-slow", _) => Reply::Pause,
+                _ => Reply::Text("unexpected wait-loop request".into()),
+            };
         }
         let other = if self.root == "codex" {
             "claude"
@@ -545,6 +589,10 @@ fn label(request: &Value) -> String {
         "inherited"
     } else if input.contains("MIXED_CHILD") {
         "child"
+    } else if input.contains("WAIT_FAST_CHILD") {
+        "wait-fast"
+    } else if input.contains("WAIT_SLOW_CHILD") {
+        "wait-slow"
     } else {
         "root"
     }
@@ -1162,6 +1210,8 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
             "only"
         } else if kind == Journey::SiblingMessages {
             "sibling-messages"
+        } else if kind == Journey::WaitLoop {
+            "wait-loop"
         } else {
             "missing-auth"
         }
@@ -1200,6 +1250,7 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
         Journey::SubscriptionRecovery => "subscription-recovery-answer",
         Journey::ProjectContext => "project-context-answer",
         Journey::ContextRouting => "context-routing-answer",
+        Journey::WaitLoop => "wait-loop-answer",
     };
     if kind == Journey::Smoke {
         run_tui(command, &artifact, answer).await?;
@@ -1306,6 +1357,26 @@ async fn journey(family: &'static str, kind: Journey) -> Result<()> {
                 .to_string()
                 .contains("auth-denied-ok")
         );
+    } else if kind == Journey::WaitLoop {
+        let report = provider
+            .log
+            .iter()
+            .find(|entry| entry["label"] == "root" && entry["stage"] == 1)
+            .map(|entry| entry["tool_result"].to_string())
+            .unwrap_or_default();
+        assert!(
+            report.contains("wait-loop-ok"),
+            "wait loop cell failed: {report}; evidence {}",
+            artifact.display()
+        );
+        assert!(
+            provider
+                .log
+                .iter()
+                .any(|entry| entry["label"] == "wait-slow"),
+            "running child never dispatched; evidence {}",
+            artifact.display()
+        );
     } else {
         for (label, expected_family) in [
             ("root", family),
@@ -1406,6 +1477,10 @@ async fn codex_rejects_stale_direct_tools_and_recovers_through_code_mode() -> Re
 #[tokio::test]
 async fn codex_claude_codex_nested_lifecycle_and_inheritance() -> Result<()> {
     journey("codex", Journey::Mixed).await
+}
+#[tokio::test]
+async fn claude_wait_loop_blocks_on_running_children_and_rejects_stuck_rereads() -> Result<()> {
+    journey("claude", Journey::WaitLoop).await
 }
 #[tokio::test]
 async fn claude_codex_claude_nested_lifecycle_and_inheritance() -> Result<()> {

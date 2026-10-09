@@ -396,7 +396,8 @@ impl ManagedClient {
                 };
                 let (receipt, events) = if streaming {
                     let (receipt, events) =
-                        ManagedEventStream::from_run_response(self.clone(), response).await?;
+                        ManagedEventStream::from_run_response(self.clone(), response, body.len())
+                            .await?;
                     (receipt, Some(events))
                 } else {
                     (

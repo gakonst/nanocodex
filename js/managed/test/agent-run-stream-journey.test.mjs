@@ -7,11 +7,11 @@ import { test } from 'node:test';
 // and normal Egress boundary used by the benchmark. Only external identity/model
 // dependencies are synthetic. The harness retains request/response transcripts,
 // contract assertions and source hashes under ignored output/managed-api-ttft/.
-for (const family of ['claude', 'codex']) test(`production ${family} fresh and existing-thread POST streams recover safely`, { timeout: 120_000 }, async () => {
-  const label = `stream-contract-${family}-${Date.now()}-${process.pid}`;
+for (const [family, ingress] of [['claude', 'direct'], ['codex', 'direct'], ['codex', 'managed']]) test(`production ${family} ${ingress} fresh and existing-thread POST streams recover safely`, { timeout: 120_000 }, async () => {
+  const label = `stream-contract-${family}-${ingress}-${Date.now()}-${process.pid}`;
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [
     fileURLToPath(new URL('../benchmark/curl-ttft.mjs', import.meta.url)),
-    `--family=${family}`, '--mode=stream', '--samples=1', '--process-samples=0', `--label=${label}`,
+    `--family=${family}`, `--ingress=${ingress}`, '--mode=stream', '--samples=1', '--process-samples=0', `--label=${label}`,
   ], { maxBuffer: 8 * 1024 * 1024 });
   console.log(stdout.trim());
   if (stderr.trim()) console.error(stderr.trim());

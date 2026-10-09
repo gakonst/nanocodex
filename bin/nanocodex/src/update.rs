@@ -1033,6 +1033,11 @@ async fn activate_coordinated(
             service.commit().await?;
         }
         fs::remove_file(&journal)?;
+        // Reaching here with an installed owner means it was restarted on
+        // the candidate executable. Background updates never prompt.
+        if !background && service.is_some() {
+            crate::hand_setup::request_permissions_after_update().await;
+        }
     }
     result
 }

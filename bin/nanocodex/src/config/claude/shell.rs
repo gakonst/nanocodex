@@ -60,9 +60,19 @@ impl BackgroundLimits {
     }
 }
 
+/// Session cwd carried between foreground commands. Commands snapshot it at
+/// start; completions apply in start order so a slow earlier command cannot
+/// overwrite the directory left by a later one.
+struct SessionCwd {
+    workspace: PathBuf,
+    current: PathBuf,
+    started: u64,
+    applied: u64,
+}
+
 pub(super) struct Shell {
     workspace: Arc<worktree::Workspace>,
-    cwd: Mutex<(PathBuf, PathBuf)>,
+    cwd: Mutex<SessionCwd>,
     jobs: Mutex<BTreeMap<String, Job>>,
     scheduler: Option<Arc<scheduler::SessionScheduler>>,
 }
@@ -75,7 +85,12 @@ impl Shell {
         Self {
             workspace,
             scheduler,
-            cwd: Mutex::new((current.clone(), current)),
+            cwd: Mutex::new(SessionCwd {
+                workspace: current.clone(),
+                current,
+                started: 0,
+                applied: 0,
+            }),
             jobs: Mutex::new(BTreeMap::new()),
         }
     }
@@ -161,19 +176,25 @@ impl Shell {
         ClaudeBash::new(Validate)
             .execute("Bash", input.clone())
             .await?;
-        // Serialize foreground turns so their observed cwd is applied in order.
-        // A background job snapshots cwd but never changes the next command's cwd.
+        // Hold the cwd lock only to snapshot the start directory. Holding it for
+        // the whole command serialized concurrent Code Mode calls behind the
+        // slowest one. A background job snapshots cwd but never changes it.
         let (workspace, workspace_lease) = self.workspace.pin_current();
-        let mut cwd = self.cwd.lock().await;
-        if cwd.0 != workspace {
-            *cwd = (workspace.clone(), workspace.clone());
-        }
-        let start = cwd
-            .1
-            .canonicalize()
-            .ok()
-            .filter(|p| p.starts_with(&workspace) && p.is_dir())
-            .unwrap_or_else(|| workspace.clone());
+        let (start, sequence) = {
+            let mut cwd = self.cwd.lock().await;
+            if cwd.workspace != workspace {
+                cwd.workspace = workspace.clone();
+                cwd.current = workspace.clone();
+            }
+            cwd.started += 1;
+            let start = cwd
+                .current
+                .canonicalize()
+                .ok()
+                .filter(|p| p.starts_with(&workspace) && p.is_dir())
+                .unwrap_or_else(|| workspace.clone());
+            (start, cwd.started)
+        };
         let runtime = Arc::new(WorkspaceToolRuntime::new(start.clone()));
         let retained = RetainedBash {
             runtime: runtime.clone(),
@@ -244,10 +265,14 @@ impl Shell {
                         .ok()
                 })
                 .filter(|p| p.starts_with(&workspace) && p.is_dir());
-            cwd.1 = observed.unwrap_or_else(|| workspace.clone());
+            let mut cwd = self.cwd.lock().await;
+            if cwd.workspace == workspace && sequence > cwd.applied {
+                cwd.current = observed.unwrap_or_else(|| workspace.clone());
+                cwd.applied = sequence;
+            }
+            drop(cwd);
             return output.map(text_reply);
         }
-        drop(cwd);
         let shell = ClaudeBash::new(BackgroundBash {
             retained,
             timeout_ms: background_ms,

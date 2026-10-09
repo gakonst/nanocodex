@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -1607,6 +1607,7 @@ test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, a
   const storage = new MemoryStorage();
   const native = new Set();
   const requests = new Map();
+  const observations = [];
   let choices = 0, admitted = true, responseId = 0;
   class NativeSocket extends EventTarget {
     readyState = 1;
@@ -1643,6 +1644,7 @@ test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, a
     },
     [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
       preserveRootTransport: true, subagentsEnabled: true,
+      onSocketEvent: event => observations.push(event),
       subagentRouting: {
         async resolve() { choices++; return { native: true, routeId: `native-${choices}` }; },
         bind(request) { if (!admitted) throw new Error("spawning authorization lost"); native.add(request.sessionId); },
@@ -1667,6 +1669,11 @@ test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, a
         outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } });
       assert.deepEqual((await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
         { state: "completed", output: { ok: true } });
+      const childSession = [...requests.keys()].at(-1);
+      const finished = observations.filter(event => event.event === "request.finished" && event.runtime_session_id === childSession);
+      assert.equal(finished.length, 1, "the child inference finishes under its own runtime session; the following send is its result acknowledgement");
+      assert.ok(finished.every(event => event.agent_id === child.agent_id && event.outcome === "completed"));
+      assert.ok(finished.every(event => event.request_id === storage.sessionId && event.runtime_turn_id));
       const seen = [...requests.values()].at(-1);
       assert.ok(seen.length >= 2);
       for (const request of seen) {
@@ -1683,7 +1690,12 @@ test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, a
     await assert.rejects(Subagents.spawn(agent, { role: "revoked-native", task: "Must fail before inference.",
       outputSchema: { type: "object" } }), /binding failed/);
     assert.equal(native.size, created);
-  } finally { await agent.session.shutdown(); }
+  } finally {
+    await agent.session.shutdown();
+    const output = new URL("../../../output/integration/child-socket-attribution/", import.meta.url);
+    await mkdir(output, { recursive: true });
+    await writeFile(new URL("trace.json", output), JSON.stringify(observations, null, 2));
+  }
 });
 
 test("manual root HTTP fallback appends thinking updates with a stable request prefix", { timeout: 30_000 }, async () => {

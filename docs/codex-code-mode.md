@@ -178,6 +178,13 @@ bridge forwards it to `nanocodexHost.preemptCodeTurn(sessionId)`. JS hosts also
 expose `preemptCode(sessionId, callId)` for an exact foreground observation.
 These controls are host APIs, not new model tools or cancellation authority.
 
+A turn can complete while one of its cells is still running (the model answered
+after a yield without calling `wait`). The Codex harness then relays that
+cell's nested tool starts and completions as they happen, so every started call
+still reaches a terminal `tool.result`, possibly after `run.completed`. A later
+`wait` takes over the cell and does not repeat updates the relay delivered.
+The Claude harness instead drains its cells at every turn end.
+
 `wait(terminate: true)`, cancellation, turn teardown and host shutdown remain
 separate terminal controls. Preemption never interrupts an evaluator or an
 external tool. In particular, an uncertain write is not rolled back by a yield

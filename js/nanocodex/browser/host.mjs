@@ -209,12 +209,12 @@ export function createBrowserHost(options = {}) {
       ownership = openOwned(() => createWebSocket(endpoint, sessionId, request));
     }
     let connection;
-    const observation = socketObservations?.connect(sessionId, () => ({
+    const observation = socketObservations?.connect(threadId, () => ({
       queued_message_count: connection?.queue.length ?? 0,
       socket_delivered_message_count: connection?.timing?.metrics.delivered_message_count ?? 0,
       socket_queue_residence_max_ms: connection?.timing?.metrics.queue_residence_max_ms ?? 0,
       buffered_send_bytes: connection?.socket.bufferedAmount ?? 0,
-    }));
+    }), sessionId);
     let normalized;
     try { normalized = normalizeWebSocketConnection(await ownership.promise); }
     catch (error) { observation?.error(); observation?.close(undefined, false); throw error; }
@@ -704,7 +704,7 @@ export function createBrowserHost(options = {}) {
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
     releaseSession: (sessionId, options) => { effectIdentity.release(sessionId); socketObservations?.release(sessionId); return code.releaseSession(sessionId, options); },
-    emitEvent: (event, ...args) => { code.observeEvent(event); effectIdentity.observe(event); socketObservations?.runtime(event); return onEvent(event, ...args); },
+    emitEvent: (event, ...args) => { code.observeEvent(event); effectIdentity.observe(event); socketObservations?.runtime(event, args[1]); return onEvent(event, ...args); },
     reset: () => { effectIdentity.reset(); return code.reset(); },
     dispose,
   });

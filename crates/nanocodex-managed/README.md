@@ -130,3 +130,13 @@ server admission. The selected-model response seeds the driver before it adopts
 the first prompt. The server retains the original request fingerprint and
 resolved settings, so replay after catalog failure or default changes reuses the
 same admission; changing policy, pin, overrides or input with that key conflicts.
+
+Validate large initial streaming receipts with
+`pnpm --filter nanocodex-managed-service test:large-run-receipt`. The journey
+builds the Rust SDK and runs public curl requests against local production
+Workers, with synthetic identity/model dependencies and fragmented HTTP
+delivery. It checks same-key recovery, subsequent work, and bounded rejection
+of unexpected receipt growth; evidence is retained under
+`output/managed-api-ttft/large-receipt-*`. Initial receipts permit the serialized
+request size plus 1 MiB of metadata, independently of HTTP chunk boundaries.
+Replayed receipts decode retained terminal events as well as fresh admissions.
