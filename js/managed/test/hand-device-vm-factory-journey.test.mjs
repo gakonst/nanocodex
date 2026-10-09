@@ -105,7 +105,11 @@ test("a device-enrolled Hand's VM factory authenticates with a refreshed credent
     assert.equal(firstStatus, 200, "the file credential authenticates as the device");
     assert.equal(await ice(server.apiKey) === 200 && false, false);
     // The account key never reaches the factory child: inspect its live environment.
-    const childEnvironment = await eventually("factory child environment observed", () => {
+    // The factory child is the real VM host: without usable KVM it exits at
+    // once. Keep its redacted log as evidence so that failure is explicit.
+    const keepFactoryLog = () => { const log = join(directory, "vm.log");
+      if (existsSync(log)) writeFileSync(join(evidence, "factory-vm.log"), scrub(readFileSync(log, "utf8"))); };
+    const childEnvironment = await eventually("factory child environment observed (see factory-vm.log; the VM host needs read/write /dev/kvm)", () => {
       for (const pid of readdirSync("/proc").filter(name => /^\d+$/.test(name))) {
         let cmdline = ""; try { cmdline = readFileSync(join("/proc", pid, "cmdline"), "utf8"); } catch { continue; }
         if (!cmdline.includes("\0host\0") || !cmdline.includes(directory)) continue;
@@ -116,7 +120,7 @@ test("a device-enrolled Hand's VM factory authenticates with a refreshed credent
           file: environ.split("\0").find(entry => entry.startsWith("NANOCODEX_VM_HOST_CREDENTIAL_FILE="))?.split("=")[1] } };
       }
       return { ok: false };
-    }, 45_000);
+    }, 45_000).catch(error => { keepFactoryLog(); throw error; });
     assert.equal(childEnvironment.account_key, false, "factory child environment has no account API key");
     assert.ok(!childEnvironment.names.includes("NANOCODEX_API_KEY") && !childEnvironment.names.includes("NC_API_KEY"), JSON.stringify(childEnvironment));
     assert.equal(childEnvironment.credential_value, false, "the credential value is never in the child environment");

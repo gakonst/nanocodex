@@ -200,6 +200,13 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
+          # The factory child is the real Linux VM host, which refuses to start
+          # without read/write KVM. Hosted runners expose /dev/kvm root-only.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-nanocodex-kvm.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
           NANOCODEX_BIN="$GITHUB_WORKSPACE/target/debug/nanocodex" \
           NANOCODEX_HAND_EXECUTABLE="$GITHUB_WORKSPACE/target/debug/nanocodex-hand" \
             pnpm --filter nanocodex-managed-service run test:hand-device-vm-factory
