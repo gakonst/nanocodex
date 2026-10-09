@@ -52,6 +52,26 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
     presentation.footer(format!("{emitted} {noun} · {}", format_bytes(size)))
 }
 
+/// First non-empty emitted text line of a Code Mode cell, without its status envelope.
+pub(super) fn first_emitted_line(tool: &ToolEntry) -> Option<String> {
+    let result = tool.code_display_result.as_ref().or(tool.result.as_ref())?;
+    let items = match result {
+        Value::Array(items) => items.iter().collect::<Vec<_>>(),
+        other => vec![other],
+    };
+    items.into_iter().find_map(|item| {
+        let text = item
+            .as_str()
+            .or_else(|| item.get("text").and_then(Value::as_str))?;
+        code_mode_output_text(text)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(super::super::markdown::sanitize)
+    })
+}
+
+
 fn emitted_count(result: &Value) -> usize {
     match result {
         Value::Array(items) => items.iter().filter(|item| emitted_item(item)).count(),

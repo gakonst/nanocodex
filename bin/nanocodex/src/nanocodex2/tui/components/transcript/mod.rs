@@ -1543,6 +1543,9 @@ impl LayoutCache {
             };
             let mut counts = [0_usize; 4];
             let mut computer_calls = Vec::new();
+            let mut calls = Vec::new();
+            let mut wrapper_error = None;
+            let mut note = None;
             let mut only_computer = true;
             let mut wrapper_duration = 0_u64;
             let mut wrapper_running = false;
@@ -1568,6 +1571,12 @@ impl LayoutCache {
                     wrapper_running |= call.state == ToolState::Running;
                     wrapper_failed |= call.state == ToolState::Failed;
                     wrapper_waiting |= call.state == ToolState::Yielded;
+                    if call.state == ToolState::Failed && wrapper_error.is_none() {
+                        wrapper_error = tool::failure_line(call);
+                    }
+                    if note.is_none() {
+                        note = tool::first_emitted_line(call);
+                    }
                     continue;
                 }
                 if member.hidden {
@@ -1578,6 +1587,7 @@ impl LayoutCache {
                 } else {
                     only_computer = false;
                 }
+                calls.push((call, self.live_tool_durations.get(&member.id).copied()));
                 counts[match call.state {
                     ToolState::Running => 0,
                     ToolState::Succeeded => 1,
@@ -1623,6 +1633,7 @@ impl LayoutCache {
             } else {
                 crate::nanocodex2::tui::transcript::ToolState::Succeeded
             };
+            let state = call.state;
             if self.entries.get(&entry.id).is_some_and(|cached| {
                 cached.activity
                     && cached.revision == summary.revision
@@ -1632,16 +1643,34 @@ impl LayoutCache {
             }) {
                 return &self.entries[&entry.id].lines;
             }
-            let mut cached = CachedEntry::new(
-                &summary,
-                depth,
-                None,
-                width,
-                theme,
-                false,
-                &self.workspace,
-                &mut self.images,
-            );
+            let mut cached = if only_computer && !computer_calls.is_empty() {
+                CachedEntry::new(
+                    &summary,
+                    depth,
+                    None,
+                    width,
+                    theme,
+                    false,
+                    &self.workspace,
+                    &mut self.images,
+                )
+            } else {
+                let group = tool::ToolGroup {
+                    calls,
+                    state,
+                    duration_ns: duration,
+                    wrapper_running,
+                    wrapper_waiting,
+                    wrapper_error,
+                    note,
+                };
+                CachedEntry::from_layout(
+                    render_tool_group(&summary, depth, &group, width, theme),
+                    summary.revision,
+                    width,
+                    depth,
+                )
+            };
             cached.activity = true;
             cached.live_duration_ns = Some(duration);
             self.entries.insert(entry.id, cached);
@@ -1803,6 +1832,25 @@ impl LayoutCache {
 }
 
 impl CachedEntry {
+    fn from_layout(layout: markdown::Layout, revision: u64, width: u16, depth: u16) -> Self {
+        Self {
+            activity: false,
+            revision,
+            width,
+            expanded: false,
+            live_duration_ns: None,
+            tool_summary_lines: 0,
+            depth,
+            lines: layout.lines,
+            images: layout.images,
+            links: layout.links,
+            selections: layout.selections,
+            envelopes: layout.envelopes,
+            selection_source: layout.selection_source,
+            image_state: layout.image_state,
+        }
+    }
+
     fn new(
         entry: &TranscriptEntry,
         depth: u16,
@@ -2212,6 +2260,27 @@ fn render_entry(
         layout.selections.push(Vec::new());
     }
     layout
+}
+
+// A folded batch: the classic CLI's "Tools" header and per-call rows.
+fn render_tool_group(
+    entry: &TranscriptEntry,
+    depth: u16,
+    group: &tool::ToolGroup<'_>,
+    width: u16,
+    theme: &Theme,
+) -> markdown::Layout {
+    let indent = nested_tool_indent(depth, width);
+    let tool_width = width
+        .saturating_sub(indent)
+        .saturating_sub(tool_agent_label_width(entry));
+    let mut lines = tool::group_lines(group, tool_width, theme);
+    label_tool_agent(entry, &mut lines, theme);
+    indent_nested_tool(indent, &mut lines, theme, false, entry.trailing_spacer);
+    if entry.trailing_spacer {
+        lines.push(Line::default());
+    }
+    layout_without_links(lines)
 }
 
 fn render_live_tool_summary(

@@ -6957,3 +6957,55 @@ async fn terminal_inline_review_unavailable_context_preserves_findings() {
         copy_journey_expect(&mut fixture, "/copy", "\r", &markdown).await;
     }
 }
+
+#[tokio::test]
+async fn terminal_tool_summary_capture_probe() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    let comment = |item: &str, text: &str| json!({"model_call_index": 1, "item_id": item, "phase": "commentary", "text": text});
+    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-one", "I'll look around the workspace first."));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell1", "tool": "exec", "arguments": "const [files, readme] = await Promise.all([tools.Glob({pattern: \"*.md\"}), tools.Read({file_path: \"/ws/README.md\"})]);\nconst ls = await tools.Bash({command: \"ls -la\"});\ntext(\"README_FIRST_LINE\");"}));
+    for (index, tool, arguments, result, duration) in [
+        (0, "Glob", json!({"pattern": "*.md"}), json!({"filenames": ["README.md", "notes.md"], "numFiles": 2}), 4_000_000_u64),
+        (1, "Read", json!({"file_path": "/ws/README.md"}), json!({"content": "1\t# Demo project\n2\tTODO: write docs"}), 2_000_000),
+        (2, "Bash", json!({"command": "ls -la", "description": "List workspace"}), json!({"stdout": "total 8\nREADME.md\nnotes.md", "exit_code": 0}), 10_000_000),
+    ] {
+        let id = format!("cell1/code-{index}");
+        fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": id, "tool": tool, "arguments": arguments}));
+        fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": id, "tool": tool, "status": "completed", "duration_ns": duration, "result": result}));
+    }
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell1", "tool": "exec", "status": "completed", "duration_ns": 25_000_000, "result": [{"type": "input_text", "text": "README_FIRST_LINE # Demo project"}]}));
+    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-two", "Now checking for TODOs and the missing file."));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2", "tool": "exec", "arguments": "await tools.Grep({pattern: \"TODO\"}); text(await tools.Bash({command: \"cat MISSING_FILE.txt\"}));"}));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2/code-0", "tool": "Grep", "arguments": {"pattern": "TODO", "path": "/ws"}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2/code-0", "tool": "Grep", "status": "completed", "duration_ns": 3_000_000, "result": {"filenames": ["README.md"], "numFiles": 1}}));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell2/code-1", "tool": "Bash", "arguments": {"command": "cat MISSING_FILE.txt", "description": "Read missing file"}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2/code-1", "tool": "Bash", "status": "failed", "duration_ns": 11_000_000, "result": {"stderr": "cat: MISSING_FILE.txt: No such file or directory", "exit_code": 1}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell2", "tool": "exec", "status": "completed", "duration_ns": 24_000_000, "result": [{"type": "input_text", "text": "exit_code: 1"}]}));
+    fixture.nested(REMOTE_TURN, "assistant.message", comment("c-three", "Delegating a review to a subagent."));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3", "tool": "exec", "arguments": "const a = await tools.spawn_agent({role: \"Reviewer\", task: \"Review README\"}); await tools.wait_agent({agent_ids: [a.agent_id]});"}));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3/code-0", "tool": "spawn_agent", "arguments": {"role": "Reviewer", "task": "Review README"}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3/code-0", "tool": "spawn_agent", "status": "completed", "duration_ns": 5_000_000, "result": {"agent_id": 7, "status": "running"}}));
+    fixture.nested(REMOTE_TURN, "tool.call", json!({"call_id": "cell3/code-1", "tool": "wait_agent", "arguments": {"agent_ids": [7]}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3/code-1", "tool": "wait_agent", "status": "completed", "duration_ns": 1_500_000_000_u64, "result": {"agents": [{"agent_id": 7, "status": "completed", "output": "README is fine"}]}}));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({"call_id": "cell3", "tool": "exec", "status": "completed", "duration_ns": 1_510_000_000_u64, "result": [{"type": "input_text", "text": "review done"}]}));
+    fixture.nested(REMOTE_TURN, "assistant.message", json!({"model_call_index": 2, "item_id": "final", "phase": "final_answer", "text": "FINAL_ANSWER: the workspace has a README with one TODO."}));
+    fixture.complete(REMOTE_TURN);
+    fixture.terminal.wait_text("FINAL_ANSWER").await;
+    fixture.terminal.wait_text("Enter send").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let dump = |label: &str, fixture: &Fixture| {
+        let contents = fixture.terminal.screen.lock().unwrap().screen().contents();
+        eprintln!("=== {label}\n{contents}");
+        if let Some(dir) = std::env::var_os("NANOCODEX_TUI_EVIDENCE") {
+            std::fs::write(Path::new(&dir).join(format!("{label}.screen.txt")), contents).unwrap();
+        }
+    };
+    dump("default", &fixture);
+    fixture.terminal.input("\x0f");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    dump("ctrl-o-1", &fixture);
+    fixture.terminal.input("\x0f");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    dump("ctrl-o-2", &fixture);
+}
+
