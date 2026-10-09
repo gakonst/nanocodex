@@ -23,7 +23,6 @@ openai = [
     "rollout",
     "dep:chrono",
     "dep:iana-time-zone",
-    "dep:nanocodex-home",
     "dep:nanocodex-oai-tools",
     "nanocodex-oai-tools/code-mode",
     "dep:sha2",
@@ -39,6 +38,7 @@ openai = [
 rollout = ["dep:chrono", "dep:tracing", "dep:uuid"]
 
 [dependencies]
+nanocodex-home.workspace = true
 chrono = { workspace = true, optional = true }
 futures-util.workspace = true
 iana-time-zone = { workspace = true, optional = true }
@@ -55,7 +55,6 @@ web-time = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocodex-home = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]

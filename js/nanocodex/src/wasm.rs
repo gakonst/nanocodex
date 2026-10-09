@@ -38,7 +38,7 @@ use nanocodex::{
     },
 };
 use nanocodex_agent::{
-    Capabilities, ForkRequest, HarnessFamily, HarnessModel, Mutability, Origin, Persistence,
+    Capabilities, ForkRequest, HarnessFamily, HarnessModel, Origin, Persistence,
     ServiceTier, SessionCheckpoint, SessionInfo,
     backend::{AgentFactory, BackendFuture},
 };
@@ -2470,62 +2470,42 @@ fn encode_session_info(session: &SessionInfo) -> Result<String, JsValue> {
     .map_err(js_error)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
-struct WasmCapabilities {
-    checkpoint: bool,
-    fork: bool,
-    fork_at: bool,
-    side_conversation: bool,
-    spawn: bool,
-    steering: bool,
-    identified_steering: bool,
-    compaction: bool,
-    developer_messages: bool,
-    context: bool,
-    model: Mutability,
-    thinking: Mutability,
-    service_tier: Mutability,
+/// Encodes [`Capabilities`] as a camelCase JSON object.
+///
+/// Every field of the Rust contract crosses to JavaScript with its name
+/// converted to camelCase, so new capability flags need no change here.
+fn encode_capabilities(capabilities: Capabilities) -> Result<String, JsValue> {
+    let serde_json::Value::Object(fields) = serde_json::to_value(capabilities).map_err(js_error)?
+    else {
+        return Err(js_error("capabilities must serialize as an object"));
+    };
+    let fields: serde_json::Map<String, serde_json::Value> = fields
+        .into_iter()
+        .map(|(name, value)| (snake_to_camel(&name), value))
+        .collect();
+    serde_json::to_string(&fields).map_err(js_error)
 }
 
-fn encode_capabilities(capabilities: Capabilities) -> Result<String, JsValue> {
-    let Capabilities {
-        checkpoint,
-        fork,
-        fork_at,
-        side_conversation,
-        spawn,
-        steering,
-        identified_steering,
-        compaction,
-        developer_messages,
-        context,
-        model,
-        thinking,
-        service_tier,
-    } = capabilities;
-    serde_json::to_string(&WasmCapabilities {
-        checkpoint,
-        fork,
-        fork_at,
-        side_conversation,
-        spawn,
-        steering,
-        identified_steering,
-        compaction,
-        developer_messages,
-        context,
-        model,
-        thinking,
-        service_tier,
-    })
-    .map_err(js_error)
+fn snake_to_camel(name: &str) -> String {
+    let mut camel = String::with_capacity(name.len());
+    let mut upper = false;
+    for character in name.chars() {
+        if character == '_' {
+            upper = true;
+        } else if upper {
+            camel.extend(character.to_uppercase());
+            upper = false;
+        } else {
+            camel.push(character);
+        }
+    }
+    camel
 }
 
 fn encode_persistence(persistence: &Persistence) -> Result<String, JsValue> {
     serde_json::to_string(&serde_json::json!({
         "durableStateId": persistence.durable_state_id,
+        "serverSessionId": persistence.server_session_id,
         "resumable": persistence.resumable(),
     }))
     .map_err(js_error)
@@ -4460,7 +4440,7 @@ async fn build_codex(
     builder = builder.host_context(host_context);
     if let Some(checkpoint) = checkpoint {
         builder = builder
-            .restore_runtime(checkpoint)
+            .resume(checkpoint)
             .map_err(js_agent_error)?;
     }
     if config.before_compaction {
@@ -4471,6 +4451,11 @@ async fn build_codex(
     }
     if let Some(instructions) = config.additional_instructions {
         builder = builder.additional_instructions(instructions);
+    }
+    // Resuming reopens the checkpointed session; an explicit, different
+    // session ID below makes it a new root continuing that conversation.
+    if let Some(resume) = config.resume {
+        builder = builder.resume(resume).map_err(js_agent_error)?;
     }
     if let Some(session_id) = config.session_id {
         builder = builder.session_id(session_id.parse::<SessionId>().map_err(js_error)?);
@@ -4485,9 +4470,6 @@ async fn build_codex(
             environment = environment.project_instructions(project_instructions);
         }
         builder = builder.execution_environment(environment);
-    }
-    if let Some(resume) = config.resume {
-        builder = builder.resume(resume).map_err(js_agent_error)?;
     }
     if let (Some(route_id), Some(state_id)) = (config.durability_host_id, config.durability_id) {
         let store = JavaScriptDurabilityStore { route_id };

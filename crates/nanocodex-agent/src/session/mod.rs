@@ -113,6 +113,10 @@ pub(crate) struct CommittedSession {
     // Runtime preparation may normalize context IDs, images, and request prefix.
     // Until another boundary is committed, snapshot the retained boundary exactly.
     retained_snapshot: Option<SessionSnapshot>,
+    // Session settings recorded with every snapshot of this boundary, so a
+    // stored session resumes with its actual policy rather than a default.
+    thinking: crate::Thinking,
+    service_tier: crate::ServiceTier,
 }
 
 #[cfg(feature = "openai")]
@@ -120,6 +124,8 @@ impl CommittedSession {
     pub(crate) const fn new(
         lineage_id: Arc<str>,
         selected_model: Model,
+        thinking: crate::Thinking,
+        service_tier: crate::ServiceTier,
         model: ModelCheckpoint,
     ) -> Self {
         Self {
@@ -127,6 +133,8 @@ impl CommittedSession {
             selected_model,
             model,
             retained_snapshot: None,
+            thinking,
+            service_tier,
         }
     }
 
@@ -164,7 +172,10 @@ impl CommittedSession {
 
     pub(crate) fn snapshot(&self) -> SessionSnapshot {
         if let Some(snapshot) = &self.retained_snapshot {
-            return snapshot.clone();
+            let mut snapshot = snapshot.clone();
+            snapshot.thinking = Some(self.thinking);
+            snapshot.service_tier = Some(self.service_tier);
+            return snapshot;
         }
         SessionSnapshot {
             version: SESSION_SNAPSHOT_VERSION,
@@ -180,6 +191,8 @@ impl CommittedSession {
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
             reasoning: self.model.reasoning().clone(),
+            thinking: Some(self.thinking),
+            service_tier: Some(self.service_tier),
         }
     }
 }
@@ -225,6 +238,13 @@ pub struct SessionSnapshot {
     context_usage: Option<ContextUsage>,
     #[serde(default)]
     reasoning: crate::reasoning::ReasoningState,
+    /// Reasoning effort selected for the session at this boundary. Snapshots
+    /// written before it was recorded omit it; see [`Self::thinking`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<crate::Thinking>,
+    /// Processing tier selected for the session at this boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_tier: Option<crate::ServiceTier>,
 }
 
 /// Session metadata separated from independently persisted conversation items.
@@ -308,7 +328,26 @@ impl SessionSnapshot {
             context_snapshot,
             context_usage: None,
             reasoning,
+            thinking: None,
+            service_tier: None,
         })
+    }
+
+    /// Reasoning effort the session had selected at this boundary.
+    ///
+    /// `None` only for snapshots written before the setting was recorded
+    /// (and for rollout imports, which do not carry it); their owner falls
+    /// back to the model's default.
+    #[must_use]
+    pub const fn thinking(&self) -> Option<crate::Thinking> {
+        self.thinking
+    }
+
+    /// Processing tier the session had selected at this boundary;
+    /// `None` for older snapshots, which fall back to the standard tier.
+    #[must_use]
+    pub const fn service_tier(&self) -> Option<crate::ServiceTier> {
+        self.service_tier
     }
 
     /// Snapshot format version understood by this Nanocodex release.

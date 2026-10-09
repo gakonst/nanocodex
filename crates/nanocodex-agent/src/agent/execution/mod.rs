@@ -114,15 +114,17 @@ pub trait ExecutionPolicy: Send + Sync {
         None
     }
 
-    /// Supplies the policy that persists a fork or side conversation of this
-    /// session as its own resumable state. The default `None` rejects forks of
-    /// policy-owned sessions with
-    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`]. Called before the
-    /// child starts; the child policy is owned by that child alone.
+    /// Supplies the policy that persists a fork, side conversation, subagent
+    /// or restored subagent of this session as its own resumable state. The
+    /// default `None` rejects every child of a policy-owned session with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`] instead of
+    /// starting an unsaved one. Called before the child starts; the child
+    /// policy is owned by that child alone, and a restored subagent receives
+    /// the policy for its existing session ID.
     ///
     /// # Errors
     ///
-    /// Returns an error to reject the fork.
+    /// Returns an error to reject the child.
     fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
         Ok(None)
     }
@@ -349,15 +351,17 @@ pub trait ExecutionPolicy: Send + Sync {
         None
     }
 
-    /// Supplies the policy that persists a fork or side conversation of this
-    /// session as its own resumable state. The default `None` rejects forks of
-    /// policy-owned sessions with
-    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`]. Called before the
-    /// child starts; the child policy is owned by that child alone.
+    /// Supplies the policy that persists a fork, side conversation, subagent
+    /// or restored subagent of this session as its own resumable state. The
+    /// default `None` rejects every child of a policy-owned session with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`] instead of
+    /// starting an unsaved one. Called before the child starts; the child
+    /// policy is owned by that child alone, and a restored subagent receives
+    /// the policy for its existing session ID.
     ///
     /// # Errors
     ///
-    /// Returns an error to reject the fork.
+    /// Returns an error to reject the child.
     fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
         Ok(None)
     }
@@ -593,22 +597,22 @@ impl ExecutionConfig {
         self.policy = Some(ExecutionPolicyRecipe::PerAgent(factory));
     }
 
-    // Root execution policies never propagate into children: a fork of a
-    // policy-owned session needs its own policy from [`ExecutionPolicy::branch`].
+    // Root execution policies never propagate into children: every fork, side
+    // conversation, subagent and restored subagent of a policy-owned session
+    // runs under its own policy from [`ExecutionPolicy::branch`], and records
+    // its own rollout beside the parent's.
     pub(crate) fn for_new_thread(
         &self,
         operation: &'static str,
         branch_policy: Option<Arc<dyn ExecutionPolicy>>,
     ) -> Result<Self> {
-        let fork = operation == "fork";
-        if self.policy.is_some() && fork && branch_policy.is_none() {
+        // A durable parent never silently creates an unsaved child.
+        if self.policy.is_some() && branch_policy.is_none() {
             return Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation });
         }
         Ok(Self {
-            platform: self.platform.for_new_thread(fork),
-            policy: branch_policy
-                .filter(|_| fork)
-                .map(ExecutionPolicyRecipe::Shared),
+            platform: self.platform.for_new_thread(),
+            policy: branch_policy.map(ExecutionPolicyRecipe::Shared),
         })
     }
 

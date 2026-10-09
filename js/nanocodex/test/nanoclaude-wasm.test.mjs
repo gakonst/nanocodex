@@ -344,7 +344,7 @@ test("actual WASM cancelOnAdmission never issues a queued successor Messages req
   } finally { await shutdown(agent); }
 });
 
-test("actual WASM Claude live route starts idle turns, steers active turns, and sends native media blocks", { timeout: 15_000 }, async t => {
+test("actual WASM Claude prompt starts a turn, steer joins it mid-tool, and sends native media blocks", { timeout: 15_000 }, async t => {
   const Claude = await sdk();
   const started = Promise.withResolvers();
   const release = Promise.withResolvers();
@@ -355,13 +355,12 @@ test("actual WASM Claude live route starts idle turns, steers active turns, and 
     tools: [{ name: "hold", description: "Held synthetic tool", handler: async () => { started.resolve(); await release.promise; return "held"; } }],
   });
   try {
-    // Realtime voice frontends deliver live text through route: idle starts a turn.
-    const turn = await agent.turn.route({ input: "book the flight" });
-    assert.ok(turn, "idle live input starts a turn");
+    // The shared turn actions: prompt starts a turn, steer joins it mid-tool.
+    const turn = agent.turn.prompt({ input: "book the flight" });
     const result = turn.result();
     await started.promise;
-    // An active turn absorbs the next live input without a concurrent model call.
-    assert.equal(await agent.turn.route({ input: "and ask for a window seat" }), undefined);
+    // The active turn absorbs steered input without a concurrent model call.
+    await turn.steer({ input: "and ask for a window seat" });
     release.resolve();
     assert.equal((await result).finalMessage, "ROUTED_DONE");
     assert.equal(requests.length, 2);

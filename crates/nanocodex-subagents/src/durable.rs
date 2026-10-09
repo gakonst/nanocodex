@@ -743,12 +743,12 @@ pub(super) fn journaled_lineage(
         depth += 1;
         current = parent_of(parent);
     }
-    Lineage {
-        root_session_id: root_session_id.to_owned(),
-        parent_session_id: Some(parent_session_id),
-        origin: nanocodex_agent::Origin::Subagent,
-        depth: u32::try_from(depth).unwrap_or(u32::MAX),
-    }
+    Lineage::new(
+        root_session_id,
+        Some(parent_session_id),
+        nanocodex_agent::Origin::Subagent,
+        u32::try_from(depth).unwrap_or(u32::MAX),
+    )
 }
 
 /// Consecutive restart resumes allowed before a turn must settle. Runtime loss

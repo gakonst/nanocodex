@@ -139,6 +139,17 @@ impl RolloutConfig {
         Self::new(self.codex_home.clone())
     }
 
+    /// Reopens the uncompressed rollout already recorded for `thread_id`
+    /// beneath this Codex home, so a restored child keeps appending to it.
+    pub(crate) fn reopening(&self, thread_id: &str) -> io::Result<Option<Self>> {
+        if self.resume_path.is_some() {
+            return Ok(None);
+        }
+        Ok(load::find_rollout_path(&self.codex_home, thread_id)?
+            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .map(|path| Self::new(self.codex_home.clone()).resumed(path)))
+    }
+
     pub(crate) fn resumed(mut self, rollout_path: PathBuf) -> Self {
         self.resume_path = Some(rollout_path);
         self

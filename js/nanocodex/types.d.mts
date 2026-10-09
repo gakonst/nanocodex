@@ -50,6 +50,8 @@ export type Mutability = "fixed" | "before_first_prompt" | "anytime";
  */
 export type SessionCapabilities = Readonly<{
   checkpoint: boolean;
+  /** Checkpoints can be resumed in a new runtime, keeping the session identity. */
+  resume: boolean;
   fork: boolean;
   /** Forking from a completed TurnResult or a SessionCheckpoint. */
   forkAt: boolean;
@@ -63,12 +65,16 @@ export type SessionCapabilities = Readonly<{
   model: Mutability;
   thinking: Mutability;
   serviceTier: Mutability;
+  /** Whether the "ultrafast" service tier is accepted, subject to serviceTier. */
+  ultrafastServiceTier: boolean;
 }>;
 
 /** Where a session is persisted. */
 export type SessionPersistence = Readonly<{
   /** Durable store state that is the session's source of truth, when any. */
   durableStateId: string | null;
+  /** Server-side session that durably owns the conversation (managed hosts). */
+  serverSessionId: string | null;
   /** Whether another process can resume this session. */
   resumable: boolean;
 }>;
@@ -147,7 +153,13 @@ export type AgentOptions = {
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
   workspace?: string | undefined;
-  /** Starts a new session continuing this checkpoint's committed conversation. */
+  /**
+   * Reopens this checkpointed session in a new runtime, keeping its session
+   * identity, lineage, model, thinking level and committed conversation.
+   * Passing a different `sessionId` instead starts a new root session that
+   * continues the checkpoint's conversation. Use `session.fork` to branch a
+   * live session.
+   */
   resume?: SessionCheckpoint | undefined;
 };
 

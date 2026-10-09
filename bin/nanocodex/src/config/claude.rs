@@ -606,10 +606,12 @@ pub(super) fn register_claude_recipe(
         let mcp_handle = mcp_handle.clone();
         async move {
             let workspace = workspace.map_err(nanocodex::NanocodexError::InvalidRequest)?;
-            let session_id = request.checkpoint.as_ref().map_or_else(
-                || SessionId::new().to_string(),
-                |checkpoint| checkpoint.session_id().to_owned(),
-            );
+            // Reopened sessions keep their checkpointed or durable identity.
+            let session_id = match (&request.checkpoint, &request.durable_state) {
+                (Some(checkpoint), _) => checkpoint.session_id().to_owned(),
+                (None, Some(state)) => state.state_id().to_owned(),
+                (None, None) => SessionId::new().to_string(),
+            };
             if let Some(parent) = &request.parent {
                 workspaces.initialize(parent.session_id(), &session_id)
             } else {
@@ -665,7 +667,10 @@ pub(super) fn register_claude_recipe(
             .subagent_type("general-purpose")
             .host_context(request.host_context);
             if let Some(checkpoint) = request.checkpoint {
-                builder = builder.restore_runtime(checkpoint)?;
+                builder = builder.resume(checkpoint)?;
+            }
+            if let Some(state) = request.durable_state {
+                builder = nanocodex::DurableAgentExt::durability(builder, state).await?;
             }
             builder.build()
         }

@@ -231,6 +231,73 @@ async fn clean_batch_spawn_preserves_requested_order() -> Result<()> {
     Ok(())
 }
 
+/// A batch spawn is all or nothing: when one child cannot start, the batch
+/// fails, no child is reported, the children it created stop, and the parent
+/// can still spawn.
+#[tokio::test]
+async fn clean_batch_spawn_is_all_or_nothing() -> Result<()> {
+    let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (handles, mut received_handles) = tokio::sync::mpsc::unbounded_channel::<AgentHandle>();
+    let openai = OpenAi::builder("test-key")
+        .websocket_url("ws://127.0.0.1:1")
+        .build()?;
+    let (root, root_events) = Nanocodex::builder(openai)
+        .tools_factory({
+            let materialized = Arc::clone(&materialized);
+            move |handle| {
+                // The root and the batch's first child bind; the second cannot.
+                if materialized.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                    return Err(nanocodex_oai_tools::ToolsBuildError::HostInitialization(
+                        "synthetic host capability unavailable".into(),
+                    ));
+                }
+                drop(handles.send(handle));
+                Tools::builder().without_defaults().build()
+            }
+        })
+        .build()?;
+    let root_handle = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("root tool factory did not receive an agent handle"))?;
+
+    let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed_sessions = Arc::clone(&observed);
+    let error = root_handle
+        .spawn_many_observed(3, move |session_id| {
+            observed_sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(session_id.to_owned());
+        })
+        .await
+        .err()
+        .ok_or_else(|| eyre!("a batch with an unstartable child must fail"))?;
+    assert!(
+        format!("{error:?}").contains("synthetic host capability unavailable"),
+        "{error:?}"
+    );
+    assert!(
+        observed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty(),
+        "no child of a failed batch is reported"
+    );
+    let rolled_back = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("the batch's first child did not bind its tools"))?;
+    assert!(
+        rolled_back.spawn_many(1).await.is_err(),
+        "a child created by a failed batch must not keep running"
+    );
+    assert_eq!(root_handle.spawn_many(1).await?.len(), 1, "the parent can still spawn");
+    drop((root, root_events));
+    Ok(())
+}
+
+
 #[tokio::test]
 async fn clean_spawn_can_override_model_and_thinking_without_mutating_parent() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;

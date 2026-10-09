@@ -3592,3 +3592,292 @@ async fn disconnect_keeps_accepted_turn_and_releases_local_owner() {
     server.abort();
 }
 
+
+
+/// The family-neutral catalog reads a durable Claude session like a Codex one:
+/// the transcript keeps visible reasoning and server tools (never signatures or
+/// encrypted payloads), the portable checkpoint carries the session's real
+/// model and thinking and restores a working session, and an old session stays
+/// listed behind more than a list page of newer non-session states.
+#[tokio::test]
+async fn claude_catalog_checkpoint_transcript_and_listing_match_codex() {
+    use nanocodex_agent::{ClaudeModel, HarnessFamily, HarnessModel, Thinking};
+    use nanocodex_claude::ServerToolDefinition;
+    use nanocodex_durability::{OwnerId, SessionRecord, SessionStore, StateStore, TranscriptItem};
+    let home = tempfile::tempdir().unwrap();
+    let searched = vec![
+        json!({"type":"thinking","thinking":"weigh the sources","signature":"opaque-signature"}),
+        json!({"type":"redacted_thinking","data":"opaque-redacted"}),
+        json!({"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"nanocodex"}}),
+        json!({"type":"web_search_tool_result","tool_use_id":"srv-1","content":[{"type":"web_search_result","title":"Nanocodex","url":"https://example.com/n","encrypted_content":"opaque-search"}]}),
+        json!({"type":"text","text":"searched answer"}),
+    ];
+    let (client, requests, server) = server(move |index, _| match index {
+        1 => sse(searched.clone(), "end_turn", 12),
+        _ => sse(text("restored answer"), "end_turn", 12),
+    })
+    .await;
+    let model = ClaudeModel::Sonnet55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .thinking(Thinking::High)
+        .unwrap()
+        .server_tool(ServerToolDefinition::web_search_basic(3))
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    root.prompt(PromptRequest::new("search for nanocodex").request_id("search"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    root.shutdown().await.unwrap();
+
+    // Newer states than one list page: subagent journals and non-sessions.
+    let mut raw = nanocodex_durability::SqliteStore::open(SessionStore::path(home.path())).unwrap();
+    for index in 0..nanocodex_durability::LIST_LIMIT + 50 {
+        let key = if index % 2 == 0 {
+            format!("{root_id}-{index}:subagents")
+        } else {
+            format!("unrelated-{index}")
+        };
+        let owned = raw.acquire(&key, OwnerId::new()).await.unwrap();
+        raw.replace(&key, &owned.owner, owned.state.revision, "{}", &[])
+            .await
+            .unwrap();
+    }
+    let listed = store.list().await.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|summary| summary.record.session_id.as_str())
+            .collect::<Vec<_>>(),
+        [root_id.as_str()],
+        "the session stays listed behind newer non-session states"
+    );
+
+    let loaded = store.load(&root_id).await.unwrap();
+    assert!(
+        loaded
+            .transcript
+            .contains(&TranscriptItem::Reasoning("weigh the sources".into())),
+        "{:?}",
+        loaded.transcript
+    );
+    assert!(loaded.transcript.iter().any(|item| matches!(
+        item,
+        TranscriptItem::Tool { call_id, name, .. } if call_id == "srv-1" && name == "web_search"
+    )));
+    assert!(
+        !format!("{:?}", loaded.transcript).contains("opaque"),
+        "opaque provider payloads stay out of the transcript"
+    );
+
+    let checkpoint = loaded
+        .session_checkpoint()
+        .unwrap()
+        .expect("a settled Claude session has a portable checkpoint");
+    assert_eq!(checkpoint.family(), HarnessFamily::Claude);
+    assert_eq!(checkpoint.session_id(), root_id);
+    assert_eq!(checkpoint.model(), HarnessModel::Claude(model));
+    assert_eq!(checkpoint.thinking(), Thinking::High);
+    let (restored, _events) = Nanocodex::builder(Claude::new(client, model.as_str()))
+        .resume(checkpoint)
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(restored.session_id(), root_id);
+    let result = restored
+        .prompt("follow up")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(result.final_message(), "restored answer");
+    restored.shutdown().await.unwrap();
+    let sent = requests.lock().unwrap().last().unwrap().clone();
+    assert!(sent["messages"].to_string().contains("searched answer"));
+    assert_eq!(sent["output_config"]["effort"], "high");
+    server.abort();
+}
+
+/// Like Codex, a durable Claude session that cannot persist children refuses
+/// to fork instead of silently creating an unsaved session.
+#[tokio::test]
+async fn durable_claude_fork_without_catalog_record_is_unsupported() {
+    use nanocodex_agent::{ForkRequest, NanocodexError};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite");
+    let (client, _requests, server) = server(|_, _| sse(text("answer"), "end_turn", 12)).await;
+    let (root, _events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(4096)
+        .durability(reopen(&path).await)
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    root.prompt(PromptRequest::new("first").request_id("first"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let error = root
+        .fork(ForkRequest::latest())
+        .await
+        .err()
+        .expect("an unrecorded durable session cannot fork");
+    assert!(
+        matches!(
+            error,
+            NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" }
+        ),
+        "{error}"
+    );
+    root.shutdown().await.unwrap();
+    server.abort();
+}
+
+
+/// A durable Claude root's subagents are their own listed, readable and
+/// resumable sessions with their own Codex-format rollouts, exactly like Codex.
+#[tokio::test]
+async fn durable_claude_subagents_are_their_own_resumable_sessions() {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, Origin, rollout::RolloutConfig};
+    use nanocodex_durability::{SessionRecord, SessionStore, TranscriptItem};
+    let prompts = |transcript: &[TranscriptItem]| {
+        transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let (client, _requests, _server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let model = ClaudeModel::Sonnet55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let rollout = RolloutConfig::new(home.path().join("codex"));
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .rollout(rollout.clone())
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let (child, _child_events) = root.spawn().await.unwrap();
+    let (grandchild, _grandchild_events) = child.spawn().await.unwrap();
+    let child_id = child.session_id().to_owned();
+    let grandchild_id = grandchild.session_id().to_owned();
+    assert_ne!(child_id, root_id);
+    assert_ne!(grandchild_id, child_id);
+    let tree = [(&child_id, &root_id), (&grandchild_id, &child_id)];
+    for (agent, (id, parent)) in [&child, &grandchild].into_iter().zip(tree) {
+        assert_eq!(agent.session().lineage.origin, Origin::Subagent);
+        assert_eq!(
+            agent.session().lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(
+            agent.persistence().and_then(|p| p.durable_state_id),
+            Some(id.clone()),
+            "a durable Claude root's subagent persists to its own state"
+        );
+        agent
+            .prompt(PromptRequest::new("subagent task").request_id("task-1"))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+    }
+    grandchild.shutdown().await.unwrap();
+    child.shutdown().await.unwrap();
+    root.shutdown().await.unwrap();
+
+    let listed = store.list().await.unwrap();
+    for (id, parent) in tree {
+        let summary = listed
+            .iter()
+            .find(|summary| summary.record.session_id == *id)
+            .unwrap_or_else(|| panic!("Claude subagent {id} is not listed"));
+        assert_eq!(summary.record.lineage.origin, Origin::Subagent);
+        assert_eq!(
+            summary.record.lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(
+            prompts(&store.load(id).await.unwrap().transcript),
+            ["subagent task"]
+        );
+    }
+    let mirrored = |id: &str| {
+        rollout
+            .list_sessions()
+            .unwrap()
+            .iter()
+            .filter(|session| session.thread_id() == id)
+            .count()
+    };
+    for id in [&root_id, &child_id, &grandchild_id] {
+        assert_eq!(mirrored(id), 1, "{id} has exactly one Codex-format rollout");
+    }
+
+    let (resumed, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .rollout(rollout.clone())
+        .durability(store.resume(&child_id).await.unwrap())
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(resumed.session_id(), child_id);
+    resumed
+        .prompt(PromptRequest::new("resumed subagent").request_id("task-2"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    resumed.shutdown().await.unwrap();
+    assert_eq!(
+        prompts(&store.load(&child_id).await.unwrap().transcript),
+        ["subagent task", "resumed subagent"]
+    );
+    assert_eq!(mirrored(&child_id), 1, "resuming appends to the subagent's own rollout");
+}
+

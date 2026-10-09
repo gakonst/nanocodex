@@ -15,6 +15,9 @@ pub struct NanocodexBuilder<F = StandardServiceFactory> {
     pub(super) codex: CodexCompatibility,
     pub(super) resume: Option<SessionSnapshot>,
     pub(super) lineage: Option<Lineage>,
+    // Whether this builder chose a tier, which then wins over a resumed
+    // snapshot's recorded tier (as an explicit thinking level does).
+    pub(super) service_tier_explicit: bool,
     pub(super) factory: F,
 }
 
@@ -35,6 +38,7 @@ where
             codex: CodexCompatibility::default(),
             resume: None,
             lineage: None,
+            service_tier_explicit: false,
             factory,
         }
     }
@@ -77,16 +81,38 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Restores a session from its checkpoint through this approved Responses
-    /// recipe, keeping its session identity, lineage, model, thinking,
-    /// processing tier, and transport policy.
+    /// Resumes a checkpointed session in a fresh driver, transport and tool
+    /// runtime built from this recipe.
+    ///
+    /// The resumed session *is* the checkpointed session: it keeps the
+    /// checkpoint's session identity, lineage, conversation tree, committed
+    /// history, model, thinking level, processing tier and transport policy.
+    /// This recipe supplies the credentials, instructions, tools and handlers
+    /// for later turns. Settings called after `resume` override the
+    /// checkpoint's. A checkpoint taken before the first completed turn
+    /// reopens the session with its settings and no history. Use
+    /// [`Nanocodex::fork`] to continue a conversation under a new identity.
+    ///
+    /// ```no_run
+    /// # use nanocodex_agent::{Nanocodex, SessionCheckpoint};
+    /// # async fn example(
+    /// #     openai: nanocodex_agent::OpenAi,
+    /// #     saved: &str,
+    /// # ) -> nanocodex_agent::Result<()> {
+    /// let checkpoint = SessionCheckpoint::from_json(saved)?;
+    /// let session_id = checkpoint.session_id().to_owned();
+    /// let (agent, _events) = Nanocodex::builder(openai).resume(checkpoint)?.build()?;
+    /// assert_eq!(agent.session_id().to_string(), session_id);
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
     /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
     /// invalid one.
-    pub fn restore_runtime(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
         let snapshot = ChildState::from_checkpoint(checkpoint)?;
         self = self
             .model(snapshot.model)
@@ -186,6 +212,7 @@ impl<F> NanocodexBuilder<F> {
     #[must_use]
     pub const fn service_tier(mut self, service_tier: ServiceTier) -> Self {
         self.config.service_tier = service_tier;
+        self.service_tier_explicit = true;
         self
     }
 
@@ -255,8 +282,15 @@ impl<F> NanocodexBuilder<F> {
     /// The root identity also seeds its checkpoint lineage. Spawned siblings
     /// and forks receive fresh session IDs; forks retain the root's opaque
     /// lineage so [`Nanocodex::fork`] can reject unrelated boundaries.
+    ///
+    /// Replacing the identity of a [`resume`](Self::resume)d session starts
+    /// a new root that continues the checkpoint's conversation tree, which is
+    /// how a host seeds a separately stored copy of a conversation.
     #[must_use]
-    pub const fn session_id(mut self, session_id: SessionId) -> Self {
+    pub fn session_id(mut self, session_id: SessionId) -> Self {
+        if self.session_id.is_some_and(|current| current != session_id) {
+            self.lineage = None;
+        }
         self.session_id = Some(session_id);
         self
     }
@@ -335,43 +369,25 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Resumes a checkpointed conversation in a fresh root driver, transport,
-    /// and tool runtime while retaining its typed history, model, and cache
-    /// lineage.
-    ///
-    /// The resumed root receives a new session identity unless one is
-    /// configured explicitly; that identity names the new runtime/event stream
-    /// and does not replace the checkpoint's prompt-cache lineage. The
-    /// checkpoint's thinking level applies unless one was configured
-    /// explicitly. The new runtime supplies the instructions, tool definitions,
-    /// and handlers used for subsequent turns. Previously committed typed
-    /// history remains authoritative and is replayed on the first resumed
-    /// request. Use [`Self::restore_runtime`] to keep the checkpoint's identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
-    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
-    /// invalid checkpoint or one without a committed conversation.
-    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
-        let state = ChildState::from_checkpoint(checkpoint)?;
-        let conversation = state.conversation.ok_or_else(|| {
-            NanocodexError::InvalidCheckpoint(
-                "checkpoint has no committed conversation to resume".into(),
-            )
-        })?;
-        if !self.config.thinking_explicit {
-            self.config.thinking = state.thinking;
-        }
-        self.resume = Some(conversation);
-        Ok(self)
-    }
-
     /// Resumes from a Codex-native session snapshot, such as one loaded from a
     /// rollout or a durable store.
+    ///
+    /// The session continues with the thinking level and processing tier the
+    /// snapshot recorded, unless this builder chose them explicitly. Older
+    /// snapshots that record neither keep the builder's settings.
     #[doc(hidden)]
     #[must_use]
     pub fn resume_native_snapshot(mut self, snapshot: SessionSnapshot) -> Self {
+        if let Some(thinking) = snapshot.thinking()
+            && !self.config.thinking_explicit
+        {
+            self.config.thinking = thinking;
+        }
+        if let Some(service_tier) = snapshot.service_tier()
+            && !self.service_tier_explicit
+        {
+            self.config.service_tier = service_tier;
+        }
         self.resume = Some(snapshot);
         self
     }
@@ -687,6 +703,7 @@ mod tests {
             codex: CodexCompatibility::default(),
             resume: Some(snapshot),
             lineage: None,
+            service_tier_explicit: false,
             factory: ObservingFactory {
                 model: Arc::clone(&observed_model),
             },

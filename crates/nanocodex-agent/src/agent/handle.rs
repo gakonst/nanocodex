@@ -105,8 +105,8 @@ impl AgentHandle {
     /// capability constructs (`CODEX_THREAD_ID` and
     /// `NANOCODEX_ROOT_SESSION_ID`).
     #[must_use]
-    pub fn session_environment(&self) -> nanocodex_oai_tools::SessionEnvironment {
-        nanocodex_oai_tools::SessionEnvironment::new(&self.session_id, &self.root_session_id)
+    pub fn session_environment(&self) -> nanocodex_home::SessionEnvironment {
+        nanocodex_home::SessionEnvironment::new(&self.session_id, &self.root_session_id)
     }
 
     /// Retains an unrestricted native identifier for concrete backend recipes.

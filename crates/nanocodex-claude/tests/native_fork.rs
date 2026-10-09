@@ -334,7 +334,7 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         "claude-sonnet-5-5",
     ))
     .keep_thinking()
-    .restore_runtime(seeded_checkpoint)
+    .resume(seeded_checkpoint)
     .unwrap()
     .build()
     .unwrap();

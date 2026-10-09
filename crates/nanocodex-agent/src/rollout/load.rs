@@ -442,7 +442,7 @@ fn sort_sessions(sessions: &mut [RolloutSessionInfo]) {
     });
 }
 
-fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {
+pub(super) fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {
     let suffix = format!("-{thread_id}.jsonl");
     let compressed_suffix = format!("-{thread_id}.jsonl.zst");
     for root in [

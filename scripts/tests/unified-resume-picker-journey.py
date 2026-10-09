@@ -55,7 +55,9 @@ class Providers:
             def do_POST(self):  # noqa: N802
                 body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
                 owner.requests.append({"path": self.path, "body": body})
-                text = "claude-picker-complete" if FOLLOWUP in json.dumps(body) else "picker-turn-complete"
+                # Answer the latest prompt marker; history and system text come first.
+                markers = re.findall(r"[a-z]+-picker-[a-z-]+-prompt", json.dumps(body))
+                text = "done:" + (markers[-1] if markers else "unknown")
                 payload = owner.messages(body["model"], text) if self.path.endswith("/messages") else owner.responses(text)
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
@@ -107,8 +109,8 @@ def main():
     env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "TERM": "xterm-256color",
            "NANOCODEX_COMPUTER": "off", "NANOCODEX_LINK_HOMES": "false"}
     providers = Providers()
-    commands, checks = [], []
-    outcome = {"success": False, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    commands, checks, failures = [], [], []
+    outcome = {"success": False, "failures": failures, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                "commands": commands, "checks": checks}
     shared = ["--browser=none", "--mcp-defaults", "false", "--web-search", "false",
               "--image-generation", "false", "--subagents", "false", "--memory", "false"]
@@ -120,20 +122,20 @@ def main():
     # selects can connect; the picker itself chooses the family.
     both = [*codex, *claude, *shared]
 
-    def run(name, command, expect_ok=True, timeout=60):
+    def run(name, command, expect_ok=True, timeout=60, cwd=None):
         commands.append({"name": name, "command": shlex.join(command)})
-        result = subprocess.run(command, cwd=workspace, env=env, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(command, cwd=cwd or workspace, env=env, capture_output=True, text=True, timeout=timeout)
         (artifact / f"{name}.stdout").write_text(result.stdout)
         (artifact / f"{name}.stderr").write_text(result.stderr)
         require((result.returncode == 0) == expect_ok, f"{name} exit {result.returncode}: {result.stderr[-2000:]}")
         return result
 
-    def pty_run(name, command, on_screen, deadline_s=45):
+    def pty_run(name, command, on_screen, deadline_s=45, cwd=None):
         """Drive the real terminal; on_screen(plain, write) returns True when done."""
         commands.append({"name": name, "command": shlex.join(command)})
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 45, 180, 0, 0))
-        child = subprocess.Popen(command, cwd=workspace, env=env, stdin=slave, stdout=slave, stderr=slave,
+        child = subprocess.Popen(command, cwd=cwd or workspace, env=env, stdin=slave, stdout=slave, stderr=slave,
                                  start_new_session=True)
         os.close(slave)
         transcript, done = bytearray(), False
@@ -180,9 +182,17 @@ def main():
             os.close(master)
 
     try:
-        run("codex-run", [str(binary), "run", *codex, *shared, "--cwd", str(workspace), CODEX_PROMPT])
+        def session_of(result):
+            # The public JSONL stream names its session on every event.
+            for line in result.stdout.splitlines():
+                session = json.loads(line).get("payload", {}).get("session_id")
+                if session:
+                    return session
+            raise AssertionError("run emitted no session_id")
+
+        codex_run = run("codex-run", [str(binary), "run", *codex, *shared, "--cwd", str(workspace), CODEX_PROMPT])
         time.sleep(1.1)  # distinct modification times keep the newest-first order observable
-        run("claude-run", [str(binary), "run", "--claude", "--model", "claude-sonnet-5-5", *claude, *shared,
+        claude_run = run("claude-run", [str(binary), "run", "--claude", "--model", "claude-sonnet-5-5", *claude, *shared,
                            "--cwd", str(workspace), CLAUDE_PROMPT])
         require(len(providers.requests) == 2, f"expected one request per run: {len(providers.requests)}")
         checks.append("recorded one Codex and one Claude session with the shipped CLI")
@@ -214,7 +224,7 @@ def main():
                 state["order_ok"] = screen.rindex(CLAUDE_PROMPT) < screen.rindex(CODEX_PROMPT)
                 if write:
                     write(b"\r")
-            return "claude-picker-complete" in screen
+            return f"done:{FOLLOWUP}" in screen
 
         done, child = pty_run("picker-resume", [str(binary), "resume", *both, "--prompt", FOLLOWUP], resume)
         require(state["listed"], "picker did not list both sessions")
@@ -230,6 +240,96 @@ def main():
         checks.append("Enter resumed the Claude session with its saved model and transcript")
         outcome["resume_exit"] = child.returncode
 
+        source = {}
+        for family, session in (("codex", session_of(codex_run)), ("claude", session_of(claude_run))):
+            preview = json.loads(run(f"rewind-preview-{family}",
+                                     [str(binary), "rewind", session, "--mode", "conversation"]).stdout)
+            require(preview.get("session") == session and "checkpoints" in preview,
+                    f"{family} session {session} has no durable history: {preview}")
+            source[family] = (session, preview["checkpoints"])
+        require(len(source["codex"][1]) == 1, f"Codex session turns: {source['codex'][1]}")
+        require(len(source["claude"][1]) == 2, f"Claude session turns: {source['claude'][1]}")
+        checks.append("both families list read-only durable history through `nanocodex rewind` previews")
+
+        # --before previews which turns a branch would drop, without changing anything.
+        claude_id, claude_turns = source["claude"]
+        before_preview = json.loads(run("rewind-before-preview", [
+            str(binary), "rewind", claude_id, "--mode", "conversation",
+            "--before", claude_turns[1]["checkpoint"]]).stdout)
+        require(before_preview["discarded_turns"] == [claude_turns[1]["checkpoint"]] and not before_preview["restored"],
+                f"--before preview: {before_preview}")
+        checks.append("--before preview selects the follow-up turn and changes nothing")
+
+        # Branch each family --through its first turn; the branch keeps its lineage.
+        for family, (session, _) in source.items():
+            branched = json.loads(run(f"branch-{family}", [
+                str(binary), "rewind", session, "--mode", "conversation", "--through", "1", "--restore"]).stdout)
+            branch = branched["branch_session"]
+            require(branch != session and branched["restored"], f"{family} branch: {branched}")
+            prompt = f"{family}-picker-branch-prompt"
+            before = len(providers.requests)
+            done, child = pty_run(f"resume-branch-{family}", [str(binary), "resume", branch, *both, "--prompt", prompt],
+                                  lambda screen, _write, p=prompt: f"done:{p}" in screen)
+            require(done, f"{family} branch never answered; see resume-branch-{family}.terminal.txt")
+            requests = providers.requests[before:]
+            route = "/messages" if family == "claude" else "/responses"
+            require(requests and all(r["path"].endswith(route) for r in requests),
+                    f"{family} branch resumed in the wrong harness: {[r['path'] for r in requests]}")
+            history = json.dumps(requests[0]["body"])
+            original = CLAUDE_PROMPT if family == "claude" else CODEX_PROMPT
+            require(original in history and prompt in history, f"{family} branch lost its kept turn")
+            require(FOLLOWUP not in history, f"{family} branch kept a turn after --through 1")
+            mirrors = [json.loads(path.read_text().splitlines()[0])["payload"]
+                       for path in (home / ".codex/sessions").rglob(f"rollout-*{branch}.jsonl")]
+            if len(mirrors) != 1:
+                failures.append(f"{family} branch has {len(mirrors)} JSONL mirrors")
+                continue
+            meta = mirrors[0]
+            # Collected, so later scenarios still run and report their own evidence.
+            if not (meta.get("conversation_role") == "branch" and meta.get("parent_thread_id") == session
+                    and meta.get("root_session_id") == session):
+                failures.append(
+                    f"{family} branch lineage: role={meta.get('conversation_role')} parent={meta.get('parent_thread_id')} "
+                    f"root={meta.get('root_session_id')} source={session}")
+                continue
+            outcome[f"{family}_branch"] = {"source": session, "branch": branch, "exit": child.returncode}
+            checks.append(f"{family}: --through 1 branch resumed with the kept turn only and branch lineage in its mirror")
+
+        # A missing workspace leaves history listable and readable; resume fails actionably.
+        moved = artifact / "workspace-moved"
+        workspace.rename(moved)
+        launch = artifact / "launch"
+        launch.mkdir()
+        try:
+            state = {"listed": False}
+
+            def listed(screen, write):
+                if not state["listed"] and CODEX_PROMPT in screen and CLAUDE_PROMPT in screen:
+                    state["listed"] = True
+                    if write:
+                        write(b"\x1b")
+                return state["listed"] and write is None
+
+            before = len(providers.requests)
+            pty_run("picker-missing-workspace", [str(binary), "resume", *both], listed, deadline_s=30, cwd=launch)
+            require(state["listed"], "picker hid sessions whose workspace is missing")
+            for family, (session, turns) in source.items():
+                preview = json.loads(run(f"rewind-missing-{family}", [
+                    str(binary), "rewind", session, "--mode", "conversation"], cwd=launch).stdout)
+                require(len(preview["checkpoints"]) == len(turns), f"{family} history unreadable without workspace")
+                failed = run(f"resume-missing-workspace-{family}", [
+                    str(binary), "resume", session, *both, "--prompt", "must-not-run"],
+                    expect_ok=False, timeout=20, cwd=launch)
+                require("failed to resolve the resumed workspace" in failed.stderr,
+                        f"{family} missing-workspace resume failed for another reason: {failed.stderr[-800:]}")
+                if not (str(workspace) in failed.stderr and f"nanocodex rewind {session}" in failed.stderr):
+                    failures.append(f"{family} missing-workspace error names neither the path nor the recovery: "
+                                    f"{failed.stderr.strip().splitlines()[-1][-300:]}")
+            require(len(providers.requests) == before, "a missing-workspace resume contacted a provider")
+            checks.append("missing workspace: picker lists and rewind reads both families; resume names the path and the recovery")
+        finally:
+            moved.rename(workspace)
+
         # An unknown ID fails before contacting a provider.
         before = len(providers.requests)
         missing = run("resume-missing", [str(binary), "resume", "00000000-0000-7000-8000-000000000000", *both,
@@ -238,6 +338,7 @@ def main():
                 f"unknown ID error is not explicit: {missing.stderr[-500:]}")
         require(len(providers.requests) == before, "unknown session contacted a provider")
         checks.append("unknown session ID failed explicitly before any provider request")
+        require(not failures, "; ".join(failures))
         outcome.update(success=True)
     except Exception as error:
         outcome.update(error=str(error))

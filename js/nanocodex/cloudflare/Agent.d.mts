@@ -39,10 +39,7 @@ type CloudflareAgentActions = Omit<AgentActions, "events" | "turn"> & Readonly<{
     /** Accepts a read-only hibernatable event socket; reconnect from the last event or replay pause cursor. */
     connect(request: Request): Response;
   }>;
-  turn: AgentActions["turn"] & Readonly<{
-    /** Atomically steers the active turn or starts a new independently awaitable turn. */
-    route(options: { input: string }): Promise<import("../types.mjs").Turn | undefined>;
-  }>;
+  turn: AgentActions["turn"];
 }>;
 
 /** A durable Agent whose Cloudflare event socket survives typed extensions. */
@@ -91,7 +88,11 @@ export function pruneDurableReceipts(
  */
 export function prepareTransport(agent: Agent): boolean;
 
-/** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
+/**
+ * @internal Live-input seam for realtime voice hosts: atomically steers the
+ * active turn or starts a new one, for either harness. Applications use the
+ * shared agent.turn.prompt() and turn.steer() actions.
+ */
 export function route(
   agent: Agent,
   options: { input: string },

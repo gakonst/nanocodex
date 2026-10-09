@@ -53,6 +53,8 @@ where
                 CommittedSession::new(
                     Arc::clone(&self.spawner.lineage_id),
                     thread_model,
+                    default_thinking,
+                    default_service_tier,
                     initial.checkpoint.clone(),
                 )
                 .with_retained_snapshot(self.spawner.restored_snapshot.take()),
@@ -268,7 +270,7 @@ where
                             &mut model,
                             &self.execution,
                             Arc::clone(&self.spawner.lineage_id),
-                            thread_model,
+                            (thread_model, default_thinking, default_service_tier),
                             text,
                             self.workspace.as_deref(),
                         )
@@ -466,6 +468,8 @@ where
                                 let checkpoint = Arc::new(CommittedSession::new(
                                     Arc::clone(&self.spawner.lineage_id),
                                     thread_model,
+                                    default_thinking,
+                                    default_service_tier,
                                     snapshot,
                                 ));
                                 match self.execution.commit_checkpoint(&checkpoint).await {
@@ -815,6 +819,7 @@ where
                                             },
                                             session_id.as_str(),
                                             self.workspace.clone(),
+                                            &self.execution,
                                         );
                                     }
                                     Some(Command::SetThinking { thinking, result }) => {
@@ -877,6 +882,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let persisted = self
@@ -896,6 +903,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let execution_turn = execution_turn.interrupted();
@@ -927,6 +936,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let persisted = self
@@ -1028,6 +1039,7 @@ where
                     },
                     session_id.as_str(),
                     self.workspace.clone(),
+                    &self.execution,
                 );
                 continue;
             };
@@ -1218,6 +1230,8 @@ where
                             latest_fork_checkpoint = Some(Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 snapshot,
                             )));
                         }
@@ -1453,6 +1467,8 @@ where
                                         Some(Arc::new(CommittedSession::new(
                                             Arc::clone(&self.spawner.lineage_id),
                                             thread_model,
+                                            default_thinking,
+                                            default_service_tier,
                                             snapshot,
                                         )));
                                 }
@@ -1467,6 +1483,7 @@ where
                                     },
                                     session_id.as_str(),
                                     self.workspace.clone(),
+                                    &self.execution,
                                 );
                             }
                             Some(Command::SetThinking { thinking, result }) => {
@@ -1497,6 +1514,8 @@ where
                                         Arc::new(CommittedSession::new(
                                             Arc::clone(&self.spawner.lineage_id),
                                             thread_model,
+                                            default_thinking,
+                                            default_service_tier,
                                             checkpoint,
                                         ))
                                     })
@@ -1555,6 +1574,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     let execution_turn =
@@ -1589,6 +1610,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     let execution_turn = execution_turn.interrupted();
@@ -1619,6 +1642,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     match error.execution_policy_disposition() {
@@ -1865,7 +1890,7 @@ async fn commit_developer_message<S>(
     model: &mut ModelRun<S>,
     execution: &Execution,
     lineage_id: Arc<str>,
-    model_name: Model,
+    (model_name, thinking, service_tier): (Model, Thinking, ServiceTier),
     text: String,
     workspace: Option<&str>,
 ) -> Result<Option<Arc<CommittedSession>>>
@@ -1875,7 +1900,13 @@ where
     S::Future: AgentSend,
 {
     let snapshot = model.append_developer_message(text, workspace)?;
-    let checkpoint = Arc::new(CommittedSession::new(lineage_id, model_name, snapshot));
+    let checkpoint = Arc::new(CommittedSession::new(
+        lineage_id,
+        model_name,
+        thinking,
+        service_tier,
+        snapshot,
+    ));
     execution.commit_checkpoint(&checkpoint).await?;
     Ok(Some(checkpoint))
 }

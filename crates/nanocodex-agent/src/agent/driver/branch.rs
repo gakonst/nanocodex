@@ -165,10 +165,17 @@ where
         service_tier: ServiceTier,
         stateless_http: bool,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
         let session_id_text = session_id.to_string();
         let lineage = Lineage::child_of(&self.lineage, parent_session_id, crate::Origin::Subagent);
+        // A subagent of a durable session is durable exactly like a fork.
+        let branch_policy = parent.branch_policy(&crate::SessionInfo::new(
+            session_id_text.as_str(),
+            crate::HarnessFamily::Codex,
+            lineage.clone(),
+        ))?;
         let mut config = (*self.config).clone();
         config.model = model;
         config.thinking = thinking;
@@ -199,7 +206,7 @@ where
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),
             lineage,
-            execution: self.execution.for_new_thread("spawn", None)?,
+            execution: self.execution.for_new_thread("spawn", branch_policy)?,
             restored_snapshot: None,
             host_context,
             service_factory: Arc::clone(&self.service_factory),
@@ -221,20 +228,28 @@ where
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<(Nanocodex, AgentEvents)> {
         snapshot.validate()?;
         let session_id = snapshot.session_id.parse::<SessionId>().map_err(|error| {
             NanocodexError::InvalidCheckpoint(format!("invalid child session ID: {error}"))
         })?;
-        // Rehydrate an in-memory idle child without inheriting the parent's policy.
-        let mut spawner = self.with_execution(self.execution.for_new_thread("restore", None)?);
-        spawner.restored_snapshot = snapshot.conversation.clone();
         // The restoring runtime is the parent; the child keeps how it was created.
         let origin = match snapshot.lineage.origin {
             crate::Origin::Root => crate::Origin::Subagent,
             origin => origin,
         };
-        spawner.lineage = Lineage::child_of(&self.lineage, parent_session_id, origin);
+        let lineage = Lineage::child_of(&self.lineage, parent_session_id, origin);
+        // Rehydrate an evicted child under its own branch policy, which reopens
+        // the durable state and rollout it recorded under the same session ID.
+        let branch_policy = parent.branch_policy(&crate::SessionInfo::new(
+            snapshot.session_id.as_str(),
+            crate::HarnessFamily::Codex,
+            lineage.clone(),
+        ))?;
+        let mut spawner = self.for_new_thread("restore", branch_policy)?;
+        spawner.restored_snapshot = snapshot.conversation.clone();
+        spawner.lineage = lineage;
         spawner.context_source = spawner.context_config.build();
         spawner.host_context = host_context;
         spawner.lineage_id = Arc::clone(&snapshot.conversation_id);
@@ -295,6 +310,7 @@ where
         count: usize,
         observer: Option<&SpawnObserver>,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         let mut children = Vec::with_capacity(count);
         for _ in 0..count {
@@ -309,11 +325,17 @@ where
                     .as_ref()
                     .or(self.host_context.as_ref())
                     .map(Arc::clone),
+                parent,
             )?;
-            if let Some(observer) = observer {
-                observer(child.0.session_id());
-            }
             children.push(child);
+        }
+        // All or nothing: a failure above drops every created child, whose
+        // driver then stops before any turn recorded durable state or a
+        // rollout. Observers see only a batch that started completely.
+        if let Some(observer) = observer {
+            for (child, _) in &children {
+                observer(child.session_id());
+            }
         }
         Ok(children)
     }

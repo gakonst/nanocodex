@@ -20,6 +20,12 @@ pub(super) struct Snapshot {
     /// Conversation-tree identity shared with forks of the same session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) conversation_id: Option<String>,
+    /// Thinking effort and fast-mode preference at this boundary, so a
+    /// catalog checkpoint resumes with the session's actual policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) effort: Option<crate::Effort>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) fast_mode: bool,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -33,6 +39,8 @@ impl Default for Snapshot {
             workspace: None,
             lineage: None,
             conversation_id: None,
+            effort: None,
+            fast_mode: false,
         }
     }
 }
@@ -241,6 +249,8 @@ impl State {
             workspace: Some(self.workspace()),
             lineage: Some(self.lineage.clone()),
             conversation_id: Some(self.conversation_id.clone()),
+            effort: self.effort(),
+            fast_mode: self.fast_mode.load(Ordering::SeqCst),
             ..Snapshot::default()
         })
     }
@@ -573,6 +583,8 @@ pub fn rewind_checkpoint(
         None => Snapshot {
             model: latest.model.clone(),
             workspace: latest.workspace.clone(),
+            effort: latest.effort,
+            fast_mode: latest.fast_mode,
             ..Snapshot::default()
         },
     };
@@ -637,6 +649,65 @@ pub fn decode_checkpoint(checkpoint: Value) -> Result<ClaudeCheckpointView> {
     snapshot.view()
 }
 
+/// Encodes a durable Claude checkpoint (the provider-native state committed by
+/// the execution policy) as a portable [`SessionCheckpoint`] for this session,
+/// keeping its recorded model, thinking effort and fast-mode preference.
+///
+/// Request limits that only the live builder knows use the model defaults:
+/// the documented output maximum and context window, with caching and
+/// diagnostics off. [`crate::ClaudeBuilder::restore_runtime`] accepts the
+/// result, so a stored session resumes through the same portable path as a
+/// live checkpoint.
+///
+/// # Errors
+///
+/// Returns [`NanocodexError::InvalidCheckpoint`] when the value is not a
+/// supported Claude checkpoint or records no Claude model.
+pub fn session_checkpoint(
+    session_id: &str,
+    lineage: Lineage,
+    checkpoint: Value,
+) -> Result<SessionCheckpoint> {
+    let mut snapshot = Snapshot::decode(checkpoint)?;
+    let model = snapshot
+        .model
+        .clone()
+        .filter(|model| {
+            model
+                .parse::<HarnessModel>()
+                .is_ok_and(|model| model.family() == HarnessFamily::Claude)
+        })
+        .ok_or_else(|| {
+            NanocodexError::InvalidCheckpoint("checkpoint records no Claude model".into())
+        })?;
+    let conversation_id = snapshot
+        .conversation_id
+        .clone()
+        .unwrap_or_else(|| session_id.to_owned());
+    snapshot.lineage = Some(lineage.clone());
+    let policy = NativePolicy {
+        context_window_tokens: default_context_window_tokens(&model),
+        max_tokens: None,
+        effort: snapshot.effort,
+        adaptive_thinking: snapshot.effort.is_some(),
+        automatic_cache: false,
+        cache_one_hour: false,
+        keep_thinking: false,
+        fast_mode: snapshot.fast_mode,
+        message_diagnostics: false,
+        auto_compact_window_tokens: None,
+        model,
+    };
+    ClaudeBoundary {
+        snapshot: Arc::new(snapshot),
+        policy,
+        session_id: session_id.to_owned(),
+        lineage,
+        conversation_id,
+    }
+    .checkpoint()
+}
+
 /// Decodes a portable Claude [`SessionCheckpoint`] into its model-visible view.
 ///
 /// # Errors
@@ -697,7 +768,13 @@ impl Snapshot {
                         Role::Assistant => TranscriptItem::Assistant(text.clone()),
                         Role::User => TranscriptItem::User(text.clone()),
                     }),
+                    ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
+                        items.push(TranscriptItem::Reasoning(thinking.clone()));
+                    }
                     ContentBlock::ToolUse {
+                        id, name, input, ..
+                    }
+                    | ContentBlock::ServerToolUse {
                         id, name, input, ..
                     } => {
                         items.push(TranscriptItem::Tool {
@@ -706,6 +783,17 @@ impl Snapshot {
                             arguments: input.to_string(),
                         });
                     }
+                    ContentBlock::McpToolUse {
+                        id,
+                        name,
+                        server_name,
+                        input,
+                        ..
+                    } => items.push(TranscriptItem::Tool {
+                        call_id: id.clone(),
+                        name: format!("mcp__{server_name}__{name}"),
+                        arguments: input.to_string(),
+                    }),
                     _ => {}
                 }
             }

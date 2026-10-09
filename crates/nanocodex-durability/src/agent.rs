@@ -160,7 +160,14 @@ impl ExecutionPolicy for DurableExecution {
         &self,
         child: &nanocodex_agent::SessionInfo,
     ) -> AgentResult<Option<Arc<dyn ExecutionPolicy>>> {
-        let Some(branches) = &self.branches else {
+        // A session opened without a catalog record has nowhere to describe a
+        // child; the caller reports ExecutionPolicyBranchUnsupported, exactly
+        // as for Claude.
+        let Some(branches) = self
+            .branches
+            .as_ref()
+            .filter(|branches| branches.record.is_some())
+        else {
             return Ok(None);
         };
         let record = branches.child_record(child)?;

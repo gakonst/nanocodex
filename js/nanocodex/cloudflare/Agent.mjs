@@ -109,9 +109,7 @@ export function checkpoint(agent) {
 
 /** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
 export function route(agent, options) {
-  // Prefer the agent's own routed-turn wrapper (Claude retains host routes
-  // until its terminal receipt); Codex agents expose the same internal seam.
-  return typeof agent?.turn?.route === "function" ? agent.turn.route(options) : routePrompt(agent, options);
+  return routePrompt(agent, options);
 }
 
 /** Removes the package-owned durable history for one Cloudflare Agent. */
@@ -129,10 +127,11 @@ export function destroy(owner) {
   initializeAgentStorage(storage);
   const stateId = storedStateId(storage) ?? legacyStateId(storage);
   storage.transactionSync(() => {
-    if (stateId !== undefined) {
+    // The root conversation and its durable subagent task-tree journal.
+    for (const id of stateId === undefined ? [] : [stateId, `${stateId}:subagents`]) {
       const retained = storage.sql.exec(
         "SELECT fence FROM nanocodex_durable_owners WHERE state_id = ?",
-        stateId,
+        id,
       ).toArray();
       const fence = durabilityRevision(
         BigInt(durabilityRevision(retained[0]?.fence ?? "0")) + 1n,
@@ -140,16 +139,18 @@ export function destroy(owner) {
       storage.sql.exec(
         `INSERT INTO nanocodex_durable_owners (state_id, owner_id, fence) VALUES (?, ?, ?)
          ON CONFLICT (state_id) DO UPDATE SET owner_id = excluded.owner_id, fence = excluded.fence`,
-        stateId,
+        id,
         `destroy:${globalThis.crypto.randomUUID()}`,
         fence,
       );
-      // The durable child task-tree journal is a sibling state of the root
-      // (see nanocodex-durability child_journal); destroy removes both.
-      for (const id of [stateId, `${stateId}:subagents`]) {
-        storage.sql.exec("DELETE FROM nanocodex_durable_records WHERE state_id = ?", id);
-        storage.sql.exec("DELETE FROM nanocodex_durable_states WHERE state_id = ?", id);
-      }
+      storage.sql.exec(
+        "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
+        id,
+      );
+      storage.sql.exec(
+        "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
+        id,
+      );
     }
     storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume");
     clearCloudflareEventSocket(context);
@@ -821,10 +822,6 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
           { error: "event_persistence_caller_owned" },
           { status: 409 },
         ),
-      },
-      turn: {
-        ...owned.turn,
-        route: (options) => routePrompt(owned, options),
       },
     }));
     const active = {};

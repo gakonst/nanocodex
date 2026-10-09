@@ -111,7 +111,9 @@ impl ChildState {
 
 impl SessionCheckpoint {
     /// Wraps a Codex-native session snapshot, such as one loaded from a
-    /// durable store, as a portable checkpoint with the standard tier.
+    /// durable store, as a portable checkpoint with the thinking and tier it
+    /// recorded. `thinking` applies only to snapshots written before the
+    /// setting was recorded, which also resume at the standard tier.
     ///
     /// # Errors
     ///
@@ -124,11 +126,13 @@ impl SessionCheckpoint {
         thinking: Thinking,
         snapshot: SessionSnapshot,
     ) -> Result<Self> {
+        // Snapshots record the session's own settings; only older snapshots
+        // fall back to the caller's thinking and the standard tier.
         let state = ChildState {
             session_id: session_id.into(),
             model: snapshot.model()?,
-            thinking,
-            service_tier: ServiceTier::Standard,
+            thinking: snapshot.thinking().unwrap_or(thinking),
+            service_tier: snapshot.service_tier().unwrap_or(ServiceTier::Standard),
             stateless_http: false,
             lineage,
             conversation_id: Arc::from(snapshot.lineage_id()),

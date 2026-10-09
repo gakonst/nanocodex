@@ -2051,6 +2051,7 @@ mod agent;
 pub use agent::{
     Claude, ClaudeBuilder, ClaudeCheckpointView, ClaudeToolInvocation, ClaudeToolReply,
     ClaudeTools, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
+    session_checkpoint,
 };
 
 /// Portable durability integration with provider-native state.
