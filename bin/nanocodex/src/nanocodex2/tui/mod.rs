@@ -28,6 +28,7 @@ mod session;
 mod share;
 mod shared;
 mod shell;
+mod sites;
 mod spinner;
 mod sudo_input;
 mod terminal;
@@ -621,6 +622,7 @@ struct DriverRuntime {
     secure_input_tasks: JoinSet<secure_input::Completion>,
     secure_input_attempted: HashSet<String>,
     share_tasks: JoinSet<(PaneId, String, u64, Result<share::Outcome, ManagedError>)>,
+    site_tasks: JoinSet<(PaneId, String, u64, Result<sites::Outcome, ManagedError>)>,
     vault_attempted: HashSet<(String, String)>,
     steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
     pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
@@ -1823,6 +1825,7 @@ impl DriverRuntime {
             && self.secure_input.is_none()
             && self.secure_input_tasks.is_empty()
             && self.share_tasks.is_empty()
+            && self.site_tasks.is_empty()
             && self.done_updates.is_empty()
             && self.voice_tasks.is_empty()
             // Keep local recordings and samples until explicitly submitted or discarded.
@@ -1845,6 +1848,7 @@ impl DriverRuntime {
             && self.settings_updates.is_empty()
             && self.settings_queue.is_empty()
             && self.share_tasks.is_empty()
+            && self.site_tasks.is_empty()
             && self.done_updates.is_empty()
             && self.active_shells == 0
             && self.pending_submission.is_none()
@@ -2170,6 +2174,7 @@ async fn run_inner(
         secure_input_tasks: JoinSet::new(),
         secure_input_attempted: HashSet::new(),
         share_tasks: JoinSet::new(),
+        site_tasks: JoinSet::new(),
         done_updates: JoinSet::new(),
         vault_attempted: HashSet::new(),
         steer_receipts: HashMap::new(),
@@ -3426,6 +3431,44 @@ async fn run_inner(
                         error: "Share request stopped unexpectedly. Check /share list before retrying a mutation.".into() }), &mut scheduler),
                 }
             }
+            Some(result) = runtime.site_tasks.join_next(), if !runtime.site_tasks.is_empty() => {
+                match result {
+                    Ok((pane, agent_id, generation, outcome)) if runtime.agent_id == agent_id
+                        && runtime.connection_generation == generation => {
+                        match outcome {
+                            Ok(sites::Outcome::Listed(list)) => request_render(
+                                app.update(AppEvent::SitesOutput { pane, text: sites::list_text(&list) }), &mut scheduler),
+                            Ok(sites::Outcome::Published(site)) => request_render(
+                                app.update(AppEvent::NotifySuccess { pane, message: sites::published_text(&site) }), &mut scheduler),
+                            Ok(sites::Outcome::Opened(view)) => {
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                runtime.links.spawn(async move { (pane, links::open(&client, &agent_id, &view.url).await) });
+                                request_render(app.update(AppEvent::NotifySuccess { pane, message: format!(
+                                    "Opening {} v{} in your browser. The private preview works for an hour.", view.site_id, view.version) }), &mut scheduler);
+                            }
+                            Ok(sites::Outcome::Shared(share)) => {
+                                let copied = clipboard::copy_text(&share.url).is_ok();
+                                request_render(app.update(AppEvent::SitesOutput { pane, text: format!(
+                                    "{}\n\nAnyone with this link can open {} v{} until you revoke it:\n/sites revoke {} {}",
+                                    share.url, share.site_id, share.version, share.site_id, share.id) }), &mut scheduler);
+                                request_render(app.update(AppEvent::NotifySuccess { pane, message: if copied {
+                                    "Site link copied. Press c to copy again or Esc to close.".into()
+                                } else {
+                                    "Site link created. Clipboard unavailable; press c in the panel to retry.".into()
+                                } }), &mut scheduler);
+                            }
+                            Ok(sites::Outcome::Revoked) => request_render(
+                                app.update(AppEvent::NotifySuccess { pane, message: "Site link revoked. It stops working immediately.".into() }), &mut scheduler),
+                            Err(error) => request_render(
+                                app.update(AppEvent::NotifyError { pane, error: sites::error(&error) }), &mut scheduler),
+                        }
+                    }
+                    Ok(_) => {},
+                    Err(_) => request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main,
+                        error: "Sites request stopped unexpectedly. Run /sites before retrying a change.".into() }), &mut scheduler),
+                }
+            }
             Some(result) = runtime.links.join_next(), if !runtime.links.is_empty() => {
                 let (pane, result) = result.unwrap_or_else(|error| (
                     PaneId::Main, Err(format!("Could not open link: {error}")),
@@ -4230,6 +4273,34 @@ async fn apply_update(
                                 share::Command::List => client.list_share_links(&agent_id).await.map(share::Outcome::Listed),
                                 share::Command::Revoke(id) => client.revoke_share_link(&agent_id, &id).await.map(|()| share::Outcome::Revoked),
                                 share::Command::Help => unreachable!(),
+                            };
+                            (pane, agent_id, generation, result)
+                        });
+                    }
+                    RootEffect::Sites(command) => {
+                        if command == sites::Command::Help {
+                            absorb(app.update(AppEvent::SitesOutput { pane, text: sites::help() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        if runtime.agent_id.is_empty() {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "No managed thread yet. Send a prompt or attach a thread before using /sites.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        if runtime.agent.is_none() || runtime.recovery.is_some() {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "Managed thread is offline. Reconnect before managing sites.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        let client = runtime.client.clone();
+                        let agent_id = runtime.agent_id.clone();
+                        let generation = runtime.connection_generation;
+                        runtime.site_tasks.spawn(async move {
+                            let result = match command {
+                                sites::Command::List => client.list_sites(&agent_id).await.map(sites::Outcome::Listed),
+                                sites::Command::Publish { path, id } => client.publish_site(&agent_id, &sites::publish_request(path, id)).await.map(sites::Outcome::Published),
+                                sites::Command::Open { site, version } => client.open_site(&agent_id, &site, version).await.map(sites::Outcome::Opened),
+                                sites::Command::Share { site, version } => client.create_site_share(&agent_id, &site, version).await.map(sites::Outcome::Shared),
+                                sites::Command::Revoke { site, link } => client.revoke_site_share(&agent_id, &site, &link).await.map(|()| sites::Outcome::Revoked),
+                                sites::Command::Help => unreachable!(),
                             };
                             (pane, agent_id, generation, result)
                         });
@@ -5826,6 +5897,7 @@ mod tests {
             secure_input_tasks: JoinSet::new(),
             secure_input_attempted: HashSet::new(),
             share_tasks: JoinSet::new(),
+            site_tasks: JoinSet::new(),
             done_updates: JoinSet::new(),
             vault_attempted: HashSet::new(),
             steer_receipts: HashMap::new(),

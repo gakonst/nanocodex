@@ -53,6 +53,7 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 pub(crate) enum ComposerEffect {
     ShowAgentId,
     Share(Result<crate::tui::share::Command, String>),
+    Sites(Result<crate::tui::sites::Command, String>),
     Vault(crate::tui::vault::Command),
     SecureInput(crate::tui::secure_input::Command),
     Submit(Submission),
@@ -1167,6 +1168,14 @@ impl Composer {
                     false,
                 ));
             }
+            if self.draft.split_whitespace().next() == Some("/sites") {
+                return Some(ComposerUpdate::effect(
+                    ComposerEffect::Sites(Err(
+                        "Remove image attachments before running /sites.".into()
+                    )),
+                    false,
+                ));
+            }
             if self.draft.split_whitespace().next() == Some("/voice") {
                 return Some(ComposerUpdate::effect(ComposerEffect::Settings(SettingsCommand::Invalid(
                     "Voice commands use local audio paths. Remove image attachments before running /voice.".into()
@@ -1179,6 +1188,8 @@ impl Composer {
                 ComposerEffect::SecureInput(command)
             } else if let Some(command) = crate::tui::share::Command::parse(self.draft.trim()) {
                 ComposerEffect::Share(command)
+            } else if let Some(command) = crate::tui::sites::Command::parse(self.draft.trim()) {
+                ComposerEffect::Sites(command)
             } else if let Some(command) = crate::tui::vault::Command::parse(self.draft.trim()) {
                 ComposerEffect::Vault(command)
             } else if self.draft.trim() == "/id" {

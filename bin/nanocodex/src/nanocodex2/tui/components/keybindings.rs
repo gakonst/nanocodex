@@ -19,7 +19,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 38] = [
+const BINDINGS: [(&str, &str); 39] = [
     ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
@@ -59,6 +59,7 @@ const BINDINGS: [(&str, &str); 38] = [
     ),
     ("/done", "mark session done · hide from continue"),
     ("/undone", "restore session to continue"),
+    ("/sites", "publish, open, and share static sites"),
     ("/autoroute", "enable auto routing · before first prompt"),
     ("/screen", "select a Hand and watch its live screen"),
     ("/zoom", "expand focused pane · restore split layout"),

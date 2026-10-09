@@ -247,6 +247,10 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         text: String,
     },
+    SitesOutput {
+        pane: PaneId,
+        text: String,
+    },
     NotifyError {
         pane: PaneId,
         error: String,
@@ -649,6 +653,9 @@ impl AppNode {
             }
             AppEvent::ShareOutput { pane, text } => {
                 self.update_root(pane, RootEvent::ShareOutput(text))
+            }
+            AppEvent::SitesOutput { pane, text } => {
+                self.update_root(pane, RootEvent::SitesOutput(text))
             }
             AppEvent::VoiceOutput { pane, text } => {
                 self.update_root(pane, RootEvent::VoiceOutput(text))

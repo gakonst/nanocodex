@@ -20,6 +20,7 @@ mod phone_services;
 mod private_input;
 mod share;
 mod shared;
+mod sites;
 mod sse;
 mod types;
 mod vault;
@@ -63,6 +64,9 @@ pub use share::{CreatedShareLink, ShareLink, SharePermission};
 pub use shared::{
     SharedEventStream, SharedHistoryPage, SharedThreadClient, SharedThreadMetadata,
     SharedTurnReceipt,
+};
+pub use sites::{
+    PublishSite, PublishedSite, Site, SiteShare, SiteVersion, SiteView, valid_site_id,
 };
 pub use sse::{
     EventCursor, ManagedEventFuture, ManagedEventSource, ManagedEventStream, ManagedEvents,

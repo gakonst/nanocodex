@@ -237,6 +237,7 @@ pub(crate) enum RootEvent {
     NotifySuccess(String),
     VoiceOutput(String),
     ShareOutput(String),
+    SitesOutput(String),
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
@@ -325,6 +326,7 @@ pub(crate) enum RootEffect {
     Vault(crate::tui::vault::Command),
     SecureInput(Option<crate::tui::secure_input::Request>),
     Share(crate::tui::share::Command),
+    Sites(crate::tui::sites::Command),
     ApproveVault(crate::tui::vault::Review),
     Submit(Submission),
     Reflect(Submission),
@@ -398,8 +400,15 @@ pub(crate) enum RootEffect {
 enum Overlay {
     VaultReview(crate::tui::vault::Review),
     AgentId(String),
-    VoiceOutput { text: String, scroll: u16 },
-    ShareOutput { text: String, scroll: u16 },
+    VoiceOutput {
+        text: String,
+        scroll: u16,
+    },
+    ShareOutput {
+        title: &'static str,
+        text: String,
+        scroll: u16,
+    },
     VoiceMenu(Node<super::voice_menu::VoiceMenu>),
     VoiceClone(String, bool, u16, bool),
     Actions(Node<ActionsMenu>),
@@ -1202,9 +1211,13 @@ impl RootNode {
                         }
                     }
                 }
-                Overlay::ShareOutput { text, scroll } => {
+                Overlay::ShareOutput {
+                    title,
+                    text,
+                    scroll,
+                } => {
                     let layout = Floating::new(
-                        "Share · managed thread",
+                        title,
                         100,
                         area.height.saturating_sub(4),
                         &[
@@ -1430,6 +1443,7 @@ impl RootNode {
                         Some(
                             "/copy"
                                 | "/share"
+                                | "/sites"
                                 | "/voice"
                                 | "/screen"
                                 | "/zoom"
@@ -2840,9 +2854,9 @@ impl RootNode {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         let (text, scroll) = match &mut self.overlay {
-            Some(Overlay::VoiceOutput { text, scroll } | Overlay::ShareOutput { text, scroll }) => {
-                (text, scroll)
-            }
+            Some(
+                Overlay::VoiceOutput { text, scroll } | Overlay::ShareOutput { text, scroll, .. },
+            ) => (text, scroll),
             _ => return ComponentUpdate::none(),
         };
         match event {
@@ -3249,6 +3263,13 @@ impl RootNode {
         let effects = match update.effect {
             Some(ComposerEffect::Share(command)) => match command {
                 Ok(command) => vec![RootEffect::Share(command)],
+                Err(message) => {
+                    self.notification = Some(Notification::plain(message, Color::Red));
+                    Vec::new()
+                }
+            },
+            Some(ComposerEffect::Sites(command)) => match command {
+                Ok(command) => vec![RootEffect::Sites(command)],
                 Err(message) => {
                     self.notification = Some(Notification::plain(message, Color::Red));
                     Vec::new()
@@ -4634,7 +4655,19 @@ impl Component for RootNode {
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::ShareOutput(text) => {
-                self.overlay = Some(Overlay::ShareOutput { text, scroll: 0 });
+                self.overlay = Some(Overlay::ShareOutput {
+                    title: "Share · managed thread",
+                    text,
+                    scroll: 0,
+                });
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            RootEvent::SitesOutput(text) => {
+                self.overlay = Some(Overlay::ShareOutput {
+                    title: "Sites · managed thread",
+                    text,
+                    scroll: 0,
+                });
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::VoiceOutput(text) => {

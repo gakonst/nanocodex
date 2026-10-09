@@ -29,6 +29,7 @@ mod screen_ice;
 mod secure_input;
 mod session;
 mod share;
+mod sites;
 #[path = "../skill.rs"]
 mod skill;
 mod spinner;
@@ -46,7 +47,7 @@ mod voice_state;
 mod tui {
     pub(crate) use crate::{
         context, format, pane, private_input, prompt, review, screen, secure_input, session, share,
-        spinner, sudo_input, theme, transcript, vault,
+        sites, spinner, sudo_input, theme, transcript, vault,
     };
 }
 
