@@ -54,7 +54,12 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
     presentation.footer(format!("{emitted} {noun} · {}", format_bytes(size)))
 }
 
-/// First non-empty emitted text line of a Code Mode cell, without its status envelope.
+/// First human-readable emitted line of a Code Mode cell, without its status
+/// envelope, for the compact batch header. Structured payloads (a JSON value,
+/// or one label token directly followed by JSON, such as a printed tool
+/// receipt) stay in the expanded cell output and never become the header note.
+/// Resumed cells lack child results, so echoed receipts cannot be removed as
+/// exact child echoes there.
 pub(super) fn first_emitted_line(tool: &ToolEntry) -> Option<String> {
     let result = tool.code_display_result.as_ref().or(tool.result.as_ref())?;
     let items = match result {
@@ -65,12 +70,45 @@ pub(super) fn first_emitted_line(tool: &ToolEntry) -> Option<String> {
         let text = item
             .as_str()
             .or_else(|| item.get("text").and_then(Value::as_str))?;
-        code_mode_output_text(text)
+        let output = code_mode_output_text(text);
+        if structured_payload(output.trim()) {
+            return None;
+        }
+        output
             .lines()
             .map(str::trim)
-            .find(|line| !line.is_empty())
+            .find(|line| !line.is_empty() && !structured_line(line))
             .map(super::super::markdown::sanitize)
     })
+}
+
+/// Largest emitted text parsed to recognize a structured payload.
+const MAX_NOTE_JSON_BYTES: usize = 64 * 1024;
+
+/// A JSON object or array: parsed when small, recognized by its opening
+/// object key when large or truncated by event bounds.
+fn structured_payload(text: &str) -> bool {
+    if !text.starts_with(['{', '[']) {
+        return false;
+    }
+    if text.starts_with("{\"") || text.starts_with("[{") || text.starts_with("[\"") {
+        return true;
+    }
+    text.len() <= MAX_NOTE_JSON_BYTES
+        && serde_json::from_str::<Value>(text)
+            .is_ok_and(|value| value.is_object() || value.is_array())
+}
+
+/// A structured payload, optionally behind one label token such as
+/// `RESULT:` or `MARKER_`, with no human text around it.
+fn structured_line(line: &str) -> bool {
+    let Some(start) = line.find(['{', '[']) else {
+        return false;
+    };
+    let label = &line[..start];
+    label.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | ':' | '.')
+    }) && structured_payload(&line[start..])
 }
 
 fn emitted_count(result: &Value) -> usize {

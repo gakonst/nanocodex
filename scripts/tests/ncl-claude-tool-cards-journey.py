@@ -35,6 +35,7 @@ await tools.Write({file_path: "notes/large.txt", content: Array.from({length: 40
 let failure = "NO_FAILURE";
 try { await tools.Edit({file_path: "notes/cards.txt", old_string: "MISSING_NEEDLE", new_string: "x"}); }
 catch (error) { failure = "EDIT_REJECTED"; }
+text("CELL_RECEIPT" + JSON.stringify({content: [{type: "text", text: "RAW_RECEIPT_PAYLOAD"}], isError: false}));
 text("PLAN_CELL_DONE " + failure);'''
 
 
@@ -114,7 +115,7 @@ def main():
         }
         for label, pattern in expected_rows.items():
             require(re.search(pattern, flat), f'{label} absent from collapsed screen: {pattern}')
-        for raw in ['"old_string"', '"file_path"', '"todos"', 'LARGE_LINE_', 'MISSING_NEEDLE', '{"content"']:
+        for raw in ['"old_string"', '"file_path"', '"todos"', 'LARGE_LINE_', 'MISSING_NEEDLE', '{"content"', 'CELL_RECEIPT', 'RAW_RECEIPT_PAYLOAD']:
             require(raw not in collapsed, f'collapsed rows leak raw payload {raw!r}')
         checks.append('collapsed batch rows show path, range, counts, plan progress and the Edit failure; no raw argument JSON, old_string or large payload')
 
@@ -135,6 +136,7 @@ def main():
             'Grep options': 'content',
             'TodoWrite checklist': '◐ Review cards',
             'failed Edit error text': 'old_string not found',
+            'printed receipt kept in expanded cell output': 'RAW_RECEIPT_PAYLOAD',
         }
         for label, text in expected_expanded.items():
             require(session.shown(text), f'{label} absent from expanded cards: {text!r}')
