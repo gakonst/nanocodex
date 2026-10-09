@@ -239,14 +239,77 @@ test("managed curl journey reconciles Hand receipts and reports unknown outcomes
       assert.equal(brokerFrames("B", "call").length, 1);
       result.scenarios.follow_up = { terminal: end.type, final_message: end.final_message, effect: await file("follow.log") };
     }
+    // 6. Managed->account response lost while the command runs (fault-injected
+    // network loss): the command is not cancelled, its original identity's
+    // receipt is reconciled on the same runtime, and it runs exactly once.
+    {
+      const cancels = brokerFrames("B", "cancel").length;
+      const response = await turn("account-response-lost", agent, { cmd: "printf L >> response-lost.log; sleep 1; printf RESPONSE_LOSS_RECOVERED # __LOSE_ACCOUNT_RESPONSE__" });
+      const end = terminal(response), { text } = handResult(response);
+      assert.match(text, /RESPONSE_LOSS_RECOVERED/);
+      assert.equal(await file("response-lost.log"), "L", "exactly one side effect");
+      assert.equal(callFrames("response-lost.log").length, 1, "never redispatched");
+      assert.equal(brokerFrames("B", "cancel").length, cancels, "transport loss never cancels the command");
+      assert.ok(runtime.some(line => line.includes("fixture.network_fault") && line.includes("lose_response")), "fault injected");
+      const reconciled = runtime.find(line => line.includes("hand.receipt.reconcile") && line.includes('"outcome":"recovered"'));
+      assert.ok(reconciled, "receipt recovery observed with its sanitized cause");
+      assert.match(reconciled, /"error_class":"Error\/network_lost: Network connection lost\."/);
+      result.scenarios.response_lost = { terminal: end.type, final_message: end.final_message, call_frames: 1, cancel_frames: 0, effect: await file("response-lost.log"), telemetry: JSON.parse(reconciled.slice(reconciled.indexOf("{"))) };
+    }
+
+    // 7. The account answered but the body was truncated in transit.
+    {
+      const response = await turn("account-response-truncated", agent, { cmd: "printf T >> truncated.log; printf TRUNCATED_RECOVERED # __TRUNCATE_ACCOUNT_RESPONSE__" });
+      const end = terminal(response), { text } = handResult(response);
+      assert.match(text, /TRUNCATED_RECOVERED/);
+      assert.equal(await file("truncated.log"), "T", "exactly one side effect");
+      assert.equal(callFrames("truncated.log").length, 1, "never redispatched");
+      result.scenarios.response_truncated = { terminal: end.type, final_message: end.final_message, call_frames: 1, effect: await file("truncated.log") };
+    }
+
+    // 7b. write_stdin response lost while the process is still writing: the
+    // poll is reconciled receipt-only, stdin is written exactly once and its
+    // output is not lost.
+    {
+      const response = await turn("stdin-response-lost", agent, { yield: 500, stdin: "__LOSE_ACCOUNT_RESPONSE__\n",
+        cmd: "while read line; do printf 'GOT:%s\\n' \"$line\" >> stdin.log; sleep 1; printf 'ECHO_%s' \"$line\"; done" });
+      const end = terminal(response), { text } = handResult(response);
+      assert.match(text, /ECHO___LOSE_ACCOUNT_RESPONSE__/, "stdin output survives the lost response");
+      assert.equal(await file("stdin.log"), "GOT:__LOSE_ACCOUNT_RESPONSE__\n", "stdin delivered exactly once");
+      const stdinCalls = hand.filter(event => event.kind === "frame" && event.direction === "broker" && event.frame.type === "call" && event.frame.name === "write_stdin");
+      assert.equal(stdinCalls.length, 1, "write_stdin never redispatched");
+      result.scenarios.stdin_response_lost = { terminal: end.type, final_message: end.final_message, stdin_calls: 1, effect: await file("stdin.log") };
+    }
+
     // The durable public history retains every explicit outcome after recovery.
     const history = await curl("events-history", `/v1/agents/${agent}/events/history?limit=256`);
     const retained = history.json().data.filter(row => row.type === "event" && row.event?.type === "tool.result" && row.event.payload.tool === "exec");
     const outcomes = ["RECONCILED_OK", "no retained proof of this dispatched call; it was not resent",
-      "deadline expired after dispatch", "became ambiguous when its host was replaced", "FOLLOW_UP_OK"];
+      "deadline expired after dispatch", "became ambiguous when its host was replaced", "FOLLOW_UP_OK",
+      "RESPONSE_LOSS_RECOVERED", "TRUNCATED_RECOVERED", "ECHO___LOSE_ACCOUNT_RESPONSE__"];
     assert.equal(retained.length, outcomes.length, "one retained Code Mode result per turn");
     outcomes.forEach((outcome, index) => assert.ok(JSON.stringify(retained[index].event.payload).includes(outcome), `history retains ${outcome}`));
     result.history = retained.map(row => ({ cursor: row.cursor, turn_id: row.event.payload.turn_id, status: row.event.payload.status }));
+    // 8. Explicit public turn cancellation still reaches the running command
+    // now that HTTP transport loss is no longer treated as cancellation.
+    {
+      const cancels = brokerFrames("B", "cancel").length;
+      const admitted = (await curl("explicit-cancel-admit", `/v1/agents/${agent}/turns`, { method: "POST", expected: 202,
+        headers: { "Idempotency-Key": `explicit-cancel-${crypto.randomUUID()}` },
+        body: { input: `Run this on the Hand. HAND_STEP ${JSON.stringify({ workdir: `/${machine}`, yield: 30_000, cmd: "printf C >> cancel.log; sleep 3; printf X >> cancel.log" })}` } })).json();
+      await waitFor(async () => await file("cancel.log") === "C", "cancel command started");
+      await curl("explicit-cancel", `/v1/agents/${agent}/turns/${admitted.turn_id}/cancel`, { method: "POST", expected: 202, headers: { "Idempotency-Key": crypto.randomUUID() } });
+      await waitFor(() => brokerFrames("B", "cancel").length > cancels, "explicit cancel frame delivered to the Hand");
+      let state;
+      await waitFor(async () => { state = (await curl("explicit-cancel-state", `/v1/agents/${agent}/turns/${admitted.turn_id}`)).json().state;
+        return ["completed", "failed", "cancelled"].includes(state); }, "cancelled turn settled", 30_000);
+      assert.equal(state, "cancelled");
+      // Wait well past the command's own 3s marker: it must have been terminated.
+      await delay(4_500);
+      assert.equal(await file("cancel.log"), "C", "cancelled command was terminated before its delayed marker");
+      assert.equal(callFrames("cancel.log").length, 1);
+      result.scenarios.explicit_cancel = { turn_state: state, cancel_frames: brokerFrames("B", "cancel").length - cancels, effect: await file("cancel.log") };
+    }
     // Hand processes and workerd never print the credential.
     for (const [name, text] of [["hand-wire", JSON.stringify(hand)], ["runtime", runtime.join("\n")]]) {
       assert.ok(!text.includes(token), `${name} log must not contain the API key`);
