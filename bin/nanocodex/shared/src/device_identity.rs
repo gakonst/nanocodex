@@ -380,6 +380,8 @@ fn error_code(body: &Value) -> &str {
 struct Reply {
     status: u16,
     body: Value,
+    /// The service implements Hand devices (`x-nanocodex-hand-devices`).
+    capable: bool,
 }
 
 /// The service's current view of this device's key, from a challenge response.
@@ -643,8 +645,13 @@ impl DeviceIdentity {
             ))
         })?;
         let status = response.status().as_u16();
+        let capable = response.headers().contains_key("x-nanocodex-hand-devices");
         let body = response.json::<Value>().await.unwrap_or(Value::Null);
-        Ok(Reply { status, body })
+        Ok(Reply {
+            status,
+            body,
+            capable,
+        })
     }
 
     async fn device_request(
@@ -691,12 +698,11 @@ impl DeviceIdentity {
         })?;
         let pending = self.key(NEXT_KEY_FILE)?;
         let current = key.fingerprint();
-        // Older responses without a fingerprint: the version alone decides.
-        let names = |candidate: &str, version: u64| match &service.fingerprint {
-            Some(fingerprint) => fingerprint == candidate,
-            None => service.key_version == version,
-        };
-        let installed = if names(&current, state.key_version) && current == state.fingerprint {
+        // Promotion is always proven by the service's current key fingerprint.
+        let reported = service.fingerprint.as_deref().ok_or_else(|| {
+            fatal("The managed service did not report this Hand device's key fingerprint")
+        })?;
+        let installed = if reported == current && current == state.fingerprint {
             if service.key_version != state.key_version {
                 return Err(fatal(format!(
                     "This Hand's device key version {} does not match the service ({}); run `nanocodex hand devices reenroll`",
@@ -704,21 +710,24 @@ impl DeviceIdentity {
                 )));
             }
             return Ok(key);
-        } else if let Some(pending) = pending
-            .filter(|pending| names(&pending.fingerprint(), state.key_version.saturating_add(1)))
-        {
+        } else if let Some(pending) = pending.filter(|pending| pending.fingerprint() == reported) {
             self.promote()?;
             pending
-        } else if current != state.fingerprint
-            && names(&current, state.key_version.saturating_add(1))
-        {
+        } else if current != state.fingerprint && reported == current {
             // Promoted before device.json was updated.
             key
         } else {
             return Err(DeviceError::Reenroll);
         };
+        if service.key_version <= state.key_version {
+            return Err(fatal(
+                "The managed service reported a stale Hand device key version; run `nanocodex hand devices reenroll`",
+            ));
+        }
         state.key_version = service.key_version;
         state.fingerprint = installed.fingerprint();
+        // The service drops attestations on rotation; re-attest the new key.
+        state.ssh_host_keys.clear();
         self.save(state)?;
         tracing::info!(target: "nanocodex2", stage = "hand.device.rotation_recovered",
             device_id = state.device_id.as_str(), key_version = state.key_version,
@@ -758,8 +767,13 @@ impl DeviceIdentity {
                 let reply = self
                     .send(reqwest::Method::POST, challenges, Some(bearer), &json!({}))
                     .await?;
-                // Only a definite 404 from the enrollment route permits legacy.
-                if reply.status == 404 {
+                // Only a route-level 404 from a service that predates Hand
+                // devices permits legacy: no capability header and no error
+                // other than the generic route miss.
+                if reply.status == 404
+                    && !reply.capable
+                    && (reply.body.is_null() || error_code(&reply.body) == "not_found")
+                {
                     return Ok(Enrollment::Legacy);
                 }
                 if !reply.success() {
@@ -972,6 +986,8 @@ impl DeviceIdentity {
         self.promote()?;
         state.key_version = rotated;
         state.fingerprint = next.fingerprint();
+        // The service drops attestations on rotation; re-attest the new key.
+        state.ssh_host_keys.clear();
         self.save(&state)?;
         tracing::info!(target: "nanocodex2", stage = "hand.device.rotated",
             device_id = state.device_id.as_str(), key_version = state.key_version,
