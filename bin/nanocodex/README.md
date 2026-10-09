@@ -1,8 +1,10 @@
 # Nanocodex CLI
 
-One `nanocodex` binary serves two command trees, selected by the name it is
-invoked as. `nanocodex`, `nc`, and `nanocodex2` are the managed client
-documented here. `ncl` (or `nanocodex --local ...`) is the local, non-durable
+The `nanocodex` CLI serves two command trees, selected by the name it is
+invoked as. `nanocodex` and `nc` are the managed client documented here. The
+Hand daemon is the separate `nanocodex-hand` binary (installed as `nanocodex2`);
+`nanocodex hand` and the daemon entrypoints run it, and it forwards any other
+command to the CLI. `ncl` (or `nanocodex --local ...`) is the local, non-durable
 agent: `ncl` opens its TUI, `ncl run` is the headless JSONL run (exit code 75
 means the run is retryable), and `ncl auth` manages harness provider
 subscriptions. Commands that exist in only one tree, such as `update`,
@@ -457,7 +459,7 @@ embedded binary payloads are hidden.
 Build and test the CLI from the repository root:
 
 ```bash
-cargo build -p nanocodex-bin
+cargo build -p nanocodex-bin --bins
 cargo test -p nanocodex-bin -p nanocodex-managed -p nanocodex-cli-auth
 ```
 

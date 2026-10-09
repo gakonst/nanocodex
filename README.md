@@ -119,16 +119,17 @@ curl -fsSL https://nanocodex.paradigm.xyz | bash
 nanocodex
 ```
 
-Nanocodex is one native binary. The install exposes it as `nanocodex`, `nc`,
-`nanocodex2`, and `ncl` under `~/.nanocodex/bin`; the name selects the command
-tree. `nanocodex`, `nc`, and `nanocodex2` run the managed agent (bare = the
+Nanocodex installs two native binaries by role: the `nanocodex` CLI and the
+`nanocodex-hand` daemon (installed under its service name `nanocodex2`). The CLI
+is exposed as `nanocodex`, `nc`, and `ncl` under `~/.nanocodex/bin`; the name
+selects the command tree. `nanocodex`, `nc`, and `nanocodex2` run the managed agent (bare = the
 managed TUI; `run`, `login`, `status`, `logout`, and `auth` are the managed
 account commands). `ncl`, or `nanocodex --local`, runs the local agent: bare =
 the local non-durable TUI, `ncl run` is the local headless JSONL run (exit code
 75 means retryable), and `ncl auth` signs in to the harness provider
 subscription. Nanocodex Connect is `nanocodex connect login|status|logout`
 (`ncl login|status|logout` also manage Connect). `nanocodex hand` with no
-subcommand serves the Hand; `install`, `connect`, `menu-bar`, `menu-status`,
+subcommand serves the Hand by running the installed `nanocodex-hand`; `install`, `connect`, `menu-bar`, `menu-status`,
 `status`, `keep-awake`, `start`, `stop`, `restart`, `recover`, and
 `permissions` manage it. Commands that exist in only one tree, such as
 `update`, `install`, `setup`, `computer`, `cookies`, and `eval`, work under
@@ -191,7 +192,7 @@ Setup remains idempotent and resumable.
 
 The POSIX or PowerShell script only selects and checksum-verifies one platform
 bootstrap.
-Native Rust then installs the matching binary and voice bundle, updates the
+Native Rust then installs the matching CLI, Hand, and voice bundle, updates the
 shell PATH, configures an hourly per-user updater through launchd, systemd, or
 Task Scheduler, and owns every setup step. Background activation is
 transactional with the macOS and Windows Hand; a running Hand is never silently
@@ -222,16 +223,16 @@ process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
 the [release switcher documentation](bin/nanocodex/src/update.rs).
 
-For local checkout development, build with `cargo build -p nanocodex-bin`
+For local checkout development, build with `cargo build -p nanocodex-bin --bins`
 and run `./target/debug/nanocodex`. See [local macOS development](docs/architecture/hands.md#local-macos-development)
 for signing and restarting the existing Hand directly from `target/debug` or
 `target/release`.
 
 To install a branch or an open pull request from source, run
 `nanocodex update --branch master` or `nanocodex update --pr 123`. Both commands fetch the selected
-revision and compile the binary locally with Cargo. PR selection also
+revision and compile the CLI and Hand locally with Cargo. PR selection also
 requires `gh`. The updater reuses its checkout and Cargo cache under
-`~/.nanocodex/source-build`, builds the one binary, and uses the optimized
+`~/.nanocodex/source-build`, builds the CLI and Hand together, and uses the optimized
 `nightly` profile without release LTO. Cargo timing reports are saved under
 `~/.nanocodex/source-build/target/cargo-timings` (or your `CARGO_TARGET_DIR`).
 These source builds do not package the native voice runtime.
@@ -334,7 +335,7 @@ setup can prompt for your administrator password; SSH enrollment uses your
 existing SSH keys/configuration and requires passwordless sudo.
 
 The client verifies the release checksum, uploads only the native Rust
-`nanocodex` binary, and passes the account credential privately over stdin.
+`nanocodex-hand` daemon (as `nanocodex2`), and passes the account credential privately over stdin.
 The binary installs itself and waits for both Hand registration and its screen
 catalog; no Python, Bash installer, or remote interactive login is involved.
 `nanocodex-hand.service` starts at boot and reconnects independently of SSH.
@@ -363,9 +364,9 @@ now** selected, then enter the account phone number and six-digit SMS code.
 The current per-user installer and subsequent updates do not require
 administrator access.
 
-The installer ships the same Rust binary as the other platforms, as
-`nanocodex.exe` and `nanocodex2.exe` plus `nc.cmd` and `ncl.cmd` (`nanocodex
---local`) shims. The shared guided setup provisions OpenAI’s official
+The installer ships the same Rust binaries as the other platforms:
+`nanocodex.exe` (the CLI), `nanocodex2.exe` (the Hand daemon), and `nc.cmd` and
+`ncl.cmd` (`nanocodex --local`) shims. The shared guided setup provisions OpenAI’s official
 computer-use runtime, uses the shared per-user account login, and has Rust
 register a hidden interactive startup task with failure recovery. Running in
 the signed-in session is deliberate: capture, UI Automation, and input cannot
