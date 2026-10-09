@@ -69,6 +69,7 @@ url.workspace = true
 uuid.workspace = true
 webrtc.workspace = true
 whoami.workspace = true
+zeroize = "1.8.2"
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 nanocodex-vm.workspace = true

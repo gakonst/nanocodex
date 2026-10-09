@@ -382,18 +382,6 @@ async fn share(
                 }
                 publish(directory, &status)?;
             }
-            let factory = recipe.map(|recipe| {
-                let (directory, origin, key, cancel, status) = (
-                    directory.to_owned(),
-                    origin.to_owned(),
-                    key.to_owned(),
-                    cancel.clone(),
-                    status.clone(),
-                );
-                tokio::spawn(async move {
-                    supervise_factory(recipe, &directory, &origin, &key, &cancel, &status).await;
-                })
-            });
             // Share the native Hand's capture supervision: keep the shell ready
             // while capture starts, repair helpers in place, and retain replacement
             // fences instead of leaving a failed screen idle until daemon restart.
@@ -415,23 +403,35 @@ async fn share(
                 None => {
                     cancel.cancel();
                     let _ = leases.await;
-                    if let Some(factory) = factory {
-                        let _ = factory.await;
-                    }
                     let _ = fs::remove_file(directory.join("status.json"));
                     return Ok(());
                 }
                 Some(Err(error)) => {
                     cancel.cancel();
                     let _ = leases.await;
-                    if let Some(factory) = factory {
-                        let _ = factory.await;
-                    }
                     let _ = fs::remove_file(directory.join("status.json"));
                     return Err(error);
                 }
                 Some(Ok(authorization)) => authorization,
             };
+            // The factory starts with the Hand's publication authority: an
+            // enrolled device's refreshed credential file, or the account key
+            // only for a never-enrolled Hand.
+            let factory = recipe.map(|recipe| {
+                let auth = match &authorization.device {
+                    Some(credentials) => FactoryAuth::Device(credentials.clone()),
+                    None => FactoryAuth::AccountKey(key.to_owned()),
+                };
+                let (directory, origin, cancel, status) = (
+                    directory.to_owned(),
+                    origin.to_owned(),
+                    cancel.clone(),
+                    status.clone(),
+                );
+                tokio::spawn(async move {
+                    supervise_factory(recipe, &directory, &origin, auth, &cancel, &status).await;
+                })
+            });
             let attestation = authorization.device.clone().map(|device| {
                 let cancel = cancel.clone();
                 tokio::spawn(async move {
@@ -748,14 +748,33 @@ fn wsl_factory_args(
     command
 }
 
+/// Authority handed to the VM factory child.
+enum FactoryAuth {
+    /// Never-enrolled (legacy) Hand only.
+    AccountKey(String),
+    /// Device-enrolled Hand: a refreshed 0600 credential file, never the account key.
+    Device(std::sync::Arc<nanocodex_bin_shared::device_identity::DeviceCredentials>),
+}
+
 async fn supervise_factory(
     recipe: FactoryRecipe,
     directory: &Path,
     origin: &str,
-    key: &str,
+    auth: FactoryAuth,
     cancel: &CancellationToken,
     status: &std::sync::Mutex<Value>,
 ) {
+    let credential_file = match &auth {
+        FactoryAuth::Device(credentials) => Some(
+            super::vm_factory_credential::start(credentials.clone(), directory, cancel.clone())
+                .await,
+        ),
+        FactoryAuth::AccountKey(_) => None,
+    };
+    let redact = |line: &str| match &auth {
+        FactoryAuth::AccountKey(key) => line.replace(key.as_str(), "[redacted]"),
+        FactoryAuth::Device(_) => super::vm_factory_credential::redact(line),
+    };
     let update = |state: &str| {
         let mut value = status.lock().unwrap();
         value["factory"] = json!({"name": recipe.name, "status": state});
@@ -768,15 +787,38 @@ async fn supervise_factory(
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         // WSLENV lists names only. Preserve the user's unrelated environment
-        // transfers while making these three variables Linux-visible.
+        // transfers while making these three variables Linux-visible; /p
+        // translates the credential file path into the distribution.
         let wslenv = [
             std::env::var("WSLENV").unwrap_or_default(),
-            "NANOCODEX_API_KEY:NANOCODEX_MANAGED_URL:NANOCODEX_PARENT_PIPE".into(),
+            match &auth {
+                FactoryAuth::AccountKey(_) => {
+                    "NANOCODEX_API_KEY:NANOCODEX_MANAGED_URL:NANOCODEX_PARENT_PIPE".into()
+                }
+                FactoryAuth::Device(_) => format!(
+                    "{}/p:NANOCODEX_MANAGED_URL:NANOCODEX_PARENT_PIPE",
+                    super::vm_factory_credential::CREDENTIAL_FILE_ENV
+                ),
+            },
         ]
         .join(":");
+        match (&auth, &credential_file) {
+            (FactoryAuth::AccountKey(key), _) => {
+                command.env("NANOCODEX_API_KEY", key);
+            }
+            (FactoryAuth::Device(_), Some((path, _))) => {
+                // Neither an inherited account key nor a saved login reaches the factory.
+                command
+                    .env_remove("NANOCODEX_API_KEY")
+                    .env_remove("NC_API_KEY")
+                    .env(super::vm_factory_credential::CREDENTIAL_FILE_ENV, path);
+            }
+            (FactoryAuth::Device(_), None) => {
+                unreachable!("device factories start their credential file")
+            }
+        }
         let child = command
             .args(&recipe.args)
-            .env("NANOCODEX_API_KEY", key)
             .env("NANOCODEX_MANAGED_URL", origin)
             .env("NANOCODEX_PARENT_PIPE", "1")
             .env("WSLENV", wslenv)
@@ -794,7 +836,7 @@ async fn supervise_factory(
                     () = cancel.cancelled() => break,
                     line = lines.next_line() => match line {
                         Ok(Some(line)) => {
-                            if let Some(log) = &mut log { let _ = writeln!(log, "{}", line.replace(key, "[redacted]")); }
+                            if let Some(log) = &mut log { let _ = writeln!(log, "{}", redact(&line)); }
                             if let Ok(entry) = serde_json::from_str::<Value>(&line) {
                                 match entry["fields"]["stage"].as_str() {
                                     Some("vm.host.ready") => update("connected"),
@@ -828,6 +870,10 @@ async fn supervise_factory(
         }
         update("error");
         tokio::select! { () = cancel.cancelled() => break, () = tokio::time::sleep(Duration::from_secs(5)) => {} }
+    }
+    // The refresher removes the credential file once cancelled.
+    if let Some((_, refresher)) = credential_file {
+        let _ = refresher.await;
     }
     update("stopped");
 }

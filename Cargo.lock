@@ -6306,6 +6306,7 @@ dependencies = [
  "uuid",
  "webrtc",
  "whoami 1.6.1",
+ "zeroize",
 ]
 
 [[package]]

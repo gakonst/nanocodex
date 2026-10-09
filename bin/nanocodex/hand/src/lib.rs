@@ -64,6 +64,7 @@ mod vm_hand;
 )))]
 #[path = "vm_hand_unsupported.rs"]
 mod vm_hand;
+mod vm_factory_credential;
 mod vm_hand_config;
 mod vm_host;
 
