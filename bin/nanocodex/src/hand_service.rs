@@ -341,7 +341,9 @@ pub(crate) async fn restart() -> Result<()> {
     stop().await?;
     start().await
 }
-/// Changes only argv[0]. Caller owns stop/start and rollback ordering.
+/// Changes argv[0] and refreshes launch policy. Caller owns stop/start and
+/// rollback ordering. Interactive keeps live screen capture and input at app
+/// priority instead of the default daemon band, which parallel builds starve.
 pub(crate) async fn switch_executable(path: &Path) -> Result<()> {
     refuse_system_service().await?;
     let path = executable(path)?;
@@ -354,6 +356,7 @@ pub(crate) async fn switch_executable(path: &Path) -> Result<()> {
     }
     args[0] = json!(path);
     value["ExitTimeOut"] = json!(90);
+    value["ProcessType"] = json!("Interactive");
     write_plist(&value)
 }
 fn pending_login(value: &Value) -> bool {
@@ -386,7 +389,7 @@ fn service_plist(binary: &Path) -> Result<Value> {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    let mut value = json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}});
+    let mut value = json!({"Label":LABEL,"ProgramArguments":[binary,"hand"],"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":10,"ExitTimeOut":90,"ProcessType":"Interactive","WorkingDirectory":home,"StandardOutPath":log,"StandardErrorPath":log,"EnvironmentVariables":{"HOME":home,"PATH":"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}});
     if std::env::var("NANOCODEX_COMPUTER").as_deref() == Ok("off") {
         value["EnvironmentVariables"]["NANOCODEX_COMPUTER"] = json!("off");
     }

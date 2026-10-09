@@ -257,6 +257,11 @@ opt-level = 3
 [profile.dev.package.tiny-skia-path]
 opt-level = 3
 
+# Native Hand screen observations JPEG-encode every frame. Unoptimized, one
+# 1280-pixel encode takes seconds, starving capture and live viewers.
+[profile.dev.package.image]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"

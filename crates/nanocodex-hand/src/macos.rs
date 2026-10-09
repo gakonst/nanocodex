@@ -714,23 +714,24 @@ fn capture() -> Result<Value> {
     capture_rect(bounds, width, height, began)
 }
 /// The availability check in capture() guards all macOS 26-only objects.
+/// The deadline covers only ScreenCaptureKit. The completion handler retains
+/// the image and returns immediately; conversion and JPEG encoding run on this
+/// worker afterwards, so slow encoding (for example an unoptimized build or a
+/// busy CPU) can neither be misreported as a desktop timeout nor keep running
+/// on ScreenCaptureKit's callback queue after the caller gave up.
 fn capture_rect(bounds: CGRect, width: u32, height: u32, began: Instant) -> Result<Value> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let completion = RcBlock::new(move |output: *mut SCScreenshotOutput, err: *mut NSError| {
-        autoreleasepool(|_| {
-            let image_ms = began.elapsed().as_secs_f64() * 1000.0;
-            let encode_started = Instant::now();
-            // SAFETY: callback arguments are owned by ScreenCaptureKit for this
-            // invocation; the retained SDR image lives through conversion.
-            let result = unsafe {
-                output.as_ref().filter(|_| err.is_null()).and_then(|output| output.sdrImage())
-            }.ok_or_else(|| error("ScreenCaptureKit could not capture the main display; check Screen Recording permission and the active desktop session"))
-                .and_then(|image| encode_capture(&image));
-            tracing::debug!(target: "nanocodex_hand", stage = "screen.macos.capture", path = "rectangle",
-                content_ms = 0.0, image_ms, encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0,
-                total_ms = began.elapsed().as_secs_f64() * 1000.0, success = result.is_ok());
-            let _ = sender.send(result);
-        });
+        // SAFETY: callback arguments are owned by ScreenCaptureKit for this
+        // invocation; sdrImage returns a retained CGImage that outlives it.
+        let image = unsafe {
+            output
+                .as_ref()
+                .filter(|_| err.is_null())
+                .and_then(|output| output.sdrImage())
+        };
+        // A late completion after the deadline only drops its image.
+        let _ = sender.try_send(image);
     });
     // SAFETY: capture() verifies API availability. The async API copies the
     // completion block and retains configuration for the request.
@@ -746,9 +747,17 @@ fn capture_rect(bounds: CGRect, width: u32, height: u32, began: Instant) -> Resu
             Some(&completion),
         );
     }
-    receiver
+    let image = receiver
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| error("ScreenCaptureKit timed out waiting for the active desktop"))?
+        .ok_or_else(|| error("ScreenCaptureKit could not capture the main display; check Screen Recording permission and the active desktop session"))?;
+    let image_ms = began.elapsed().as_secs_f64() * 1000.0;
+    let encode_started = Instant::now();
+    let result = encode_capture(&image);
+    tracing::debug!(target: "nanocodex_hand", stage = "screen.macos.capture", path = "rectangle",
+        content_ms = 0.0, image_ms, encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0,
+        total_ms = began.elapsed().as_secs_f64() * 1000.0, success = result.is_ok());
+    result
 }
 fn encode_capture(image: &CGImage) -> Result<Value> {
     let width = CGImage::width(Some(image));
@@ -783,10 +792,10 @@ fn encode_capture(image: &CGImage) -> Result<Value> {
         Some(image),
     );
     drop(context);
-    let rgb: Vec<u8> = rgba
-        .chunks_exact(4)
-        .flat_map(|p| [p[0], p[1], p[2]])
-        .collect();
+    let mut rgb = Vec::with_capacity(width * height * 3);
+    for pixel in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
     let frame = RgbImage::from_raw(width as u32, height as u32, rgb)
         .ok_or_else(|| error("invalid capture bitmap"))?;
     encode_jpeg(&frame)
