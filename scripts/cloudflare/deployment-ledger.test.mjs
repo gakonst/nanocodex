@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDeploymentLedger, deploymentEnvironment } from './deployment-ledger.mjs';
 import { releaseTag, workerScripts } from './live-worker-state.mjs';
+import { workerSpecs } from './worker-inputs.mjs';
 
 const fingerprint = 'a'.repeat(64), ref = 'b'.repeat(40), account = '1'.repeat(32);
 const deploymentId = '11111111-1111-4111-8111-111111111111';
@@ -112,4 +113,8 @@ test('unknown state never skips; uncertain ledger writes are not retried',async(
   await assert.rejects(uncertain.finish(record,'success'));
   await assert.rejects(uncertain.finish(record,'failure'),/Invalid/);
   assert.equal(attempted,1);
+});
+
+test('every released Worker has a live script, so the ledger can admit it', () => {
+  assert.deepEqual(Object.keys(workerScripts).sort(), Object.keys(workerSpecs).sort());
 });

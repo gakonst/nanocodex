@@ -635,6 +635,15 @@ const hostBridge = Object.freeze({
   nextCodeUpdate(sessionId, callId) {
     return requiredSessionHost(sessionId).nextCodeUpdate(sessionId, callId);
   },
+  detachCodeTurn(sessionId) {
+    return hostSessions.get(sessionId)?.detachCodeTurn?.(sessionId) ?? "[]";
+  },
+  cancelCodeTurnWithUpdates(sessionId) {
+    const host = hostSessions.get(sessionId);
+    if (host?.cancelCodeTurnWithUpdates) return host.cancelCodeTurnWithUpdates(sessionId);
+    host?.cancelCodeTurn?.(sessionId);
+    return "[]";
+  },
   executeTool(name, input, sessionId, callId, model, turnId) {
     return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model, turnId);
   },

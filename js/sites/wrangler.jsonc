@@ -3,13 +3,15 @@
   "name": "nanocodex-sites",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "workers_dev": false,
   "preview_urls": false,
-  // Serve only first-level subdomains of a dedicated registrable zone so every
-  // published site is its own origin and never shares the app's cookies. Attach
-  // the zone with a wildcard route and set SITES_DOMAIN to the same zone:
+  // With an empty SITES_DOMAIN, sites are served by path on workers.dev:
+  // https://nanocodex-sites.<subdomain>.workers.dev/<label>/. Private views
+  // need the owner's session; public links are sandboxed (docs/SITES.md).
+  // To give every site its own origin instead, attach a dedicated registrable
+  // zone with a wildcard route, set SITES_DOMAIN to it, and set managed's
+  // NANOCODEX_SITES_ORIGIN to https://*.<zone>:
   //   "routes": [{ "pattern": "*.<zone>/*", "zone_name": "<zone>" }]
-  // An empty SITES_DOMAIN serves nothing.
+  "workers_dev": true,
   "vars": { "SITES_DOMAIN": "" },
   "r2_buckets": [{ "binding": "SITES", "bucket_name": "nanocodex-sites" }],
   "observability": { "enabled": true }

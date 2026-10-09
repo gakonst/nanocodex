@@ -158,6 +158,12 @@ extern "C" {
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = beginCodeTurn)]
     fn host_begin_code_turn(session_id: &str);
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = detachCodeTurn)]
+    fn host_detach_code_turn(session_id: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCodeTurnWithUpdates)]
+    fn host_cancel_code_turn_with_updates(session_id: &str) -> Result<JsValue, JsValue>;
+
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = preemptCodeTurn)]
     fn host_preempt_code_turn(session_id: &str);
 
@@ -880,6 +886,22 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         host_begin_code_turn(session_id);
     }
 
+    fn detach_turn(
+        &self,
+        session_id: &str,
+        observer: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
+    ) {
+        // Hosts predating the relay contract leave cells for the next wait.
+        let Ok(value) = host_detach_code_turn(session_id) else {
+            return;
+        };
+        for relay in decode_relays(&value) {
+            let sink = observer(&relay.origin_call_id);
+            let session_id = session_id.to_owned();
+            spawn_local(relay_javascript_code(session_id, relay.relay_id, sink));
+        }
+    }
+
     fn preempt_turn<'a>(
         &'a self,
         session_id: &'a str,
@@ -896,6 +918,25 @@ impl CodeModeHost for JavaScriptCodeModeHost {
     ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
         Box::pin(async move {
             host_cancel_code_turn(session_id);
+            Ok(())
+        })
+    }
+
+    fn cancel_turn_with_updates<'a>(
+        &'a self,
+        session_id: &'a str,
+        observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        Box::pin(async move {
+            // Hosts predating the contract cancel without reporting receipts.
+            let Ok(value) = host_cancel_code_turn_with_updates(session_id) else {
+                host_cancel_code_turn(session_id);
+                return Ok(());
+            };
+            // Cancelled cells settle, so each relay ends after its final receipts.
+            for relay in decode_relays(&value) {
+                drain_javascript_relay(session_id, &relay.relay_id, observer).await;
+            }
             Ok(())
         })
     }
@@ -1072,6 +1113,88 @@ async fn observe_javascript_code(
     let mut result = decode_code_execution(value)?;
     result.notifications.extend(notifications);
     Ok(result)
+}
+
+#[derive(Deserialize)]
+struct JavaScriptCodeRelay {
+    relay_id: String,
+    origin_call_id: String,
+}
+
+fn decode_relays(value: &JsValue) -> Vec<JavaScriptCodeRelay> {
+    match value
+        .as_string()
+        .map(|encoded| serde_json::from_str::<Vec<JavaScriptCodeRelay>>(&encoded))
+    {
+        Some(Ok(relays)) => relays,
+        Some(Err(error)) => {
+            let _ = host_console_error(
+                &format!("JavaScript Code Mode host returned invalid relays: {error}"),
+                &JsValue::NULL,
+            );
+            Vec::new()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// Forwards one detached cell's nested lifecycle until the host ends the relay.
+async fn relay_javascript_code(
+    session_id: String,
+    relay_id: String,
+    mut observer: Box<dyn CodeModeObserver>,
+) {
+    drain_javascript_relay(&session_id, &relay_id, observer.as_mut()).await;
+}
+
+/// Delivers a relay's nested starts and completions until the host returns
+/// null. Notifications stay with the cell for its next wait result.
+async fn drain_javascript_relay(
+    session_id: &str,
+    relay_id: &str,
+    observer: &mut dyn CodeModeObserver,
+) {
+    loop {
+        let update = match host_next_code_update(session_id, relay_id) {
+            Ok(update) => JsFuture::from(update).await,
+            Err(error) => Err(error),
+        };
+        let value = match update {
+            Ok(value) if value.is_null() || value.is_undefined() => return,
+            Ok(value) => value,
+            Err(error) => {
+                let _ = host_console_error("Code Mode relay ended", &error);
+                return;
+            }
+        };
+        let Some(value) = value
+            .as_string()
+            .and_then(|encoded| serde_json::from_str::<serde_json::Value>(&encoded).ok())
+        else {
+            let _ = host_console_error(
+                "JavaScript Code Mode host returned an invalid relay update",
+                &JsValue::NULL,
+            );
+            return;
+        };
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("nested_call_started") => {
+                if let Ok(update) = serde_json::from_value::<JavaScriptNestedCallStarted>(value) {
+                    observer.update(CodeModeUpdate::NestedCallStarted {
+                        call_id: &update.call_id,
+                        name: &update.name,
+                        input: &update.input,
+                    });
+                }
+            }
+            Some("nested_call_completed") => {
+                if let Ok(update) = serde_json::from_value::<JavaScriptNestedCallCompleted>(value) {
+                    observer.update(CodeModeUpdate::NestedCallCompleted(&update.call));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn decode_code_execution(value: JsValue) -> Result<CodeModeExecution, CodeModeHostError> {
@@ -3371,6 +3494,7 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward_subagent_updates(
     host_definition_id: u32,
     registry: Weak<SubagentRegistry>,

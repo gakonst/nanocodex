@@ -69,7 +69,8 @@ pub struct SiteView {
     pub site_id: String,
     /// Version being viewed.
     pub version: u64,
-    /// Private URL; it stops working at `expires_at`.
+    /// Owner-only URL carrying a single-use grant: it works in the first
+    /// browser that opens it, until `expires_at`.
     pub url: String,
     /// Expiry as Unix milliseconds.
     pub expires_at: u64,

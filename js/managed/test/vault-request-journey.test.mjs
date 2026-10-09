@@ -274,7 +274,18 @@ test("Vault requests preserve owner authority and status-only results through HT
     assert.equal(downstream.length, beforeDestination + 1);
     assert.ok(brokerCalls.slice(beforeTool).every(call => call.endpoint === "https://vault-egress.internal/v1/request" && /^managed-session-v1_[0-9a-f]{64}$/.test(call.subject)),
       "Code Mode uses the session subject resolved by production ManagedAgentOwnership");
+    // A socket upgraded with the live key, then revoked before its first
+    // prompt, must reject that first prompt: upgrade authority is never reused.
+    const fresh = new WebSocket(new URL(`/v1/agents/${created.agent_id}/ws`, base).href.replace(/^http/, "ws"), { headers: { authorization: `Bearer ${alice.token}` } });
+    const freshWire = []; fresh.on("message", data => freshWire.push(JSON.parse(String(data))));
+    await waitFor(() => freshWire.some(frame => frame.type === "ready"), "second WebSocket ready");
     await call(`/v1/api-keys/${alice.metadata.id}`, { method: "DELETE", token: null, cookie: alice.cookie, origin: "same", expected: 204 });
+    const firstAfterRevoke = crypto.randomUUID();
+    fresh.send(JSON.stringify({ type: "prompt", id: firstAfterRevoke, input: "First prompt after the key was revoked." }));
+    await waitFor(() => freshWire.some(frame => frame.type === "error"), "revoked first prompt rejected");
+    assert.equal(freshWire.find(frame => frame.type === "error").code, "login_unavailable");
+    assert.ok(!freshWire.some(frame => frame.type === "turn_accepted" && frame.id === firstAfterRevoke));
+    fresh.terminate();
     const beforeRevoked = brokerCalls.length; await vault({ expected: 401 }); assert.equal(brokerCalls.length, beforeRevoked);
     const revokedTurn = crypto.randomUUID(), beforeFrames = wire.length;
     socket.send(JSON.stringify({ type: "prompt", id: revokedTurn, input: "Repeat the synthetic journey after revocation." }));

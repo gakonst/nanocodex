@@ -185,6 +185,10 @@ path = "tests/local_managed_server.rs"
 name = "tui_control"
 path = "tests/tui_control.rs"
 
+[[test]]
+name = "code_mode_teardown"
+path = "tests/code_mode_teardown.rs"
+
 # One crate, two executables split by role: the user-facing CLI and the Hand
 # daemon (installed under the historical file name nanocodex2).
 [lib]

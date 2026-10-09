@@ -242,6 +242,19 @@ pub trait CodeModeHost: Send + Sync + 'static {
     /// Starts a logical turn without cancelling cells retained by earlier turns.
     fn begin_turn(&self, _session_id: &str) {}
 
+    /// Relays nested updates of cells a completed turn left running without an
+    /// observer. For each such cell the host calls `observer(origin_call_id)` and
+    /// reports that cell's nested starts and completions to the returned observer
+    /// until the cell settles or a later wait takes over, delivering each update
+    /// once. Must not block; hosts without a relay keep the default, and their
+    /// cells report nested updates to the next wait.
+    fn detach_turn(
+        &self,
+        _session_id: &str,
+        _observer: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
+    ) {
+    }
+
     /// Non-destructive early foreground yield. Custom hosts may conservatively
     /// retain timed observations by leaving this default implementation unchanged.
     fn preempt_turn<'a>(
@@ -257,6 +270,18 @@ pub trait CodeModeHost: Send + Sync + 'static {
         session_id: &'a str,
     ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
         self.cancel(session_id)
+    }
+
+    /// Cancels the current logical turn's cells and reports nested calls they
+    /// leave unfinished, including starts an earlier exec or wait delivered, to
+    /// `observer` before returning. Each update is delivered once. Hosts without
+    /// this keep the default, which cancels without reporting.
+    fn cancel_turn_with_updates<'a>(
+        &'a self,
+        session_id: &'a str,
+        _observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        self.cancel_turn(session_id)
     }
 
     /// Cancels host-owned Code Mode and nested-tool work for one agent session.

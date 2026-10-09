@@ -189,7 +189,7 @@ pub(crate) async fn connect_for_hand() -> Result<Option<nanocodex_computer::Comp
     }).collect();
     Ok(Some(nanocodex_computer::ComputerTools::new(
         LazyComputer {
-            connected: tokio::sync::Mutex::new(None),
+            state: tokio::sync::Mutex::new(LazyComputerState::default()),
         },
         catalog,
     )))
@@ -197,7 +197,23 @@ pub(crate) async fn connect_for_hand() -> Result<Option<nanocodex_computer::Comp
 
 #[allow(dead_code)]
 struct LazyComputer {
-    connected: tokio::sync::Mutex<Option<nanocodex_computer::ComputerTools>>,
+    state: tokio::sync::Mutex<LazyComputerState>,
+}
+
+#[allow(dead_code)] // Also compiled into the installer, which does not publish tools.
+#[derive(Default)]
+struct LazyComputerState {
+    connected: Option<nanocodex_computer::ComputerTools>,
+    initializing:
+        Option<tokio::task::JoinHandle<Result<nanocodex_computer::ComputerTools, String>>>,
+}
+
+impl Drop for LazyComputer {
+    fn drop(&mut self) {
+        if let Some(initializing) = self.state.get_mut().initializing.take() {
+            initializing.abort();
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -208,7 +224,7 @@ impl nanocodex_computer::ComputerExecutor for LazyComputer {
         turn: &str,
         event: &str,
     ) -> Result<(), nanocodex::oai::tools::ToolError> {
-        let computer = self.connected.lock().await.clone();
+        let computer = self.state.lock().await.connected.clone();
         if let Some(computer) = computer {
             computer.end_turn(session, turn, event).await?;
         }
@@ -226,38 +242,36 @@ impl nanocodex_computer::ComputerExecutor for LazyComputer {
         let discovery =
             name == "js" && arguments.as_object().is_some_and(serde_json::Map::is_empty);
         let computer = {
-            let mut connected = self.connected.lock().await;
-            if connected.is_none() {
-                let Some(config) = nanocodex_computer::ComputerConfig::discover() else {
-                    if discovery {
-                        return discovery_output(json!({"status":"preparing"}));
+            let mut state = self.state.lock().await;
+            if state.connected.is_none() {
+                if state.initializing.is_none() {
+                    let Some(config) = nanocodex_computer::ComputerConfig::discover() else {
+                        if discovery {
+                            return discovery_output(json!({"status":"preparing"}));
+                        }
+                        return Err("Computer Use components are unavailable; discover the Hand contract again before sending input".into());
+                    };
+                    // Retain initialization across discovery deadlines and caller
+                    // cancellation. The provider owns its 120-second startup bound;
+                    // restarting it every five seconds can starve cold startup.
+                    state.initializing = Some(tokio::spawn(async move {
+                        nanocodex_computer::ComputerTools::connect(config)
+                            .await
+                            .map_err(|error| error.to_string())
+                    }));
+                }
+                let initializing = state.initializing.as_mut().expect("started above");
+                match tokio::time::timeout(std::time::Duration::from_secs(5), initializing).await {
+                    Ok(result) => {
+                        state.initializing = None;
+                        let computer = result.map_err(|error| format!("Computer Use initialization task failed: {error}"))??;
+                        state.connected = Some(computer);
                     }
-                    return Err("Computer Use components are unavailable; discover the Hand contract again before sending input".into());
-                };
-                // Discovery is read-only. Bound optional initialization so native
-                // screen controls remain reachable while components prepare.
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    nanocodex_computer::ComputerTools::connect(config),
-                )
-                .await
-                {
-                    Ok(Ok(computer)) => *connected = Some(computer),
-                    result if discovery => {
-                        let _ = result;
-                        tracing::debug!("Computer provider is not ready during discovery");
-                        return discovery_output(json!({"status":"preparing"}));
-                    }
-                    Ok(Err(error)) => return Err(error),
-                    Err(_) => {
-                        return Err(
-                            "Computer Use initialization timed out; no action was dispatched"
-                                .into(),
-                        );
-                    }
+                    Err(_) if discovery => return discovery_output(json!({"status":"preparing"})),
+                    Err(_) => return Err("Computer Use is still initializing; no action was dispatched. Discover the Hand contract again before sending input".into()),
                 }
             }
-            connected.as_ref().expect("connected above").clone()
+            state.connected.as_ref().expect("connected above").clone()
         };
         if discovery {
             let catalog = computer
@@ -296,4 +310,129 @@ fn discovery_output(value: serde_json::Value) -> nanocodex::oai::tools::ToolResu
     nanocodex_computer::output(
         serde_json::json!({"content":[{"type":"text", "text":value.to_string()}]}),
     )
+}
+
+#[cfg(all(test, unix))]
+mod lazy_gateway_journey {
+    use super::*;
+    use nanocodex::oai::tools::ToolContext;
+    use nanocodex_computer::{ComputerConfig, ComputerExecutor, ComputerTools};
+    use serde_json::json;
+
+    // The external MCP provider is the only synthetic dependency. Exercise the
+    // actual Hand gateway, its deadline, and the retained stdio initialization.
+    #[tokio::test]
+    async fn slow_catalog_survives_discovery_deadline_and_dispatches_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let provider = directory.path().join("provider.py");
+        let calls = directory.path().join("calls.jsonl");
+        let ready = directory.path().join("ready");
+        let starts = directory.path().join("starts");
+        fs::write(&provider, r#"import json,sys,time,os
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request: continue
+    method=request['method']
+    if method == 'initialize':
+        with open(sys.argv[3], 'a') as f: f.write('start\n')
+        while not os.path.exists(sys.argv[2]): time.sleep(0.01)
+        result={'protocolVersion':'2025-06-18','capabilities':{},'serverInfo':{'name':'fixture','version':'1'}}
+    elif method == 'tools/list':
+        result={'tools':[{'name':n,'description':n,'inputSchema':{'type':'object'}} for n in ['js','js_reset']]}
+    else:
+        with open(sys.argv[1], 'a') as f: f.write(json.dumps(request)+'\n')
+        result={'content':[{'type':'text','text':'fixture action complete'}]}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+"#).unwrap();
+        let mut config = ComputerConfig::mcp("/usr/bin/python3");
+        config.args = vec![
+            provider.into_os_string(),
+            calls.clone().into_os_string(),
+            ready.clone().into_os_string(),
+            starts.clone().into_os_string(),
+        ];
+        let gateway = LazyComputer {
+            state: tokio::sync::Mutex::new(LazyComputerState {
+                connected: None,
+                initializing: Some(tokio::spawn(async move {
+                    ComputerTools::connect(config)
+                        .await
+                        .map_err(|e| e.to_string())
+                })),
+            }),
+        };
+        let context = |call| ToolContext::new("lazy-gateway", "fixture-session", call, &[], 16000);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                gateway.invoke_tool("js", json!({}), context("cancelled")),
+            )
+            .await
+            .is_err()
+        );
+        let first = gateway
+            .invoke_tool("js", json!({}), context("first"))
+            .await
+            .unwrap();
+        eprintln!(
+            "after cancelled discovery, expected preparing: {}",
+            first.structured_result()
+        );
+        assert!(first.structured_result().to_string().contains("preparing"));
+        assert!(!calls.exists(), "discovery must not dispatch an action");
+        fs::write(ready, "ready").unwrap();
+        let next = gateway
+            .invoke_tool("js", json!({}), context("second"))
+            .await
+            .unwrap();
+        eprintln!(
+            "after releasing provider, expected ready: {}",
+            next.structured_result()
+        );
+        assert!(next.structured_result().to_string().contains("ready"));
+        assert_eq!(
+            fs::read_to_string(starts).unwrap().lines().count(),
+            1,
+            "startup must not restart after discovery timed out"
+        );
+        let action = gateway
+            .invoke_tool("js", json!({"code":"fixture"}), context("action"))
+            .await
+            .unwrap();
+        eprintln!(
+            "explicit action, expected success: {}",
+            action.structured_result()
+        );
+        assert!(action.success);
+        assert_eq!(fs::read_to_string(calls).unwrap().lines().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_initialization_surfaces_error_instead_of_preparing() {
+        let gateway = LazyComputer {
+            state: tokio::sync::Mutex::new(LazyComputerState {
+                connected: None,
+                initializing: Some(tokio::spawn(async {
+                    ComputerTools::connect(ComputerConfig::mcp("/nonexistent/cua-provider"))
+                        .await
+                        .map_err(|e| e.to_string())
+                })),
+            }),
+        };
+        let error = gateway
+            .invoke_tool(
+                "js",
+                json!({}),
+                ToolContext::new("lazy-gateway", "fixture-session", "failure", &[], 16000),
+            )
+            .await
+            .err()
+            .expect("initialization failure must be visible");
+        eprintln!("expected provider startup error: {error}");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot start upstream Sky MCP provider")
+        );
+    }
 }

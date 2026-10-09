@@ -236,6 +236,7 @@ import {
 import { persistEventStreamFailure } from "./event-stream-failure";
 import { watchManagedAgentFamilyEvents } from "./agent-event-watcher";
 import { createToolLifecycleObserver } from "./tool-observation";
+import { OpenToolCalls } from "./open-tool-calls";
 import { traceToolInvocation } from "./tool-tracing";
 import { DiagnosticJournal, diagnosticQuery, diagnosticScope } from "./diagnostic-journal";
 import {
@@ -1020,16 +1021,7 @@ type SessionSocketAttachment = Readonly<{
   sessionId: string;
   authorization: TurnAuthorization;
   replayAfter: string | null;
-  /** When the upgrade's live authority reached this object; consumed by the first prompt. */
-  authorizedAt?: number;
 }>;
-
-// The upgrade itself resolved the key's live authority immediately before
-// this object accepted the socket. A prompt that follows within this bound is
-// part of that same client request (nanocodex2 run sends it right after
-// ready), so it reuses that authority instead of a second key round trip.
-// Later prompts, and every prompt after this bound, revalidate the key.
-const SOCKET_UPGRADE_AUTHORITY_REUSE_MS = 2_000;
 
 type HistoryProjectionOutboxRow = {
   source_cursor: string;
@@ -4205,6 +4197,8 @@ export class DurableAgentSession extends DurableComputerObject {
   #presentation?: AgentPresentationWriter;
   #events?: EventWatcher;
   #eventLog!: DurableEventLog<StreamMessage>;
+  #openToolCalls!: OpenToolCalls;
+  #finishedRunAgent: number | undefined;
   #eventArchive!: ManagedEventArchive<StreamMessage>;
   #eventArchiveTask?: Promise<ManagedEventSealResult>;
   #archiveMaintenance!: ArchiveMaintenance;
@@ -4529,7 +4523,11 @@ export class DurableAgentSession extends DurableComputerObject {
       .toArray().some(({ name }) => name === "source_cursor")) {
       this.ctx.storage.sql.exec("ALTER TABLE history_projection_outbox ADD COLUMN source_cursor TEXT NOT NULL DEFAULT '0'");
     }
-    this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage, event => this.#operations.record(event, this.#sessionId()));
+    this.#openToolCalls = new OpenToolCalls(this.ctx.storage);
+    this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage, event => {
+      this.#operations.record(event, this.#sessionId());
+      this.#finishedRunAgent = this.#openToolCalls.observe(event) ?? this.#finishedRunAgent;
+    });
     this.#codeEffectJournal = createManagedCodeEffectJournal(this.ctx.storage);
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
       this.ctx.storage,
@@ -7083,7 +7081,6 @@ export class DurableAgentSession extends DurableComputerObject {
       authorization,
       replayAfter: cursor === latestCursor ? null : cursor,
       caller,
-      ...(authorization.apiKeyId ? { authorizedAt: Date.now() } : {}),
     } satisfies SessionSocketAttachment);
     this.ctx.acceptWebSocket(server, ["client"]);
     this.#send(server, {
@@ -7482,16 +7479,8 @@ export class DurableAgentSession extends DurableComputerObject {
       return;
     }
     try {
-      const attachment = socket.deserializeAttachment() as SessionSocketAttachment | null;
-      // Consume the upgrade's authority before any await: only the first
-      // prompt on this socket, and only inside the bound, may reuse it.
-      const upgradeAuthority = attachment?.authorizedAt !== undefined
-        && Date.now() - attachment.authorizedAt <= SOCKET_UPGRADE_AUTHORITY_REUSE_MS;
-      if (attachment?.authorizedAt !== undefined) {
-        const { authorizedAt: _consumed, ...retained } = attachment;
-        socket.serializeAttachment(retained satisfies SessionSocketAttachment);
-      }
       const requestHash = await hashManagedInput(command.input);
+      const attachment = socket.deserializeAttachment() as SessionSocketAttachment | null;
       const submission = await this.#submitManagedTurn(
         command.id,
         command.input,
@@ -7500,7 +7489,6 @@ export class DurableAgentSession extends DurableComputerObject {
         true,
         attachment?.authorization ?? { capabilities: [] },
         undefined, undefined, "websocket", attachment?.caller,
-        true, undefined, upgradeAuthority,
       );
       if (!submission.created) {
         this.#send(socket, {
@@ -8919,7 +8907,6 @@ export class DurableAgentSession extends DurableComputerObject {
     caller: CallerContext = {},
     userInitiated = true,
     beforeReplay?: () => void,
-    upgradeAuthority = false,
   ): Promise<ManagedTurnSubmission> {
     await this.#requireContextMembership(true);
     await this.#settingsMutationTail;
@@ -8999,9 +8986,8 @@ export class DurableAgentSession extends DurableComputerObject {
     }
     // A native socket can outlive an explicit permission approval. Revalidate
     // its exact key for each new user turn; retained/replayed work stays pinned.
-    // Only the first prompt arriving right after the live upgrade reuses it.
     if (userInitiated && transport === "websocket" && authorization.apiKeyId) {
-      if (!upgradeAuthority) authorization = await this.#refreshApiKeyAuthorization(authorization);
+      authorization = await this.#refreshApiKeyAuthorization(authorization);
       if (!authorization.capabilities.includes("agents:write") || !authorization.capabilities.includes("tools:use"))
         throw new ManagedRequestError(403, "forbidden", "the login no longer permits agent turns");
     }
@@ -9875,6 +9861,7 @@ export class DurableAgentSession extends DurableComputerObject {
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
       this.ctx.storage.sql.exec("DELETE FROM turn_history_citations");
       this.#eventLog.clear();
+      this.#openToolCalls.clear();
       this.#eventArchive.clearLocalState();
       this.#turnArchive.clearLocalState();
       this.#realtimeArchive.clearLocalState();
@@ -13396,6 +13383,7 @@ A direct subagent completed after the previous turn ended. Continue the current 
         return this.#eventLog.append(message, turnId);
       });
       this.#publish(event);
+      this.#settleAbandonedToolCalls();
       if (turnId && message.type === "event" && ["model.call.completed", "model.compaction.completed"].includes(message.event.type)) {
         const goal = this.#goalRuntime.flush(turnId);
         if ((goal?.status === "budgetLimited" || goal?.status === "usageLimited") && this.#managedTurn(turnId)?.state === "accepted") {
@@ -13406,6 +13394,22 @@ A direct subagent completed after the previous turn ended. Continue the current 
     } catch (error) {
       this.#failEventStream(error);
     }
+  }
+
+  /** After a child's run in this isolate finishes, a previous isolate's calls
+   * it did not replay can never report: publish their unknown-outcome results
+   * right after that run terminal, before any later event is recorded. */
+  #settleAbandonedToolCalls(): void {
+    const agent = this.#finishedRunAgent;
+    this.#finishedRunAgent = undefined;
+    if (agent === undefined) return;
+    const abandoned = this.#openToolCalls.abandoned(agent);
+    if (abandoned.length === 0) return;
+    const events = this.ctx.storage.transactionSync(() =>
+      abandoned.map(({ message, turnId }) => this.#eventLog.append(message, turnId)));
+    this.#finishedRunAgent = undefined;
+    for (const event of events) this.#publish(event);
+    console.info({ type: "managed.tool_calls.abandoned", count: events.length });
   }
 
   #flushStagedDelta(): void {

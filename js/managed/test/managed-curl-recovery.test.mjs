@@ -302,6 +302,26 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     return ['completed', 'failed', 'cancelled'].includes(value.state) ? value : undefined;
   }, 30_000, 200);
   const history = async (label, agent) => (await curl(label, `/v1/agents/${agent}/events/history?after=0&limit=256`, { expected: 200 })).value;
+  // A client renders a tool.call as running until its tool.result, so a call
+  // whose owner died must still reach a terminal receipt in durable history.
+  // Recovery may replay a call (tool.call and tool.result again), but a call
+  // closed as interrupted must never report again.
+  const openToolCalls = page => {
+    const open = new Map(), interrupted = new Map(), reopened = [];
+    for (const row of page.data) {
+      const key = (row.agent_id ?? 'root') + ':' + row.event?.payload?.call_id;
+      if ((row.event?.type === 'tool.call' || row.event?.type === 'tool.result') && interrupted.has(key))
+        reopened.push({ call: key, interrupted: interrupted.get(key), cursor: row.cursor, type: row.event.type });
+      if (row.event?.type === 'tool.call') open.set(key, { cursor: row.cursor, tool: row.event.payload.tool });
+      if (row.event?.type === 'tool.result') {
+        open.delete(key);
+        if (row.event.payload.structured_result?.code === 'TOOL_CALL_INTERRUPTED') interrupted.set(key, row.cursor);
+      }
+    }
+    assert.equal(page.has_more, false, 'history fits one page');
+    assert.deepEqual(reopened, [], 'a call closed as interrupted never reports again');
+    return [...open].map(([call, value]) => ({ call, ...value }));
+  };
   const summary = {};
 
   try {
@@ -378,6 +398,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(effectsDone.state, 'completed', JSON.stringify(effectsDone));
     assert.match(JSON.stringify(effectsHistory), /outcome unknown/, 'the recovered cell reports the unproved effect as unknown');
     assert.match(JSON.stringify(effectsHistory), /EFFECT_A_APPLIED/, 'the recovered cell replays the durable A receipt');
+    assert.deepEqual(openToolCalls(effectsHistory), [], 'every root call interrupted by owner loss has a terminal result');
 
     // 3. A nested child is active (its effect C is in flight) when the owner
     // dies. Recovery must reach a bounded terminal without re-running C.
@@ -394,6 +415,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
       'the restored child input names its interrupted call (call id and arguments) as outcome unknown');
     assert.equal(childDone.state, 'completed', JSON.stringify(childDone));
     assert.match(JSON.stringify(childHistory), /CHILD_RESUMED_WITHOUT_REPEAT/, 'the root observes the restored child result');
+    assert.deepEqual(openToolCalls(childHistory), [], 'the child call lost with its owner has a terminal result, not a running call');
 
     // 3b. Restart the idle process, then explicitly delegate new work to the
     // same restored child (mirrors the live 'no Nanocodex host is active' report).
@@ -439,7 +461,9 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
       assert.ok(call.names_wide_call, 'every resume names the still-unknown effect call, including after a second loss');
       assert.equal(call.listed_wide_calls, 8, 'evidence stays bounded to eight calls');
     }
-    assert.match(JSON.stringify(await history('wide-history', wideRun.agent_id)), /\b3 additional observed call/, 'evicted completed calls are counted, never silently dropped');
+    const wideHistory = await history('wide-history', wideRun.agent_id);
+    assert.match(JSON.stringify(wideHistory), /\b3 additional observed call/, 'evicted completed calls are counted, never silently dropped');
+    assert.deepEqual(openToolCalls(wideHistory), [], 'child calls lost across two owner losses each have a terminal result');
     assert.equal(effects.filter(effect => effect.name === 'E').length, 1, 'effect E is never dispatched again');
     assert.equal(wideDone.state, 'completed', JSON.stringify(wideDone));
 

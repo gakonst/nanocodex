@@ -183,7 +183,27 @@ after a yield without calling `wait`). The Codex harness then relays that
 cell's nested tool starts and completions as they happen, so every started call
 still reaches a terminal `tool.result`, possibly after `run.completed`. A later
 `wait` takes over the cell and does not repeat updates the relay delivered.
+A turn whose next model request fails after a yield leaves its cells running
+the same way. Cancelling a turn, or a tool-dispatch failure, terminates the
+turn's cells instead: nested calls an earlier `exec` or `wait` started receive a
+failed `tool.result` with code `CODE_MODE_CALL_INTERRUPTED` and outcome
+`unknown`, while nested calls of the interrupted call itself are reported as
+cancelled. Headless `nanocodex run` writes the receipts emitted while shutdown
+terminates remaining cells, so its JSONL can contain `tool.result` records after
+the last terminal run event.
 The Claude harness instead drains its cells at every turn end.
+
+Embedded hosts take part through `CodeModeHost::detach_turn` and
+`CodeModeHost::cancel_turn_with_updates`. The WASM bridge calls the synchronous
+`nanocodexHost.detachCodeTurn(sessionId)` at turn completion and
+`nanocodexHost.cancelCodeTurnWithUpdates(sessionId)` on cancellation. Each
+returns a JSON array of `{relay_id, origin_call_id}`, one per affected cell, and
+the bridge reads every relay through `nextCodeUpdate(sessionId, relay_id)` until
+`null`. A relay delivers each nested start and completion that no observer
+has received, then ends once its cell settles or a later `wait` takes over the
+cell. Relays of a cancelled turn are drained before the turn commits. A host
+that does not export these functions keeps its cells' nested updates for the
+next `wait`.
 
 `wait(terminate: true)`, cancellation, turn teardown and host shutdown remain
 separate terminal controls. Preemption never interrupts an evaluator or an
