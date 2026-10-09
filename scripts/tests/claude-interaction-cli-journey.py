@@ -115,17 +115,17 @@ def main():
         require((workspace/'hooks.log').read_text()=='postprepostpost','hooks silently skipped in plan')
         # Reopen the same default native journal headlessly: gate is installed even
         # when interactive tool schemas are unavailable.
-        manifests=list((codex_home/'claude/sessions').glob('*.json')); require(len(manifests)==1,'session manifest missing')
-        session=json.loads(manifests[0].read_text())['id']
+        sessions=helper.h.durable_sessions(codex_home);require(len(sessions)==1,'session manifest missing')
+        session=sessions[0]
         phase.update(name='headless',start=len(requests),steps=[('Write',{'file_path':'restart.txt','content':'unsafe'},True,'plan mode')])
-        command=[common[0],'run']+common[1:]+['--rollouts','false','--local-durability',str(codex_home/'claude/sessions.sqlite'),'--local-durability-state-id',session,'Verify saved planning gate.']; commands.append(command)
+        command=[common[0],'run']+common[1:]+['--rollouts','false','--local-durability',str(helper.h.durable_store(codex_home)),'--local-durability-state-id',session,'Verify saved planning gate.']; commands.append(command)
         result=subprocess.run(command,cwd=workspace,env=env,capture_output=True,timeout=30)
         (artifact/'headless.jsonl').write_bytes(result.stdout); (artifact/'headless.stderr').write_bytes(result.stderr)
         require(result.returncode==0,f'headless failed {result.stderr!r}'); require(not errors,'; '.join(errors)); require(not(workspace/'restart.txt').exists(),'restart escaped plan')
         # Actual pending terminal request cancelled by SIGINT, then same durable
         # session reopened. No fabricated answer, no subsequent mutation.
         phase.update(name='interrupt',start=len(requests),steps=[('AskUserQuestion',question,False,'unused')])
-        command=[common[0],'run']+common[1:]+['--rollouts','false','--local-durability',str(codex_home/'claude/sessions.sqlite'),'--local-durability-state-id',session,'Wait for a terminal answer.']
+        command=[common[0],'run']+common[1:]+['--rollouts','false','--local-durability',str(helper.h.durable_store(codex_home)),'--local-durability-state-id',session,'Wait for a terminal answer.']
         p,fd,drain=start(command,'interrupt'); wait(lambda:visible('interrupt', b'Choose one number'),drain,'terminal question absent'); pending(phase['start']+1,drain)
         p.send_signal(signal.SIGINT); wait(lambda:p.poll() is not None,drain,'pending terminal request did not cancel',timeout=10); drain(); os.close(fd)
         require(p.returncode!=0,'interrupt reported success'); require(len(requests)==phase['start']+1,'cancelled question fabricated answer')

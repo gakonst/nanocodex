@@ -737,6 +737,7 @@ impl AgentArgs {
             codex_home.clone(),
         ));
         let recipe = self.codex_recipe(
+            HarnessFamily::Codex,
             codex::CodexConnection::ready(openai.clone()),
             tools.clone(),
             &codex_home,
@@ -934,10 +935,16 @@ impl AgentArgs {
         }
     }
 
-    /// The single Codex recipe input set, identical under either root family.
+    /// The single Codex recipe input set shared by either root family.
+    ///
+    /// A Codex root keeps its host guidance beside an explicit instruction, so
+    /// its Codex children inherit that same effective instruction. A Claude
+    /// root's explicit instruction is a complete replacement, which its Codex
+    /// children receive exactly.
     #[allow(clippy::too_many_arguments)]
     fn codex_recipe(
         &self,
+        root: HarnessFamily,
         connection: codex::CodexConnection,
         tools: Tools,
         codex_home: &Path,
@@ -946,15 +953,20 @@ impl AgentArgs {
         registry: Option<Arc<nanocodex_subagents::Registry>>,
         memory: bool,
     ) -> codex::CodexRecipe {
+        let exact = root == HarnessFamily::Claude && self.instructions.is_some();
         codex::CodexRecipe {
             connection,
             tools,
             instructions: self.instructions.clone(),
-            additional_instructions: session_instructions(
-                self.instructions.as_deref(),
-                registry.is_some(),
-                memory,
-            ),
+            additional_instructions: (!exact)
+                .then(|| {
+                    session_instructions(
+                        self.instructions.as_deref(),
+                        registry.is_some(),
+                        memory,
+                    )
+                })
+                .flatten(),
             reasoning_mode: self.reasoning_mode,
             fast_mode: self.fast_mode.unwrap_or(true),
             codex_home: codex_home.to_path_buf(),

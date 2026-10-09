@@ -310,6 +310,7 @@ impl AgentArgs {
         let responses = self.responses_settings();
         let codex_auth = self.auth.clone();
         let codex = self.codex_recipe(
+            HarnessFamily::Claude,
             codex::CodexConnection::lazy(move || {
                 responses.client(codex_auth.clone().resolve()?.nanocodex()?, None)
             }),
@@ -360,6 +361,11 @@ impl AgentArgs {
         )
         .spawn_factory(harness.spawn_factory());
         if let Some(persistence) = &root.persistence {
+            // The same Codex-format JSONL mirror as Codex roots, for this
+            // session and every fork, side conversation and subagent.
+            if let Some(mirror) = persistence.mirror() {
+                builder = builder.rollout(mirror);
+            }
             let state = persistence.open(model, &root.workspace).await?;
             builder = builder
                 .durability(state)
