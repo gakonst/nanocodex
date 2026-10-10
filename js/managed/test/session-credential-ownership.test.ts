@@ -1,7 +1,7 @@
 import { createExecutionContext, env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { ManagedAgentOwnership, type DurableAgentSession, type Env } from "../src/index";
-import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS } from "../src/agent-settings";
 import {
   managedCredentialSubject,
   readSessionCredentialSubject,
@@ -218,18 +218,19 @@ describe("Session-owned credential authority", () => {
         session_id: sessionId, owner_id: ownerId,
         organization_id: "22222222-2222-4222-8222-222222222222",
         team_id: "33333333-3333-4333-8333-333333333333", authorization_epoch: 1,
-        public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS,
+        // The fast_mode probe below needs a model that supports it; the default is now Claude (398726862).
+        public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS,
       };
       let registrationAvailable = false;
-      let binds = 0;
+      let binds = 0, registrations = 0;
       const create = async (input = initialization) => runInDurableObject(stub, async (session, state) => {
         const originalEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { configurable: true, value: {
           ...originalEnv, MANAGED_AGENT_DIRECT_CREDENTIALS: String(direct),
           NANOCODEX: { fetch: async () => { binds += 1; return new Response(null, { status: 204 }); } },
-          NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, {
+          NANOCODEX_USERS: { getByName: () => ({ fetch: async () => { registrations += 1; return new Response(null, {
             status: registrationAvailable ? 204 : 503,
-          }) }) },
+          }); } }) },
           NANOCODEX_MEMORY: { getByName: () => { throw new Error("Unexpected memory initialization"); } },
         } });
         const response = await session.fetch(new Request("https://session.internal/create", {
@@ -243,7 +244,12 @@ describe("Session-owned credential authority", () => {
       });
       // A failed registration retains its preparation; eviction must not lose
       // the watchdog or publish credential authority before commit.
-      expect(await create()).toMatchObject({ status: 503, ownership: { state: "preparing" } });
+      // A direct (session_v1) create commits locally and publishes its registry
+      // entry in the background instead (1744a9baf); only the staged strategy waits.
+      if (direct) {
+        expect(await create()).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
+        await vi.waitFor(() => expect(registrations).toBeGreaterThan(0));
+      } else expect(await create()).toMatchObject({ status: 503, ownership: { state: "preparing" } });
       await evictDurableObject(stub);
       registrationAvailable = true;
       const firstSuccess = await create();
@@ -257,7 +263,7 @@ describe("Session-owned credential authority", () => {
       const replays = await Promise.all([create(), create()]);
       for (const replay of replays) expect(replay).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
       expect((await create({ ...initialization, owner_id: "44444444-4444-4444-8444-444444444444" })).status).toBe(409);
-      expect((await create({ ...initialization, settings: { ...DEFAULT_AGENT_SETTINGS, fast_mode: !DEFAULT_AGENT_SETTINGS.fast_mode } })).status).toBe(409);
+      expect((await create({ ...initialization, settings: { ...DEFAULT_OPENAI_AGENT_SETTINGS, fast_mode: !DEFAULT_OPENAI_AGENT_SETTINGS.fast_mode } })).status).toBe(409);
       expect(binds).toBe(direct ? 0 : 5);
       await runInDurableObject(stub, async (_session, state) => { await state.storage.deleteAlarm(); });
     });
