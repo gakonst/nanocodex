@@ -13389,7 +13389,32 @@ A direct subagent completed after the previous turn ended. Continue the current 
       Date.now(),
     ).toArray();
     if (rows.length === 0) return;
-    await this.#requireContextMembership(true);
+    try {
+      await this.#requireContextMembership(true);
+    } catch (error) {
+      if (this.#deleting) return;
+      this.ctx.storage.transactionSync(() => {
+        // Membership applies to the whole session, including work beyond this batch.
+        if (error instanceof ManagedRequestError && error.status === 403
+          && error.code === "team_membership_required") {
+          this.ctx.storage.sql.exec("DELETE FROM managed_history_projection_chunks WHERE turn_id IN (SELECT turn_id FROM history_projection_outbox)");
+          this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
+        } else {
+          const now = Date.now();
+          const overdue = this.ctx.storage.sql.exec<{ turn_id: string; attempt_count: number }>(
+            "SELECT turn_id, attempt_count FROM history_projection_outbox WHERE retry_at <= ?", now,
+          ).toArray();
+          for (const row of overdue) {
+            const attempt = row.attempt_count + 1;
+            this.ctx.storage.sql.exec(
+              "UPDATE history_projection_outbox SET attempt_count = ?, retry_at = ? WHERE turn_id = ?",
+              attempt, now + retryDelayMs(attempt), row.turn_id,
+            );
+          }
+        }
+      });
+      throw error;
+    }
     const scope = this.#contextScope(session);
     const memory = this.env.NANOCODEX_MEMORY.getByName(scope.organization_id);
     for (const row of rows) {
