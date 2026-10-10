@@ -462,10 +462,13 @@ async fn execute(
     let stderr = child.stderr.take().ok_or("hook stderr unavailable")?;
     let operation = async {
         let writer = async {
-            stdin
-                .write_all(&bytes)
-                .await
-                .map_err(|error| error.to_string())?;
+            match stdin.write_all(&bytes).await {
+                // A hook may exit without reading its input, as Claude Code
+                // permits; its exit status and stdout still decide the outcome.
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(error) => return Err(error.to_string()),
+            }
             drop(stdin);
             Ok::<_, String>(())
         };
@@ -509,4 +512,30 @@ async fn execute(
         return Err("command hook stdout must be a JSON object".into());
     }
     Ok(output)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn command_hook_may_exit_without_reading_its_input() {
+        let workspace = tempfile::tempdir().unwrap();
+        let hook = CommandHook {
+            kind: "command".to_owned(),
+            command: r#"printf '%s' '{"decision":"block","reason":"configured-denial"}'"#
+                .to_owned(),
+            timeout: 10.0,
+            _status_message: None,
+        };
+        // Larger than a pipe buffer, so writing it always outlives the hook.
+        let payload = json!({ "tool_input": { "content": "x".repeat(512 * 1024) } });
+
+        let output = execute(&hook, workspace.path(), &payload).await.unwrap();
+
+        assert_eq!(
+            output,
+            json!({ "decision": "block", "reason": "configured-denial" })
+        );
+    }
 }
