@@ -1671,6 +1671,7 @@ struct Service {
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
+    routing_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
     state_available: Arc<AtomicBool>,
     settings: Arc<Mutex<Value>>,
@@ -1926,6 +1927,7 @@ async fn enable_routing(
     axum::extract::Path(agent): axum::extract::Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let _permit = service.routing_gate.acquire().await.unwrap();
     let body: Value = if body.is_empty() {
         json!({})
     } else {
@@ -2090,6 +2092,7 @@ struct Fixture {
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
+    routing_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
     terminal: Terminal,
     state_available: Arc<AtomicBool>,
@@ -2208,6 +2211,7 @@ impl Fixture {
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let listed_title = Arc::new(Mutex::new("RETAINED_REMOTE_WORK".to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let routing_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let native_writes = Arc::new(Mutex::new(Vec::new()));
@@ -2294,6 +2298,7 @@ impl Fixture {
                 listed_agent: listed_agent.clone(),
                 listed_title: listed_title.clone(),
                 resume_gate: resume_gate.clone(),
+                routing_gate: routing_gate.clone(),
                 active,
                 state_available: state_available.clone(),
                 settings: settings.clone(),
@@ -2341,6 +2346,7 @@ impl Fixture {
             listed_agent,
             listed_title,
             resume_gate,
+            routing_gate,
             origin,
             terminal,
             state_available,
@@ -2407,6 +2413,19 @@ impl Fixture {
                 "type": kind, "payload": payload
             }}),
         );
+    }
+
+    /// Start a routing change and wait until the root accepts input again.
+    /// While it runs the root is non-interactive and drops typed input, yet a
+    /// lagging screen can still show the previous composer, "Enter send" and
+    /// a model label the status itself names. Hold the routing request until
+    /// the change's status is on screen, then wait for that status to clear.
+    async fn routing_change(&mut self, keys: impl FnOnce(&mut Terminal), status: &str) {
+        let pause = self.routing_gate.clone().acquire_owned().await.unwrap();
+        keys(&mut self.terminal);
+        self.terminal.wait_text(status).await;
+        drop(pause);
+        self.terminal.wait_no_text(status).await;
     }
 
     async fn submission(&mut self, expected: &str) -> String {
@@ -6224,7 +6243,12 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
     {
         fixture.terminal.prompt("/model", "\r");
         fixture.terminal.wait_text("Select model").await;
-        fixture.terminal.input("\x1b[B\r");
+        fixture
+            .routing_change(
+                |terminal| terminal.input("\x1b[B\r"),
+                &format!("Starting {model} session"),
+            )
+            .await;
         fixture.terminal.wait_no_text("Select model").await;
         tokio::time::timeout(TIMEOUT, async {
             while fixture.routing_bodies.lock().unwrap().len() <= index {
@@ -6273,14 +6297,24 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
         fixture.routing_bodies.lock().unwrap().last().unwrap(),
         &json!({"model": "mimo-v2.6-pro", "thinking": "high"})
     );
-    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/autoroute", "\r"),
+            "Enabling automatic routing",
+        )
+        .await;
     fixture.terminal.wait_text("Auto · choosing").await;
     fixture.terminal.prompt("/thinking high", "\r");
     fixture
         .terminal
         .wait_text("Automatic routing controls the model and effort")
         .await;
-    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/model gpt-6-astra", "\r"),
+            "Starting Astra session",
+        )
+        .await;
     fixture.terminal.wait_no_text("Auto · choosing").await;
     fixture.terminal.wait_text("gpt-6-astra").await;
     fixture.terminal.wait_text("Enter send").await;
@@ -6291,7 +6325,12 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
     })
     .await
     .unwrap();
-    fixture.terminal.prompt("/model kimi-k3", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/model kimi-k3", "\r"),
+            "Starting kimi-k3 session",
+        )
+        .await;
     fixture.terminal.wait_text("kimi-k3").await;
     fixture.terminal.wait_text("Enter send").await;
     fixture
