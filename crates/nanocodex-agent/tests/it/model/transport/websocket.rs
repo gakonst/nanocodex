@@ -171,7 +171,10 @@ async fn model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change() 
         assert_warmup(&warmup);
         assert_eq!(warmup["model"], "gpt-6-luna");
         assert_eq!(warmup["reasoning"]["effort"], "low");
-        assert_eq!(warmup["input"][1]["content"][0]["text"], "custom prompt");
+        assert_eq!(
+            crate::model::instructions::caller_instructions(&warmup),
+            "custom prompt"
+        );
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
@@ -597,7 +600,7 @@ async fn supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fas
             assert_warmup(&warmup);
             assert_eq!(warmup["reasoning"]["effort"], "medium");
             assert_eq!(
-                warmup["input"][1]["content"][0]["text"],
+                crate::model::instructions::caller_instructions(&warmup),
                 "Keep this developer prompt byte-for-byte stable."
             );
             send_warmup(&mut socket, "resp-policy-warmup").await?;
