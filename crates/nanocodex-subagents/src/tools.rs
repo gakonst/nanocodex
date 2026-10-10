@@ -302,7 +302,7 @@ pub async fn start_agents_observed(
                 Ok(child) => child,
                 Err(error) => {
                     for (child, _) in &children {
-                        let _ = child.shutdown().await;
+                        child.abandon_created().await;
                     }
                     return Err(error.into());
                 }
@@ -314,9 +314,9 @@ pub async fn start_agents_observed(
                 route.reference(),
                 host_context.as_deref(),
             ) {
-                let _ = child.0.shutdown().await;
+                child.0.abandon_created().await;
                 for (child, _) in &children {
-                    let _ = child.shutdown().await;
+                    child.abandon_created().await;
                 }
                 return Err(error.into());
             }

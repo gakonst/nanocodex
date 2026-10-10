@@ -59,6 +59,10 @@ struct LazyClaudeExecution {
     store: SharedStore,
     record: SessionRecord,
     ready: tokio::sync::OnceCell<ClaudeExecution>,
+    /// The opened state already held a checkpoint, as for a restored child.
+    reopened: std::sync::atomic::AtomicBool,
+    /// This policy wrote the state's first checkpoint.
+    initialized: std::sync::atomic::AtomicBool,
 }
 
 impl LazyClaudeExecution {
@@ -67,6 +71,8 @@ impl LazyClaudeExecution {
             store,
             record,
             ready: tokio::sync::OnceCell::new(),
+            reopened: std::sync::atomic::AtomicBool::new(false),
+            initialized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -84,7 +90,11 @@ impl LazyClaudeExecution {
                     .describe(self.record.clone())
                     .await
                     .map_err(agent_error)?;
-                let (owner, _) = state.acquire_agent().await.map_err(agent_error)?;
+                let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+                self.reopened.store(
+                    checkpoint.is_some(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
                 Ok(ClaudeExecution {
                     state_id: record.session_id.clone(),
                     owner,
@@ -216,6 +226,33 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
 
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()> {
         Box::pin(async move { self.get().await?.checkpoint(state).await })
+    }
+
+    fn initial_checkpoint(&self, state: Value) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            // Opening the state records the child in the catalog; a restored
+            // child keeps the history it already holds.
+            let policy = self.get().await?;
+            if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            policy.checkpoint(state).await?;
+            self.initialized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    fn discard_initial(&self) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(policy) = self.ready.get() else {
+                return Ok(());
+            };
+            if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            policy.owner.discard_unused().await.map_err(agent_error)
+        })
     }
 
     fn branch(
