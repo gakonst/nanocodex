@@ -19,8 +19,7 @@ use axum::{
 use eyre::{Result, WrapErr, bail};
 use futures_util::{Stream, stream};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAi, SessionCheckpoint,
-    agent::{events::AgentEvent, session::SessionSnapshot},
+    AgentEvents, Nanocodex, OpenAi, SessionCheckpoint, agent::events::AgentEvent,
     oai::transport::ResponsesTransport,
 };
 use serde::{Deserialize, Serialize};
@@ -139,32 +138,18 @@ pub fn build_agent(config: &Config) -> Result<(Nanocodex, AgentEvents)> {
     let mut builder = Nanocodex::builder(openai)
         .instructions(config.instructions.clone())
         .workspace(&config.workspace);
-    match load_session(&config.state_file)? {
-        Some(StoredSession::Checkpoint(checkpoint)) => {
-            builder = builder
-                .resume(checkpoint)
-                .wrap_err("failed to resume the saved session checkpoint")?;
-        }
-        Some(StoredSession::Legacy(snapshot)) => {
-            builder = builder.resume_native_snapshot(snapshot);
-        }
-        None => {}
+    if let Some(checkpoint) = load_session(&config.state_file)? {
+        builder = builder
+            .resume(checkpoint)
+            .wrap_err("failed to resume the saved session checkpoint")?;
     }
     builder
         .build()
         .wrap_err("failed to build Nanocodex session")
 }
 
-/// A persisted session boundary.
-enum StoredSession {
-    /// Portable checkpoint written after every completed turn.
-    Checkpoint(SessionCheckpoint),
-    /// Bare conversation snapshot written by earlier releases of this service,
-    /// accepted so an upgraded VM resumes its existing session.
-    Legacy(SessionSnapshot),
-}
-
-fn load_session(path: &Path) -> Result<Option<StoredSession>> {
+/// Reads the portable checkpoint written after every completed turn.
+fn load_session(path: &Path) -> Result<Option<SessionCheckpoint>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -174,13 +159,9 @@ fn load_session(path: &Path) -> Result<Option<StoredSession>> {
     };
     let encoded = std::str::from_utf8(&bytes)
         .wrap_err_with(|| format!("failed to decode {}", path.display()))?;
-    match SessionCheckpoint::from_json(encoded) {
-        Ok(checkpoint) => Ok(Some(StoredSession::Checkpoint(checkpoint))),
-        Err(checkpoint_error) => serde_json::from_str(encoded)
-            .map(|snapshot| Some(StoredSession::Legacy(snapshot)))
-            .map_err(|_| checkpoint_error)
-            .wrap_err_with(|| format!("failed to decode {}", path.display())),
-    }
+    SessionCheckpoint::from_json(encoded)
+        .map(Some)
+        .wrap_err_with(|| format!("failed to decode {}", path.display()))
 }
 
 /// Running application tasks and the Nanocodex shutdown capability.

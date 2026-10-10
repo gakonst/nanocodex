@@ -15,7 +15,7 @@ The service:
 - atomically persists the complete unredacted session checkpoint after every
   completed turn;
 - resumes that checkpoint, with its session identity, when systemd restarts
-  the process (state files written by earlier releases still resume); and
+  the process; and
 - exposes a small no-build web UI on port 9998.
 
 The checkpoint contains the full model-visible conversation and tool activity.
