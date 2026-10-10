@@ -12,12 +12,13 @@ The service:
 
 - owns one ordered prompt queue and one native Nanocodex driver;
 - streams the existing typed agent events over SSE without reshaping them;
-- atomically persists the complete unredacted session snapshot after every
+- atomically persists the complete unredacted session checkpoint after every
   completed turn;
-- resumes that snapshot when systemd restarts the process; and
+- resumes that checkpoint, with its session identity, when systemd restarts
+  the process (state files written by earlier releases still resume); and
 - exposes a small no-build web UI on port 9998.
 
-The snapshot contains the full model-visible conversation and tool activity.
+The checkpoint contains the full model-visible conversation and tool activity.
 The image stores it mode `0600` under the `exedev` user's state directory. Do
 not publish, copy, or back it up without applying the same controls as the
 source repository and agent transcript.

@@ -19,7 +19,7 @@ use axum::{
 use eyre::{Result, WrapErr, bail};
 use futures_util::{Stream, stream};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAi,
+    AgentEvents, Nanocodex, OpenAi, SessionCheckpoint,
     agent::{events::AgentEvent, session::SessionSnapshot},
     oai::transport::ResponsesTransport,
 };
@@ -43,7 +43,7 @@ pub struct Config {
     pub listen: SocketAddr,
     /// Project root affected by model-callable workspace tools.
     pub workspace: PathBuf,
-    /// Durable completed-turn snapshot.
+    /// Durable completed-turn session checkpoint.
     pub state_file: PathBuf,
     /// Stable model instructions used for both fresh and resumed sessions.
     pub instructions: String,
@@ -139,15 +139,32 @@ pub fn build_agent(config: &Config) -> Result<(Nanocodex, AgentEvents)> {
     let mut builder = Nanocodex::builder(openai)
         .instructions(config.instructions.clone())
         .workspace(&config.workspace);
-    if let Some(snapshot) = load_snapshot(&config.state_file)? {
-        builder = builder.resume(snapshot);
+    match load_session(&config.state_file)? {
+        Some(StoredSession::Checkpoint(checkpoint)) => {
+            builder = builder
+                .resume(checkpoint)
+                .wrap_err("failed to resume the saved session checkpoint")?;
+        }
+        Some(StoredSession::Legacy(snapshot)) => {
+            builder = builder.resume_native_snapshot(snapshot);
+        }
+        None => {}
     }
     builder
         .build()
         .wrap_err("failed to build Nanocodex session")
 }
 
-fn load_snapshot(path: &Path) -> Result<Option<SessionSnapshot>> {
+/// A persisted session boundary.
+enum StoredSession {
+    /// Portable checkpoint written after every completed turn.
+    Checkpoint(SessionCheckpoint),
+    /// Bare conversation snapshot written by earlier releases of this service,
+    /// accepted so an upgraded VM resumes its existing session.
+    Legacy(SessionSnapshot),
+}
+
+fn load_session(path: &Path) -> Result<Option<StoredSession>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -155,9 +172,15 @@ fn load_snapshot(path: &Path) -> Result<Option<SessionSnapshot>> {
             return Err(error).wrap_err_with(|| format!("failed to read {}", path.display()));
         }
     };
-    serde_json::from_slice(&bytes)
-        .wrap_err_with(|| format!("failed to decode {}", path.display()))
-        .map(Some)
+    let encoded = std::str::from_utf8(&bytes)
+        .wrap_err_with(|| format!("failed to decode {}", path.display()))?;
+    match SessionCheckpoint::from_json(encoded) {
+        Ok(checkpoint) => Ok(Some(StoredSession::Checkpoint(checkpoint))),
+        Err(checkpoint_error) => serde_json::from_str(encoded)
+            .map(|snapshot| Some(StoredSession::Legacy(snapshot)))
+            .map_err(|_| checkpoint_error)
+            .wrap_err_with(|| format!("failed to decode {}", path.display())),
+    }
 }
 
 /// Running application tasks and the Nanocodex shutdown capability.
@@ -336,23 +359,26 @@ async fn run_prompt(
         .result()
         .await
         .wrap_err("agent turn failed")?;
-    let snapshot = result
-        .snapshot()
-        .ok_or_else(|| eyre::eyre!("the local agent did not retain a snapshot"))?;
-    persist_snapshot(state_file, &snapshot).await?;
+    let checkpoint = result
+        .checkpoint()
+        .ok_or_else(|| eyre::eyre!("the local agent did not retain a checkpoint"))?;
+    persist_checkpoint(state_file, &checkpoint).await?;
     Ok(PromptResponse {
         final_message: result.into_final_message(),
     })
 }
 
-async fn persist_snapshot(path: &Path, snapshot: &SessionSnapshot) -> Result<()> {
+async fn persist_checkpoint(path: &Path, checkpoint: &SessionCheckpoint) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| eyre::eyre!("snapshot path has no parent: {}", path.display()))?;
+        .ok_or_else(|| eyre::eyre!("checkpoint path has no parent: {}", path.display()))?;
     tokio::fs::create_dir_all(parent)
         .await
         .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
-    let bytes = serde_json::to_vec(snapshot).wrap_err("failed to encode session snapshot")?;
+    let bytes = checkpoint
+        .to_json()
+        .wrap_err("failed to encode session checkpoint")?
+        .into_bytes();
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut options = tokio::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);

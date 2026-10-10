@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 
-from nanocodex import Nanocodex, SessionSnapshot, TurnResult
+from nanocodex import Nanocodex, SessionCheckpoint, TurnResult
 from support import MockResponsesServer, RequestRecord, user_texts
 from support.websocket import WebSocketConnection
 
@@ -150,7 +150,7 @@ class OwnedLifecycleTests(unittest.TestCase):
             self.assertIn("first answer", json.dumps(replay))
             agent.shutdown()
 
-    def test_lifecycle_branch_snapshot_resume_usage_and_cost(self) -> None:
+    def test_lifecycle_branch_checkpoint_resume_usage_and_cost(self) -> None:
         with MockResponsesServer() as server:
             agent, _ = Nanocodex(
                 "test-key",
@@ -170,14 +170,18 @@ class OwnedLifecycleTests(unittest.TestCase):
                 "estimated_from_usage",
             )
 
-            snapshot = completed.snapshot()
-            self.assertIsInstance(snapshot, SessionSnapshot)
-            encoded = snapshot.to_json()
-            restored = SessionSnapshot.from_json(encoded)
-            self.assertEqual(restored.version, 1)
-            self.assertEqual(restored.workspace, snapshot.workspace)
+            checkpoint = completed.checkpoint()
+            self.assertIsInstance(checkpoint, SessionCheckpoint)
+            encoded = checkpoint.to_json()
+            restored = SessionCheckpoint.from_json(encoded)
+            self.assertEqual(restored.session_id, agent.session_id)
+            self.assertEqual(restored.family, "codex")
+            self.assertTrue(restored.has_conversation)
+            self.assertIsNotNone(restored.turn_id)
+            self.assertEqual(restored.turn_id, checkpoint.turn_id)
 
-            branch, _ = agent.fork_from(completed)
+            branch, _ = agent.fork(completed)
+            self.assertNotEqual(branch.session_id, agent.session_id)
             self.assertEqual(
                 branch.prompt("historical branch").result().final_message,
                 "historical branch",
@@ -201,6 +205,7 @@ class OwnedLifecycleTests(unittest.TestCase):
                 resume=restored,
                 websocket_url=server.endpoint,
             )
+            self.assertEqual(resumed.session_id, restored.session_id)
             self.assertEqual(
                 resumed.prompt("resumed branch").result().final_message,
                 "resumed branch",
