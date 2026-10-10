@@ -1154,14 +1154,19 @@ impl Registry {
         self.ensure_journal_writer();
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
+            let mut completed = Vec::new();
             match registry.restore(&root).await {
-                Ok(report) if report.restored > 0 => tracing::info!(
-                    restored = report.restored,
-                    interrupted = report.interrupted.len(),
-                    unrecoverable = report.unrecoverable.len(),
-                    %root,
-                    "restored durable subagent task tree"
-                ),
+                Ok(report) if report.restored > 0 => {
+                    tracing::info!(
+                        restored = report.restored,
+                        interrupted = report.interrupted.len(),
+                        completed = report.completed.len(),
+                        unrecoverable = report.unrecoverable.len(),
+                        %root,
+                        "restored durable subagent task tree"
+                    );
+                    completed = report.completed;
+                }
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(%error, %root, "could not restore durable subagent task tree");
@@ -1173,6 +1178,9 @@ impl Registry {
             }
             let _ = ready.send(Some(Ok(())));
             registry.changed();
+            registry
+                .announce_restored_completions(&root, &completed)
+                .await;
             for (id, result) in registry.resume_interrupted(&root).await {
                 if let Err(error) = result {
                     tracing::warn!(%id, %error, "could not resume restored subagent");
@@ -1620,7 +1628,14 @@ impl Registry {
         }
         for agent in agents {
             let id = agent.descriptor.id;
+            let completed = agent.accepted_output.is_some()
+                && !matches!(agent.status, AgentStatus::Closing | AgentStatus::Closed)
+                && (agent.turn_in_flight
+                    || matches!(agent.status, AgentStatus::Running | AgentStatus::Pending));
             let (session, resume, lost) = durable::restored_session(agent)?;
+            if completed {
+                report.completed.push(id);
+            }
             match (stored.remove(&id), &session.stored_runtime) {
                 (Some(checkpoint), _) => self.insert_checkpoint(root_session_id, id, checkpoint),
                 // An embedded checkpoint becomes a record on the next save.
@@ -1645,7 +1660,7 @@ impl Registry {
         drop(state);
         // Persist each resume attempt before admitting it: a runtime lost during
         // every resume must still exhaust its bounded recovery budget.
-        if !report.interrupted.is_empty() {
+        if !report.interrupted.is_empty() || !report.completed.is_empty() {
             self.save_scope(root_session_id, store.as_ref())
                 .await
                 .map_err(|error| {
@@ -1729,8 +1744,9 @@ impl Registry {
             }
         };
         for id in ids {
-            // Restate the binding task: a resumed child must finish it, not
-            // summarize partial progress as its result.
+            // Restate the current delegated task (the latest delegation, not
+            // the immutable authorization binding): a resumed child must
+            // finish it, not summarize partial progress as its result.
             let (task, evidence) = self
                 .state
                 .lock()
@@ -1740,7 +1756,7 @@ impl Registry {
                 .and_then(|scope| scope.sessions.get(&id))
                 .map(|session| {
                     (
-                        Some(session.binding_task.clone()),
+                        Some(session.descriptor.task.clone()),
                         durable::in_flight_evidence(
                             &session.in_flight_calls,
                             session.in_flight_omitted,
@@ -1875,16 +1891,117 @@ impl Registry {
     }
 
     pub(super) async fn submit_result(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         instruction_revision: Option<u64>,
         output: Value,
     ) -> std::io::Result<SubmissionOutcome> {
         self.await_restored(session_id).await?;
-        self.state
+        let (outcome, root) = {
+            let mut state = self.state.lock().await;
+            let outcome = state.submit_result(session_id, instruction_revision, output)?;
+            (outcome, state.root_session_id(session_id).to_owned())
+        };
+        if matches!(outcome, SubmissionOutcome::Accepted { .. }) {
+            // The receipt reaches the child only after acceptance is durable.
+            self.persist_durably(&root).await;
+        }
+        Ok(outcome)
+    }
+
+    /// Journals one root on a runtime task and waits for it, so callers whose
+    /// futures must be Send never hold a (WASM, non-Send) store future.
+    async fn persist_durably(self: &Arc<Self>, root_session_id: &str) {
+        let (done, saved) = oneshot::channel();
+        let registry = Arc::clone(self);
+        let root_session_id = root_session_id.to_owned();
+        drop(platform::spawn(async move {
+            registry.persist_now(&root_session_id).await;
+            let _ = done.send(());
+        }));
+        let _ = saved.await;
+    }
+
+    /// Synchronously journals one root, ordered with the background writer.
+    /// Failures are logged: callers fall back to the background writer.
+    async fn persist_now(&self, root_session_id: &str) {
+        let Some(store) = self.store_for(root_session_id) else {
+            return;
+        };
+        let restoring = self
+            .restored
             .lock()
-            .await
-            .submit_result(session_id, instruction_revision, output)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(root_session_id)
+            .is_some_and(|gate| !matches!(&*gate.borrow(), Some(Ok(()))));
+        if restoring {
+            return;
+        }
+        // Ordered with the writer and shutdown: a frozen scope already wrote
+        // its final journal, which this must never overwrite.
+        let _write_guard = self.journal_write_lock.lock().await;
+        let payload = {
+            let state = self.state.lock().await;
+            let checkpoints = self
+                .checkpoints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match state.scopes.get(root_session_id) {
+                Some(scope) if !scope.journal_frozen => {
+                    Some(scope.journal_payload(root_session_id, &checkpoints))
+                }
+                _ => None,
+            }
+        };
+        let result = match payload {
+            Some(Ok(write)) => {
+                self.save_write(root_session_id, store.as_ref(), write)
+                    .await
+            }
+            Some(Err(error)) => Err(error),
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, %root_session_id, "could not journal subagent completion state");
+        }
+    }
+
+    /// Announces children completed during restore by an accepted result.
+    /// Completion notices are sent only after the journal records them, so
+    /// a turn still in flight with an accepted result was never announced.
+    async fn announce_restored_completions(&self, root_session_id: &str, ids: &[AgentId]) {
+        for &id in ids {
+            let announced = {
+                let mut state = self.state.lock().await;
+                let Some(session) = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                else {
+                    continue;
+                };
+                if !matches!(session.status, AgentStatus::Completed { .. }) {
+                    continue;
+                }
+                let descriptor = std::mem::take(&mut session.announce).then(|| {
+                    let mut descriptor = session.descriptor.clone();
+                    descriptor.task = session.binding_task.clone();
+                    descriptor
+                });
+                (descriptor, session.status.clone())
+            };
+            if let Some(descriptor) = announced.0 {
+                self.send(root_session_id, AgentUpdate::Added(descriptor));
+            }
+            self.send(
+                root_session_id,
+                AgentUpdate::Status {
+                    id,
+                    status: announced.1,
+                },
+            );
+        }
+        self.changed();
     }
 
     pub(super) async fn begin_turn_steer(
@@ -2122,6 +2239,9 @@ impl Registry {
             }
             session.status.clone()
         };
+        // Journal the settled turn before announcing it: a restart must never
+        // run (or announce) a completion the parent was already told about.
+        self.persist_durably(root_session_id).await;
         self.send(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
         let registry = Arc::clone(self);

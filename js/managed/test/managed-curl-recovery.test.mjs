@@ -116,8 +116,11 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: a follow-up turn's history still contains its predecessor's marker.
-  const markers = ['CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
+  const markers = ['CURL_DTASK_NEW', 'CURL_DTASK_ORIG', 'CURL_ROOT_DTASK', 'CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
   const baselines = {};
+  // Delegated-task journey state (3g): owner losses before and after the
+  // child's result for its newest delegation is accepted.
+  const dtask = { kills: 0, submits: 0, calls: [] };
   const delegate = (task, marker) => [
     () => exec(marker + '-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl child', task, model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
     () => exec(marker + '-wait', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
@@ -167,6 +170,31 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
         if (resumedCalls === 1) return 'kill'; // second loss before the resumed child does anything
         return !namesWideCall ? exec('curl-wide-repeat', 'text(await tools.exec_command({cmd:"curl -s -X POST https://effects.example/effect/E"}));')
           : outputs.length === 0 ? exec('curl-wide-resumed', 'text(await tools.submit_result({output:"WIDE_RESUMED_WITHOUT_REPEAT"}));') : say('WIDE_RESUMED');
+      }
+      case 'CURL_ROOT_DTASK': {
+        const steps = [
+          () => exec('dtask-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl delegated child', task: 'CURL_DTASK_ORIG: submit ORIG_OK.', model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
+          () => exec('dtask-wait-orig', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
+          () => exec('dtask-delegate', 'text(await tools.send_agent_message({agent_id:1,purpose:"delegate",message:"CURL_DTASK_NEW: submit NEW_OK."}));'),
+        ];
+        if (outputs.length < steps.length) return steps[outputs.length]();
+        const seen = JSON.stringify(outputs.slice(steps.length));
+        if (/NEW_OK|without a valid submit_result/.test(seen) || outputs.length >= steps.length + 8) return say('DTASK_ROOT_DONE');
+        return exec('dtask-wait-' + outputs.length, 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));');
+      }
+      case 'CURL_DTASK_ORIG': return outputs.length === 0 ? exec('dtask-orig-submit', 'text(await tools.submit_result({output:"ORIG_OK"}));') : say('ORIG_DONE');
+      case 'CURL_DTASK_NEW': {
+        const last = [users.at(-1)?.content].flat().map(part => typeof part === 'string' ? part : part?.text ?? '').join('\n');
+        const submitted = outputs.some(item => item.call_id === 'dtask-new-submit');
+        dtask.calls.push({ process: processNumber, resumed: last.includes('runtime restarted while your previous turn was running'),
+          restated: last.match(/Delegated task:\n(CURL_DTASK_[A-Z]+)/)?.[1] ?? null, submitted });
+        // Loss 1: the newest delegation has not accepted a result yet.
+        if (!submitted && dtask.kills === 0) { dtask.kills++; return 'kill'; }
+        if (!submitted) { dtask.submits++; return exec('dtask-new-submit', 'text(await tools.submit_result({output:"NEW_OK"}));'); }
+        // Loss 2: the result was accepted; the final provider call is in flight.
+        if (dtask.kills === 1) { dtask.kills++; return 'kill'; }
+        // A model shown its accepted receipt just finishes (it may not resubmit).
+        return say('DTASK_NEW_DONE');
       }
       // Explicit delegation to the same, already completed child after restart.
       case 'CURL_CHILD_FOLLOWUP': return [
@@ -565,6 +593,36 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.deepEqual(openToolCalls(wideHistory), [], 'child calls lost across two owner losses each have a terminal result');
     assert.equal(effects.filter(effect => effect.name === 'E').length, 1, 'effect E is never dispatched again');
     assert.equal(wideDone.state, 'completed', JSON.stringify(wideDone));
+
+    // 3g. Restart recovery follows the child's newest delegation. Losing the
+    // owner before acceptance resumes that delegated task; losing it after
+    // acceptance completes the turn with the accepted result, with no
+    // provider rerun and one completion visible to the waiting parent.
+    const dtaskRun = (await curl('dtask-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_ROOT_DTASK: spawn a child, then delegate a new task to it.', settings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const dtaskBase = kills.length;
+    await waitFor('dtask owner loss before acceptance', () => kills.length === dtaskBase + 1 && !fixture);
+    await start(); await turnState('dtask-after-loss-1', dtaskRun.agent_id, dtaskRun.turn_id);
+    await waitFor('dtask owner loss after acceptance', () => kills.length === dtaskBase + 2 && !fixture);
+    const acceptedLoss = kills.at(-1).process;
+    await start(); await turnState('dtask-after-loss-2', dtaskRun.agent_id, dtaskRun.turn_id);
+    const dtaskDone = await terminal('dtask-terminal', dtaskRun.agent_id, dtaskRun.turn_id);
+    const dtaskHistory = await history('dtask-history', dtaskRun.agent_id);
+    const rootCalls = modelCalls.filter(call => call.scenario === 'CURL_ROOT_DTASK');
+    const rootSeen = JSON.stringify(rootCalls.at(-1)?.last_output ?? null);
+    const wakeTurns = new Set(modelCalls.filter(call => /subagent_completion agent_id/.test(call.last_instruction)).map(call => call.process)).size;
+    summary.dtask = { terminal: dtaskDone.state, kills: dtask.kills, submits: dtask.submits, child_calls: dtask.calls, accepted_loss_process: acceptedLoss,
+      root_last_output: rootSeen.slice(0, 600), wake_turns: wakeTurns };
+    const firstResume = dtask.calls.find(call => call.resumed);
+    assert.equal(dtask.kills, 2, 'both owner losses happened');
+    assert.ok(firstResume && !firstResume.submitted, 'the unaccepted delegated turn resumed: ' + JSON.stringify(dtask.calls));
+    assert.equal(firstResume.restated, 'CURL_DTASK_NEW', 'the resume restates the newest delegation, not the original task');
+    assert.deepEqual(dtask.calls.filter(call => call.process > acceptedLoss), [], 'an accepted result is never rerun by the provider after a restart');
+    assert.equal(dtask.submits, 1, 'the delegated result is accepted exactly once');
+    assert.match(rootSeen, /NEW_OK/, 'the waiting parent receives the accepted result');
+    assert.doesNotMatch(rootSeen, /without a valid submit_result/, 'the accepted result is not replaced by a missing-result failure');
+    assert.equal(wakeTurns, 0, 'an active waiting parent gets no duplicate idle continuation');
+    assert.deepEqual(openToolCalls(dtaskHistory), [], 'every call has a terminal result');
+    assert.equal(dtaskDone.state, 'completed', JSON.stringify(dtaskDone));
 
     // 4. A child whose every inference dies with its owner exhausts bounded
     // automatic recovery; the root reaches a terminal and the agent stays usable.

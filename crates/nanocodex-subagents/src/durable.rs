@@ -295,6 +295,11 @@ pub(super) struct PersistedAgent {
     /// Observed calls dropped by the retention bound.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(super) in_flight_omitted: u32,
+    /// Result submit_result accepted for the running turn. Journaled before
+    /// the child learns of acceptance, so a restart completes the turn with
+    /// it rather than running the child again. Older readers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) accepted_output: Option<Value>,
 }
 
 /// Bounded evidence of one tool call observed during a turn. It is kept
@@ -461,6 +466,9 @@ pub struct RestoreReport {
     pub interrupted: Vec<AgentId>,
     /// Agents that cannot run again because no portable checkpoint exists.
     pub unrecoverable: Vec<AgentId>,
+    /// Agents whose interrupted turn had already accepted its result. They
+    /// complete with it instead of running again, and are announced once.
+    pub completed: Vec<AgentId>,
 }
 
 pub(super) const RESUME_MESSAGE: &str = "The sub-agent runtime restarted while your previous \
@@ -502,6 +510,10 @@ pub(super) fn persist_agent(
         checkpoint_ref,
         in_flight_calls: session.in_flight_calls.clone(),
         in_flight_omitted: session.in_flight_omitted,
+        accepted_output: session
+            .active
+            .then(|| session.submitted_output.clone())
+            .flatten(),
     })
 }
 
@@ -539,9 +551,12 @@ pub(super) fn restored_session(
     let journaled = snapshot.is_none() && agent.checkpoint_ref.is_some();
     let recoverable = snapshot.is_some() || journaled;
     let terminal = matches!(agent.status, AgentStatus::Closing | AgentStatus::Closed);
-    let in_flight = !terminal
+    let running = !terminal
         && (agent.turn_in_flight
             || matches!(agent.status, AgentStatus::Running | AgentStatus::Pending));
+    // An accepted result is that turn's logical completion: never rerun it.
+    let accepted = running.then_some(agent.accepted_output).flatten();
+    let in_flight = running && accepted.is_none();
     let exhausted = in_flight && recoverable && agent.resume_attempts >= MAX_RESUME_ATTEMPTS;
     let evidence = in_flight_evidence(&agent.in_flight_calls, agent.in_flight_omitted);
     let status = if terminal {
@@ -568,6 +583,10 @@ pub(super) fn restored_session(
         AgentStatus::Failed { error }
     } else if in_flight {
         AgentStatus::Interrupted
+    } else if let Some(output) = &accepted {
+        AgentStatus::Completed {
+            output: output.clone(),
+        }
     } else {
         agent.status
     };
@@ -582,7 +601,7 @@ pub(super) fn restored_session(
         agent.output_schema,
         snapshot,
         agent.next_instruction_revision,
-        agent.last_output,
+        accepted.or(agent.last_output),
     );
     if let Some(task) = binding_task {
         session.binding_task = task;
