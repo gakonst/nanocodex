@@ -49,6 +49,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+const METADATA_ATTEMPTS: u32 = 5;
+const METADATA_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Total wait between metadata attempts, including server-requested delays.
+const METADATA_RETRY_BUDGET: Duration = Duration::from_secs(60);
+const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reuse only the exact running CLI covered by this release manifest.
 fn verified_running_binary(manifest: &[u8], asset_name: &str) -> Option<Vec<u8>> {
@@ -1326,19 +1332,222 @@ async fn activate_transaction<S: ServiceTransaction>(
     Ok(true)
 }
 
+/// GitHub release metadata is one small idempotent GET. Transient network
+/// failures, 408, 5xx and rate limits with a short server-requested wait are
+/// retried within a bounded total delay; missing releases, refusals and
+/// malformed metadata fail on the first response.
 async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<Release> {
-    client
+    let mut waited = Duration::ZERO;
+    for attempt in 1..=METADATA_ATTEMPTS {
+        let (reason, requested) = match fetch_release_once(client, url, description).await {
+            Ok(release) => return Ok(release),
+            Err(MetadataFailure::Permanent(error)) => return Err(error),
+            Err(MetadataFailure::Transient {
+                reason,
+                retry_after,
+            }) => (reason, retry_after),
+        };
+        if attempt == METADATA_ATTEMPTS {
+            bail!("could not fetch the {description} after {attempt} attempts: {reason}");
+        }
+        let delay =
+            requested.unwrap_or_else(|| METADATA_RETRY_DELAY.saturating_mul(1 << (attempt - 1)));
+        let remaining = METADATA_RETRY_BUDGET.saturating_sub(waited);
+        if delay > remaining {
+            bail!(
+                "could not fetch the {description}: {reason}. GitHub asked to wait {}, longer than the {}s update retry limit; try again after that time",
+                human_wait(delay),
+                METADATA_RETRY_BUDGET.as_secs()
+            );
+        }
+        eprintln!(
+            "{description} metadata unavailable ({reason}); retrying {}/{METADATA_ATTEMPTS} in {:.1}s...",
+            attempt + 1,
+            delay.as_secs_f64()
+        );
+        tokio::time::sleep(delay).await;
+        waited += delay;
+    }
+    unreachable!("the metadata attempt loop always returns")
+}
+
+enum MetadataFailure {
+    Transient {
+        reason: String,
+        retry_after: Option<Duration>,
+    },
+    Permanent(eyre::Report),
+}
+
+async fn fetch_release_once(
+    client: &Client,
+    url: &str,
+    description: &str,
+) -> std::result::Result<Release, MetadataFailure> {
+    let response = client
         .get(url)
+        .timeout(METADATA_REQUEST_TIMEOUT)
         .header(header::ACCEPT, "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
-        .wrap_err_with(|| format!("failed to query the {description}"))?
-        .error_for_status()
-        .wrap_err_with(|| format!("GitHub did not return the {description}"))?
-        .json::<Release>()
-        .await
-        .wrap_err_with(|| format!("GitHub returned invalid {description} metadata"))
+        .map_err(|error| MetadataFailure::Transient {
+            reason: error_chain(&error),
+            retry_after: None,
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let headers = response.headers().clone();
+        // GitHub explains refusals in a small JSON body; a lost body is not fatal.
+        let message = read_limited(response, 4096)
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+            .and_then(|body| {
+                body["message"]
+                    .as_str()
+                    .map(|text| text.chars().take(200).collect::<String>())
+            });
+        return Err(classify_metadata_status(
+            status,
+            &headers,
+            message,
+            url,
+            description,
+        ));
+    }
+    let body = match read_limited(response, MAX_METADATA_BYTES).await {
+        Ok(body) => body,
+        Err(None) => {
+            return Err(MetadataFailure::Permanent(eyre!(
+                "GitHub returned {description} metadata larger than {} MiB",
+                MAX_METADATA_BYTES / (1024 * 1024)
+            )));
+        }
+        Err(Some(error)) => {
+            return Err(MetadataFailure::Transient {
+                reason: format!("response interrupted: {}", error_chain(&error)),
+                retry_after: None,
+            });
+        }
+    };
+    serde_json::from_slice::<Release>(&body).map_err(|error| {
+        MetadataFailure::Permanent(
+            eyre!(error).wrap_err(format!("GitHub returned invalid {description} metadata")),
+        )
+    })
+}
+
+/// Read at most `limit` bytes; `Err(None)` means the body exceeded it.
+async fn read_limited(
+    response: reqwest::Response,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, Option<reqwest::Error>> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(Some)?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn classify_metadata_status(
+    status: StatusCode,
+    headers: &header::HeaderMap,
+    message: Option<String>,
+    url: &str,
+    description: &str,
+) -> MetadataFailure {
+    let header_text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+    };
+    let detail = message.map(|text| format!(": {text}")).unwrap_or_default();
+    let retry_after = header_text("retry-after").and_then(parse_retry_after);
+    let quota_exhausted = header_text("x-ratelimit-remaining") == Some("0");
+    if matches!(
+        status,
+        StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+    ) && quota_exhausted
+    {
+        let limit = header_text("x-ratelimit-limit").unwrap_or("unknown");
+        let reset = header_text("x-ratelimit-reset").and_then(|value| value.parse::<i64>().ok());
+        let now = chrono::Utc::now().timestamp();
+        let wait =
+            reset.map(|reset| Duration::from_secs(u64::try_from(reset - now).unwrap_or(0) + 1));
+        let reset_text = reset
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
+            .map_or_else(
+                || "at an unreported time".to_owned(),
+                |at| format!("at {}", at.format("%Y-%m-%d %H:%M:%S UTC")),
+            );
+        return MetadataFailure::Transient {
+            reason: format!(
+                "GitHub API rate limit exhausted (HTTP {}; {limit} requests/hour for unauthenticated clients on this network); the quota resets {reset_text}",
+                status.as_u16()
+            ),
+            retry_after: retry_after.or(wait).or(Some(Duration::MAX)),
+        };
+    }
+    let http = format!("HTTP {status}{detail}");
+    if status == StatusCode::TOO_MANY_REQUESTS
+        || (status == StatusCode::FORBIDDEN && retry_after.is_some())
+    {
+        return MetadataFailure::Transient {
+            reason: format!("GitHub rate limited the request ({http})"),
+            retry_after,
+        };
+    }
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
+        return MetadataFailure::Transient {
+            reason: http,
+            retry_after,
+        };
+    }
+    MetadataFailure::Permanent(if status == StatusCode::NOT_FOUND {
+        eyre!("GitHub has no {description} ({http}) at {url}; check the requested version or tag")
+    } else {
+        eyre!("GitHub did not return the {description} ({http})")
+    })
+}
+
+/// Retry-After is either delay seconds or an HTTP date.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let seconds = at.timestamp() - chrono::Utc::now().timestamp();
+    Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
+}
+
+fn human_wait(delay: Duration) -> String {
+    if delay == Duration::MAX {
+        return "until an unreported reset".to_owned();
+    }
+    let seconds = delay.as_secs();
+    if seconds >= 120 {
+        format!("about {} minutes", seconds.div_ceil(60))
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 async fn fetch_immutable_nightly(client: &Client, pointer: &Release) -> Result<Release> {
