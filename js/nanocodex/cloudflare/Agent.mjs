@@ -197,9 +197,10 @@ export async function exportDurabilityState(owner, request, headOnly = false) {
     // Probe without acquiring: exporting a root without children must not
     // create an owner for an absent journal.
     if ((await durability.load(journalId)).revision === "0") return root;
-    // The journal stores its child checkpoints inline and never stages
-    // records, so it always travels complete, even with a head-only root.
-    const subagents = await exportPortableState(durability, journalId);
+    // The journal stages content-addressed child checkpoint records. A
+    // head-only export omits them exactly like the root's records: the host
+    // transfers both record sets through its bounded archive.
+    const subagents = await exportPortableState(durability, journalId, { headOnly });
     return Object.freeze({ ...root, subagents });
   } finally {
     lifecycleFor(context).creating = false;
@@ -388,8 +389,7 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   const initialForkResume = options?.[INTERNAL_FORK_RESUME];
   let initialForkDigest;
   if (initialForkResume !== undefined) {
-    if (!initialForkResume || typeof initialForkResume !== "object" || Array.isArray(initialForkResume))
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
+    requireForkSeed(initialForkResume);
     const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256",
       new TextEncoder().encode(JSON.stringify(initialForkResume))));
     initialForkDigest = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -525,9 +525,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   const durability = createCloudflareDurabilityStore(context.storage);
   let resumeDigest;
   if (forkResume !== undefined) {
-    if (!forkResume || typeof forkResume !== "object" || Array.isArray(forkResume)) {
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
-    }
+    requireForkSeed(forkResume);
     initializeAgentStorage(context.storage);
     context.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_fork_resume (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -1053,6 +1051,20 @@ function ephemeralApplicationOptions(options) {
     }
   }
   return options;
+}
+
+/**
+ * A fork seed must hold a committed conversation, exactly like
+ * `session.fork({ at })`. Resuming the same session from an empty
+ * checkpoint is valid; seeding a new durable fork from one is not.
+ */
+function requireForkSeed(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) {
+    throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
+  }
+  if (checkpoint.has_conversation === false) {
+    throw new Error("the agent has no safe conversation boundary to fork");
+  }
 }
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

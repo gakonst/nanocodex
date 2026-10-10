@@ -21,6 +21,11 @@ describe("managed portability archive", () => {
       const owner = await store.acquire(stateId, { ownerId: "source" });
       const records = Array.from({ length: 65 }, (_, index) => ({ key: String(index).padStart(4, "0"), value: `${index}:` + "r".repeat(160_000) }));
       await store.replace(stateId, { ...owner, expectedRevision: owner.revision, payload: "complete execution head", records });
+      // The durable task-tree journal's content-addressed child checkpoints
+      // travel through the same bounded archive, after the root's records.
+      const journalOwner = await store.acquire(`${stateId}:subagents`, { ownerId: "source" });
+      await store.replace(`${stateId}:subagents`, { ...journalOwner, expectedRevision: journalOwner.revision,
+        payload: "task-tree journal head", records: [{ key: "c:child", value: "child checkpoint" }] });
       let batches = 0;
       // Reconstruct archive state each batch: progress must live in SQLite.
       while (!await new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, sourceId).sealDurabilityRecords(stateId)) batches++;
@@ -28,7 +33,7 @@ describe("managed portability archive", () => {
       const archive = new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, sourceId);
       let result = await archive.identityBatch("durability");
       while (!result.complete) result = await archive.identityBatch("durability");
-      expect(result.identity?.objects).toBe(5);
+      expect(result.identity?.objects).toBe(6);
       return result.identity!;
     });
     await runInDurableObject(targetStub, async (_session, ctx) => {
@@ -42,6 +47,8 @@ describe("managed portability archive", () => {
       result = await reopened.adoptBatch("durability", sourceId, identity, () => {});
       expect(result.complete).toBe(true);
       expect((await store.readRecord(stateId, "0064"))?.startsWith("64:")).toBe(true);
+      expect(await store.readRecord(`${stateId}:subagents`, "c:child")).toBe("child checkpoint");
+      expect(await store.readRecord(stateId, "c:child")).toBeNull();
       await store.importState(stateId, { revision: "1" as never, payload: "complete execution head" });
       expect(await store.load(stateId)).toEqual({ revision: "1", payload: "complete execution head" });
     });

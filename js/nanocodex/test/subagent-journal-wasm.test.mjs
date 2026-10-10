@@ -142,7 +142,8 @@ test('subagent journal writes stay small as child conversations grow, and restor
   assert.ok(restored.every(child => child.can_message), 'restored children keep their conversations');
 
   // Journals written before checkpoint records embedded each conversation
-  // (version 1). They still restore, and the next write references records.
+  // (version 1). They still restore, and the next write references records
+  // (version 3: one family-tagged SessionCheckpoint per record).
   await agent.session.shutdown();
   const journalRow = database.prepare("SELECT state_id, payload FROM nanocodex_durable_states WHERE state_id LIKE '%:subagents'").get();
   const stored = key => database.prepare('SELECT value FROM nanocodex_durable_records WHERE state_id = ? AND key = ?').get(journalRow.state_id, key).value;
@@ -153,16 +154,17 @@ test('subagent journal writes stay small as child conversations grow, and restor
     return value.slice(1).match(/.{64}/g).map(hash => stored('c:' + hash)).join('');
   };
   const current = JSON.parse(journalRow.payload);
-  assert.equal(current.version, 2);
-  const legacy = { version: 1, agents: current.agents.map(({ checkpoint_ref, ...rest }) => ({ ...rest, ...JSON.parse(readRecord(checkpoint_ref)) })) };
-  assert.ok(legacy.agents.every(child => child.native_checkpoint?.payload), 'Claude children carry native checkpoints');
+  assert.equal(current.version, 3);
+  const legacy = { version: 1, agents: current.agents.map(({ checkpoint_ref, ...rest }) => ({ ...rest, checkpoint: JSON.parse(readRecord(checkpoint_ref)) })) };
+  assert.ok(legacy.agents.every(child => child.checkpoint?.format && /claude/.test(JSON.stringify(child.checkpoint.model))),
+    'Claude children carry family-tagged checkpoints');
   database.prepare('UPDATE nanocodex_durable_states SET payload = ? WHERE state_id = ?').run(JSON.stringify(legacy), journalRow.state_id);
   journalWrites.length = 0;
   agent = await create(module, owner(storage, id), options);
   const upgraded = (await Subagents.list(agent, { includeCompleted: true })).agents;
   assert.deepEqual(upgraded.map(child => child.status.state), Array(CHILDREN).fill('completed'));
   const deadline = Date.now() + 10_000;
-  while (JSON.parse(database.prepare('SELECT payload FROM nanocodex_durable_states WHERE state_id = ?').get(journalRow.state_id).payload).version !== 2) {
+  while (JSON.parse(database.prepare('SELECT payload FROM nanocodex_durable_states WHERE state_id = ?').get(journalRow.state_id).payload).version !== 3) {
     assert.ok(Date.now() < deadline, 'a restored legacy journal is rewritten with checkpoint references');
     await new Promise(resolve => setTimeout(resolve, 25));
   }

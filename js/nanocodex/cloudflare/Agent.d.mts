@@ -70,7 +70,7 @@ export type CloudflareDurabilityExportPageRequest = DurabilityExportPageRequest 
   subagents?: true | undefined;
 }>;
 
-/** Execution head for a host that transfers its immutable root records separately; the task-tree journal travels complete. */
+/** Execution heads of the root and its task-tree journal, for a host that transfers both immutable record sets separately. */
 export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableSessionArchive>;
 
 /** Fences and exports this inactive Cloudflare Agent's provider-neutral session, including its task tree. */

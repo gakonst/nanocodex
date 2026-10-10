@@ -4,7 +4,7 @@
 //! sessionId (optional; durable IDs must match durabilityId), endpoint,
 //! subscriptionCompatibility, hostDefinitionId (required with tools),
 //! tools (exec/wait definitions), maxTokens, thinking (effort),
-//! adaptiveThinking, keepThinking, cache ("off", "5m", "1h"), autoCompact
+//! adaptiveThinking, keepThinking, fastMode, cache ("off", "5m", "1h"), autoCompact
 //! (false rejects unsupported disabling, true keeps backend policy),
 //! autoCompactWindowTokens, contextWindowTokens, instructions, systemBlocks,
 //! workspace, parallelTools, parallelSafeTools (host-derived),
@@ -75,6 +75,8 @@ pub(super) struct ClaudeConfig {
     adaptive_thinking: bool,
     #[serde(default)]
     keep_thinking: bool,
+    /// Requests fast mode where the model offers it; rejected before any request otherwise.
+    fast_mode: Option<bool>,
     #[serde(default)]
     cache: CachePolicy,
     auto_compact: Option<bool>,
@@ -499,6 +501,9 @@ pub(super) async fn build_claude(
     }
     if config.keep_thinking {
         builder = builder.keep_thinking();
+    }
+    if let Some(enabled) = config.fast_mode {
+        builder = builder.fast_mode(enabled);
     }
     builder = match config.cache {
         CachePolicy::Off => builder,

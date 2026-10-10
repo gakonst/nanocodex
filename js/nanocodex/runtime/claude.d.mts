@@ -77,6 +77,8 @@ export type Options = Readonly<{
   thinking?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   adaptiveThinking?: boolean;
   keepThinking?: boolean;
+  /** Fast mode where the model offers it (`capabilities().serviceTier`); an unsupported model rejects before any request. Same as Codex `fastMode`. */
+  fastMode?: boolean;
   cache?: 'off' | '5m' | '1h';
   parallelTools?: boolean;
   contextWindowTokens?: number;

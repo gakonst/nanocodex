@@ -147,3 +147,23 @@ test("checkpoints are family-tagged and never decoded by another harness", { tim
   await assert.rejects(codexAgent.session.fork({ at: { format: "unknown" } }), (error) => error.code === "invalid_checkpoint");
 });
 
+
+for (const harness of ["codex", "claude"]) {
+  test(harness + " fastMode at creation reaches the provider; an unsupported model rejects before any request", { timeout: 60_000 }, async (t) => {
+    const { fixture, options } = await families[harness](t);
+    const fastModel = harness === "claude" ? "claude-opus-5-5" : options.model;
+    const agent = await Agent.create({ ...options, model: fastModel, fastMode: true });
+    try {
+      await agent.turn.prompt({ input: "fast request" }).result();
+      const body = fixture.requests.at(-1);
+      if (harness === "claude") assert.equal(body.speed, "fast");
+      else assert.equal(body.service_tier, "priority");
+    } finally { await agent.session.shutdown(); }
+    if (harness === "claude") {
+      const before = fixture.requests.length;
+      await assert.rejects(Agent.create({ ...options, model: "claude-sonnet-4-6", fastMode: true }));
+      assert.equal(fixture.requests.length, before, "an unsupported fast mode never reaches the provider");
+      await assert.rejects(Agent.create({ ...options, fastMode: "yes" }), /fastMode must be boolean/);
+    }
+  });
+}
