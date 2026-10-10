@@ -16,6 +16,9 @@ import { createCodeRuntime } from "nanocodex-tools/runtime/code-runtime";
 // this journey does not pretend to reconstruct the Rust execution owner.
 const LEGACY_HEAD = "{\"nanocodex_durable_state\":{\"format\":4,\"operations\":{\"original\":{\"continuation\":\"3c5c10801f261a05de2f1c96ed2de92bd2c585c2e0c60fb9d34a49aa0ef5f659\",\"retired_model_calls\":0,\"retired_steers\":0,\"input\":\"881eadb99c9a3c4e1d58bfd4e1569080ff079eb944a06be1bbf6a79151b1a998\",\"status\":\"pending\",\"steps\":{\"model-1\":{\"kind\":\"model_call\",\"input\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\",\"status\":{\"completed\":\"9f977b7a24a53e7d2ea5bad27008a0b5f63ee3d812cf07a280da3f3f63b374ed\"},\"attempts\":1},\"tool-1-owned-cell\":{\"kind\":\"tool_call\",\"input\":\"3c70640a0a05d2050b160eb3ecda5a76acf05676101e07a9e7300689a20b2b3d\",\"status\":\"effect_pending\",\"attempts\":1}},\"accepted_order\":1}},\"latest_checkpoint\":null}}";
 const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+// Since 9d8b63102 a fresh session creates its schema on its first real request,
+// not in its constructor; seed raw SQL only after that public entry point ran.
+const initializeSession = (instance: DurableAgentSession) => instance.fetch(new Request("https://session.internal/sites"));
 const effectScope = (operationId = "original", modelCallIndex = 1) => () => ({ operationId, modelCallIndex });
 async function seedLegacyHead(storage: DurableObjectStorage) {
   const store = createCloudflareDurabilityStore(storage);
@@ -73,7 +76,8 @@ it("reuses completed nested results and fences an uncertain effect across manage
 }, 30_000);
 
 it("fences the exact legacy parent after >512 noise/archive deletion and retains its fence across owners", async () => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     await seedLegacyHead(ctx.storage);
     // Old global2 is different from the new cell-local1. This old telemetry is
     // metadata-only because running a removed old host is not this test's remit.
@@ -150,7 +154,8 @@ it("replays a journalled completed ordinal and executes a new ordinal under a pe
 }, 30_000);
 
 it("fences orphan child-head pending parents and old child sessions but permits fresh identities", async () => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     await seedLegacyHead(ctx.storage);
     await createCloudflareDurabilityStore(ctx.storage).importState("orphan-child-head", { revision: durabilityRevision("6"), payload: LEGACY_HEAD });
     ctx.storage.sql.exec(`CREATE TABLE nanocodex_cloudflare_subagents (session_id TEXT PRIMARY KEY,
@@ -185,7 +190,8 @@ it("fences orphan child-head pending parents and old child sessions but permits 
 }, 30_000);
 
 it.each(["corrupt", "unsupported", "oversized"])("fails closed on a %s existing head without hydrating unbounded state", async kind => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     await seedLegacyHead(ctx.storage);
     const payload = kind === "oversized" ? "x".repeat(1024 * 1024 + 1)
       : kind === "unsupported" ? LEGACY_HEAD.replace('"format":4', '"format":5') : "{corrupt";
@@ -327,7 +333,8 @@ it("keeps v1 live-schema receipts and parent fences unknown rather than assignin
 }, 30_000);
 
 it("replenishes recovery only for a new model ordinal's real receipt, not a replayed provider ID result lacking an ordinal", async () => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     const safety = new ManagedRecoverySafety(ctx.storage);
     let writes = 0; let index = 1; let seq = 0;
     const tools = { write: { handler: async () => { writes++; return "accepted"; } } };
@@ -371,7 +378,8 @@ it("replenishes recovery only for a new model ordinal's real receipt, not a repl
 }, 30_000);
 
 it("closes unknown-outcome tool results without counting them as recovery progress", async () => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     const safety = new ManagedRecoverySafety(ctx.storage);
     let seq = 0;
     const event = (type: string, payload: Record<string, unknown>) => ({
@@ -527,7 +535,8 @@ it("merges concurrent cell writes, retains failed-script writes, and rejects an 
 }, 30_000);
 
 it.each(["unmigrated", "effect-journal-v2"])("fences %s legacy cells before missing store data can skip their original effects", async migration => {
-  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, ctx) => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, ctx) => {
+    await initializeSession(instance);
     await seedLegacyHead(ctx.storage);
     // Earlier deployed versions already recorded v2, before cell snapshots
     // existed. The pending head may have no nested intent to reveal the loss.
