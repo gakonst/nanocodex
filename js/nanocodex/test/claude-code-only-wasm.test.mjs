@@ -133,45 +133,74 @@ test('Claude code-only turn completion cancels abandoned cells and preserves the
 import { createMemoryDurabilityStore, exportDurabilityState, importDurabilityState } from '../runtime/durability-store.mjs';
 
 for (const mode of ['code-only']) {
-  test(`Claude active ${mode} request survives two durable reopenings`, { timeout: 30_000 }, async t => {
+  // Two owner losses while model requests are in flight, then one while a
+  // replayed response's exec is running. A fresh response after a continuation
+  // starts a new round whose exec has never run, so it executes exactly once.
+  // An exec whose admitting response was settled before the loss may already
+  // have dispatched effects, so recovery refuses it instead of rerunning it.
+  test(`Claude active ${mode} request survives two durable reopenings and refuses a lost exec admission`, { timeout: 30_000 }, async t => {
     const trace = [], errors = [], effects = [];
-    const firstEntered = Promise.withResolvers(), replacementEntered = Promise.withResolvers();
+    const firstEntered = Promise.withResolvers(), replacementEntered = Promise.withResolvers(), heldEntered = Promise.withResolvers();
+    const heldGate = Promise.withResolvers();
+    const PENDING = 'Continue the admitted operation', HELD = 'Read once while the owner is lost', AFTER = 'Perform a fresh read after reconciling the recovery.';
+    let pendingRequests = 0;
     const server = createServer(async (request, response) => {
       try {
         const parts = []; for await (const part of request) parts.push(part);
         const body = JSON.parse(Buffer.concat(parts)); trace.push(body);
-        if (trace.length === 1) { firstEntered.resolve(); return; }
         assert.deepEqual(body.tools.map(tool => tool.name).sort(), ['exec', 'wait']);
-        // Crash again after the recovered request was admitted; its payload
-        // must remain stable across the second reopen.
-        if (trace.length === 2) { replacementEntered.resolve(); return; }
-        const history = JSON.stringify(body.messages);
-        const block = trace.length === 4 ? final('RECOVERY_UNKNOWN') : history.includes('UPGRADE_READ_OK') ? final('UPGRADE_DONE')
-          : exec(`upgrade-read-${trace.length}`, 'text(await tools.Read({}));');
+        // Decide from the current operation's prompt; history keeps earlier ones.
+        const prompt = body.messages.findLast(message => message.role === 'user'
+          && [PENDING, HELD, AFTER].some(text => JSON.stringify(message.content).includes(text)));
+        const current = JSON.stringify(prompt?.content ?? '');
+        const since = JSON.stringify(body.messages.slice(body.messages.indexOf(prompt) + 1));
+        let block;
+        if (current.includes(PENDING)) {
+          pendingRequests++;
+          if (pendingRequests === 1) { firstEntered.resolve(); return; }
+          // Crash again after the recovered request was admitted; its payload
+          // must remain stable across the second reopen.
+          if (pendingRequests === 2) { replacementEntered.resolve(); return; }
+          block = since.includes('UPGRADE_READ_OK') ? final('UPGRADE_DONE') : exec(`upgrade-read-${pendingRequests}`, 'text(await tools.Read({}));');
+        } else if (current.includes(HELD)) {
+          block = !since.includes('held-read') ? exec('held-read', 'text(await tools.Read({hold:true}));')
+            : final(/admission was lost during recovery/.test(since) ? 'HELD_UNKNOWN' : 'HELD_REDISPATCHED');
+        } else if (current.includes(AFTER)) {
+          block = since.includes('UPGRADE_READ_OK') ? final('AFTER_DONE') : exec('after-read', 'text(await tools.Read({}));');
+        } else throw new Error('unexpected synthetic Claude request');
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.end(messages(block, block.type === 'text' ? 'end_turn' : 'tool_use'));
       } catch (error) { errors.push(error.stack); response.destroy(error); }
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+    t.after(async () => { heldGate.resolve(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
     const stateId = `claude-upgrade-pending-${mode}`;
     let store = createMemoryDurabilityStore(stateId), agent, failure;
-    const prompt = { input: 'Continue the admitted operation', id: 'upgrade-operation' };
+    const prompt = { input: PENDING, id: 'upgrade-operation' };
+    const held = { input: HELD, id: 'held-operation' };
     const options = {
       codeEvaluator: createQuickJsEvaluator(await newQuickJSAsyncWASMModuleFromVariant(asyncVariant)),
       model: 'claude-sonnet-4-6', auth: { apiKey: 'synthetic' },
       endpoint: `http://127.0.0.1:${server.address().port}/v1/messages`,
       module: await readFile(new URL('../pkg-web/nanocodex_bg.wasm', import.meta.url)),
       durabilityId: stateId,
-      tools: [{ name: 'Read', description: 'Read synthetic content', handler() { effects.push('read'); return { content: 'UPGRADE_READ_OK' }; } }],
+      tools: [{ name: 'Read', description: 'Read synthetic content', async handler(input) {
+        if (input?.hold) { effects.push('held-read'); heldEntered.resolve(); await heldGate.promise; }
+        else effects.push('read');
+        return { content: 'UPGRADE_READ_OK' };
+      } }],
     };
-    const reopen = async result => {
+    // The archive is taken while work is in flight; the old owner then stops
+    // before anything it does can reach the restored store.
+    const reopen = async (result, afterCancel = () => {}) => {
       const archive = await exportDurabilityState(store, stateId);
-      await agent.session.cancel().catch(() => {}); await result;
+      await agent.session.cancel().catch(() => {}); afterCancel(); await result;
       await agent.session.shutdown().catch(() => {}); agent = undefined;
       store = createMemoryDurabilityStore(stateId); await importDurabilityState(store, archive);
       agent = await Claude.create({ ...options, durability: store, subagents: { maxConcurrency: 2 } });
     };
+    const results = id => trace.at(-1).messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+      .filter(block => block.type === 'tool_result' && block.tool_use_id === id);
     try {
       agent = await Claude.create({ ...options, durability: store });
       let result = agent.turn.prompt(prompt).result().catch(error => error);
@@ -179,15 +208,31 @@ for (const mode of ['code-only']) {
       result = agent.turn.prompt(prompt).result().catch(error => error);
       await replacementEntered.promise; await reopen(result);
       result = agent.turn.prompt(prompt).result();
-      assert.equal((await result).finalMessage, 'RECOVERY_UNKNOWN');
-      assert.deepEqual(effects, [], 'lost code admission is not redispatched');
-      assert.match(JSON.stringify(trace[3].messages), /outcome unknown/);
-      assert.equal((await agent.turn.prompt({ input: 'Perform a fresh read after reconciling the recovery.', id: 'after-recovery' }).result()).finalMessage, 'UPGRADE_DONE');
-      assert.deepEqual(effects, ['read']); assert.deepEqual(errors, []);
-      assert.deepEqual(trace[0].tools.map(tool => tool.name).sort(), ['exec', 'wait']);
+      assert.equal((await result).finalMessage, 'UPGRADE_DONE');
       assert.deepEqual(trace[1], trace[2], 'request remains frozen across a second restart');
+      assert.deepEqual(effects, ['read'], 'the fresh post-recovery exec runs exactly once');
+      const fresh = results('upgrade-read-3');
+      assert.equal(fresh.length, 1, 'the fresh exec reports one result');
+      assert.match(JSON.stringify(fresh[0].content), /UPGRADE_READ_OK/);
+      assert.doesNotMatch(JSON.stringify(trace.at(-1).messages), /admission was lost during recovery/, 'a fresh response is not refused');
+
+      // The response admitting held-read is settled, then its owner is lost
+      // while the read is still running.
+      result = agent.turn.prompt(held).result().catch(error => error);
+      await heldEntered.promise; await reopen(result, () => heldGate.resolve());
+      assert.equal((await agent.turn.prompt(held).result()).finalMessage, 'HELD_UNKNOWN');
+      assert.deepEqual(effects, ['read', 'held-read'], 'lost code admission is not redispatched');
+      const lost = results('held-read');
+      assert.equal(lost.length, 1);
+      assert.equal(lost[0].is_error, true);
+      assert.match(JSON.stringify(lost[0].content), /admission was lost during recovery[\s\S]*outcome unknown/);
+
+      assert.equal((await agent.turn.prompt({ input: AFTER, id: 'after-recovery' }).result()).finalMessage, 'AFTER_DONE');
+      assert.deepEqual(effects, ['read', 'held-read', 'read']); assert.deepEqual(errors, []);
+      assert.deepEqual(trace[0].tools.map(tool => tool.name).sort(), ['exec', 'wait']);
     } catch (error) { failure = error; throw error; }
     finally {
+      heldGate.resolve();
       await agent?.session.shutdown().catch(() => {});
       await evidence(`upgrade-pending-${mode}`, { status: failure ? 'failed' : 'passed', error: failure?.stack, effects, trace, errors });
     }
