@@ -5318,6 +5318,11 @@ async fn terminal_computer_activity_keeps_observations_in_disclosed_details() {
         .terminal
         .wait_text("Used computer · 4 actions · 1 failed")
         .await;
+    // The summary already renders while the turn is still active. Completion
+    // then adds the "done" row and moves the transcript up two rows, so a click
+    // row computed before that render lands on the wrong item. The turn was
+    // active since start ("Enter steer"), so "Enter send" marks completion.
+    fixture.terminal.wait_text("Enter send").await;
     fixture.terminal.wait_text("CONTROL_DISAPPEARED").await;
     fixture.terminal.wait_text("Captured screenshot").await;
     fixture.terminal.wait_no_text("SNAPSHOT_CONTROL").await;
