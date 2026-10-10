@@ -11,7 +11,7 @@ import { afterAll } from "vitest";
 // "testfileFinished"; vitest frees pool slots only on that message, so the run
 // stalls until the CI job timeout. Background work a test leaves behind (a
 // closed socket, waitUntil warmups, registry publishing) therefore has to
-// settle while the file is still running.
+// settle while the file is still running. Tracking: https://github.com/gakonst/nanocodex/issues/951
 const QUIET_MS = 50;
 const DEADLINE_MS = 10_000;
 const RUNNER_BINDING = "__VITEST_POOL_WORKERS_RUNNER_OBJECT";
