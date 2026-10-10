@@ -116,8 +116,25 @@ Or install the native CLI/TUI on Apple Silicon macOS or x86-64 glibc Linux:
 
 ```sh
 curl -fsSL https://nanocodex.paradigm.xyz | bash
-nanocodex
+~/.nanocodex/bin/nanocodex
 ```
+
+The installer adds `~/.nanocodex/bin` (or `$NANOCODEX_DIR/bin` when
+`NANOCODEX_DIR` selects another installation directory) to your shell profile, but it
+cannot change the PATH of the shell that ran it. Open a new terminal to run plain
+`nanocodex`. The default is the latest stable release. Use
+`curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --nightly` for the newest
+nightly build, which then follows nightly updates, or set
+`NANOCODEX_RELEASE_TAG` to an exact `vMAJOR.MINOR.PATCH` or `nightly-<commit>`
+tag. `--help` and mistyped options are answered before anything downloads.
+
+The script parses completely before it runs, so a cut-off download cannot run
+part of it. It retries interrupted or failed GitHub requests, and on Linux a
+second installation into the same directory waits for the first. Rerunning the
+same command resumes a failed installation. The selected release's own tagged
+installer downloads its checksum manifest and bootstrap. Retries for those
+downloads, and the Rosetta, musl and glibc checks, apply only to releases whose
+tagged installer includes them.
 
 Nanocodex installs two native binaries by role: the `nanocodex` CLI and the
 `nanocodex-hand` daemon (installed under its service name `nanocodex2`). The CLI

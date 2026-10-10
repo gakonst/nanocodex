@@ -135,7 +135,7 @@ mkdir -p "$rejected/fixture"
 make_bootstrap "$rejected/fixture/nanocodex-x86_64-unknown-linux-gnu"
 make_stable_installer "$rejected/fixture/install"
 printf '%064d  nanocodex-x86_64-unknown-linux-gnu\n' 0 > "$rejected/fixture/SHA256SUMS"
-if PATH="$mock_bin:$PATH" TEST_INSTALL_FIXTURE="$rejected/fixture" \
+if PATH="$mock_bin:$PATH" HOME="$rejected/home" TEST_INSTALL_FIXTURE="$rejected/fixture" \
   TEST_INSTALL_DOWNLOADS="$rejected/downloads" TEST_INSTALL_RECORD="$rejected/record" \
   TEST_INSTALL_URLS="$rejected/urls" \
   TEST_INSTALL_CURRENT_INSTALL="$workspace_root/install" \
