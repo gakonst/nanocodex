@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/account-auth", async (load) => {
   const actual = await load<typeof import("../src/account-auth")>();
@@ -14,8 +14,16 @@ vi.mock("../src/account-auth", async (load) => {
   };
 });
 
-import { routeManagedRealtimeTransport } from "../src/managed-realtime-transport";
-import { routeBrowserModel } from "../src/browser-model";
+// The pool's worker entry (src/index.ts) has already loaded these routes with
+// the real account-auth, so a static import would bypass the mock above.
+// Re-import them after resetting the module graph, as code-evaluator.test.ts does.
+let routeManagedRealtimeTransport: typeof import("../src/managed-realtime-transport").routeManagedRealtimeTransport;
+let routeBrowserModel: typeof import("../src/browser-model").routeBrowserModel;
+beforeAll(async () => {
+  vi.resetModules();
+  ({ routeManagedRealtimeTransport } = await import("../src/managed-realtime-transport"));
+  ({ routeBrowserModel } = await import("../src/browser-model"));
+});
 
 const agentId = "018f25e8-7b51-7a32-8c4d-0123456789ab";
 const voiceId = "018f25e8-7b51-7a32-8c4d-0123456789ac";
