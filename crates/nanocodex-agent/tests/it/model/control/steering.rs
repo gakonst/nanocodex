@@ -522,9 +522,9 @@ async fn instruction_revision_follows_consumed_steering_and_resets_on_new_prompt
                 continue;
             }
             let call = json!({
-                "id": format!("revision-item-{index}"), "type": "function_call",
-                "call_id": format!("revision-call-{index}"),
-                "name": "revision_probe", "arguments": "{}"
+                "id": format!("revision-item-{index}"), "type": "custom_tool_call",
+                "call_id": format!("revision-call-{index}"), "name": "exec",
+                "input": "text(await tools.revision_probe({}));"
             });
             send_json(
                 &mut socket,
