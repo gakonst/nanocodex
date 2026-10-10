@@ -44,6 +44,11 @@ export default { async fetch(request, env) {
   return await routeTodoRequest(request, env, url, await authenticate(request, env, url)) ?? new Response("not_found", {status:404});
 } };
 `;
+// workerd answers an early rejection (401/403/400 before request.json()) and then closes the
+// HTTP/1.1 connection without "Connection: close" because the request body was never read.
+// undici may already have reused that pooled socket for the next request: "fetch failed" with
+// ECONNRESET or "other side closed". Body-bearing journey requests therefore never share a socket.
+const noReuse = method => method === "GET" ? {} : { connection: "close" };
 const c1 = "A".repeat(43), c2 = "B".repeat(43), unknownConnection = "C".repeat(43);
 const msg = (connectionID, html = false) => ({ id: "m1", threadId: "t1", internalDate: "1780000000000", labelIds: ["INBOX", "UNREAD"],
   payload: { mimeType: "multipart/mixed", headers: [{ name: "From", value: "Person <person@example.test>" }, { name: "To", value: "owner@example.test" },
@@ -110,7 +115,7 @@ test("TODO mail HTTP journey: multiaccount read, durable review, exact-version s
     async function key(user, read_only=false) { const r=await backend.fetch("https://fixture.test/__fixture",{method:"POST",body:JSON.stringify({user,read_only})});assert.equal(r.status,200,await r.clone().text());return (await r.json()).token; }
     const owner=crypto.randomUUID(), token=await key(owner), other=await key(crypto.randomUUID()), readOnly=await key(owner,true);
     async function call(path, method="GET", body, credential=token, expected=200) {
-      const response=await fetch(new URL("/v1/todo"+path,base),{method,headers:{...(credential?{authorization:`Bearer ${credential}`} : {}),"content-type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});
+      const response=await fetch(new URL("/v1/todo"+path,base),{method,headers:{...(credential?{authorization:`Bearer ${credential}`} : {}),"content-type":"application/json",...noReuse(method)},...(body===undefined?{}:{body:JSON.stringify(body)})});
       const text=await response.text(); let data;try {data=JSON.parse(text);} catch {data=text;}
       trace.push({path,method,status:response.status,data});assert.equal(response.status,expected,`${method} ${path}: ${text}`);return data;
     }
@@ -119,7 +124,7 @@ test("TODO mail HTTP journey: multiaccount read, durable review, exact-version s
     const sessionResponse = await backend.fetch("https://fixture.test/__fixture",{method:"POST",body:JSON.stringify({user:owner,session:true})});
     const {cookie}=await sessionResponse.json();
     for (const origin of [undefined,"https://unrelated.test",base.origin]) {
-      const r = await fetch(new URL("/v1/todo/mail/drafts",base),{method:"POST",headers:{cookie,"content-type":"application/json",...(origin?{origin}:{})},body:"{}"});
+      const r = await fetch(new URL("/v1/todo/mail/drafts",base),{method:"POST",headers:{cookie,"content-type":"application/json",...(origin?{origin}:{}),...noReuse("POST")},body:"{}"});
       trace.push({path:"/mail/drafts",method:"POST",session_origin:origin,status:r.status,data:await r.json()});assert.equal(r.status,origin===base.origin?400:403);
     }
     const deniedConnect = await backend.fetch("https://nanocodex.internal/v1/todo/mail/accounts",{headers:{"x-nanocodex-connect-user":owner,"x-nanocodex-connect-grant-id":"0x"+"d".repeat(64),"x-nanocodex-connect-capabilities":JSON.stringify(["agents:read"]),"x-nanocodex-connect-connectors":JSON.stringify(["gmail"]),"x-nanocodex-connect-mcp-ids":"[]"}});
@@ -157,7 +162,7 @@ test("TODO mail HTTP journey: multiaccount read, durable review, exact-version s
     bodyPart=undefined;attachmentResponse=undefined;
     const input={id:crypto.randomUUID(),version:0,connection_id:c1,mode:"reply_all",to:["person@example.test"],cc:[],bcc:[],subject:"Re: Review the proposal",body_text:"Draft body",thread_id:"t1",reply_message_id:"m1"};
     await call("/mail/drafts","POST",input,readOnly,403);
-    const invalidContent = await fetch(new URL("/v1/todo/mail/drafts",base),{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"text/plain"},body:JSON.stringify(input)});
+    const invalidContent = await fetch(new URL("/v1/todo/mail/drafts",base),{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"text/plain",...noReuse("POST")},body:JSON.stringify(input)});
     assert.equal(invalidContent.status,415);trace.push({boundary:"content_type",status:invalidContent.status,data:await invalidContent.json()});
     await call("/mail/drafts","POST",{...input,to:['bad"address@example.test']},token,400);
     await call("/mail/drafts","POST",{...input,body_text:"\ud800"},token,400);
@@ -305,7 +310,7 @@ test("prepared mobile inbox HTTP journey: verified CRM identities survive blocke
     assert.equal(response.status, 200, await response.clone().text()); return response.json();
   };
   const call = async (path, method = "GET", body, expected = 200, credential = token) => {
-    const response = await fetch(new URL("/v1/todo" + path, base), { method, headers: { ...(credential ? { authorization: "Bearer " + credential } : {}), "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const response = await fetch(new URL("/v1/todo" + path, base), { method, headers: { ...(credential ? { authorization: "Bearer " + credential } : {}), "content-type": "application/json", ...noReuse(method) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const data = await response.json(); trace.push({ path, method, expected, status: response.status, data }); assert.equal(response.status, expected, `${method} ${path}: ${JSON.stringify(data)}`); return data;
   };
   const settled = async (path, status) => {

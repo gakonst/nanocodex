@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+// See todo-mail-journey.test.mjs: workerd closes after an early rejection that left the body unread.
+const noReuse = method => method === "GET" ? {} : { connection: "close" };
 
 // Real HTTP/account proxy/auth/TODO router/UserAccount SQLite DO. Only broker
 // connector inventory is synthetic; any external provider call fails the test.
@@ -55,7 +57,7 @@ test("snooze HTTP: two clients, durable undo/replay, auth, bounds and source own
   async function fixture(input){const r=await backend.fetch("https://fixture.test/__fixture",{method:"POST",body:JSON.stringify(input)});assert.equal(r.status,200,await r.clone().text());return r.json();}
   const token=(await fixture({user:owner})).token,deviceB=(await fixture({user:owner})).token,other=(await fixture({user:stranger})).token,readOnly=(await fixture({user:owner,read_only:true})).token;
   async function request(path="",method="GET",body,credential=token,headers={}){
-   const r=await fetch(new URL("/v1/todo"+path,base),{method,headers:{...(credential?{authorization:"Bearer "+credential}:{}),"content-type":"application/json",...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
+   const r=await fetch(new URL("/v1/todo"+path,base),{method,headers:{...(credential?{authorization:"Bearer "+credential}:{}),"content-type":"application/json",...noReuse(method),...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
    const text=await r.text();let data;try{data=JSON.parse(text);}catch{data=text;}
    trace.push({path,method,status:r.status,data});if(r.status===200)assert.equal(r.headers.get("cache-control"),"no-store");return {status:r.status,data};
   }
@@ -91,7 +93,7 @@ test("snooze HTTP: two clients, durable undo/replay, auth, bounds and source own
    {...snooze,until:Math.floor(Date.now()/1000)},{...snooze,until:Date.now()-1},{...snooze,until:Date.now()+367*86400_000},{...snooze,until:until+0.5},{...snooze,version:-1},{...snooze,version:0.5},{...snooze,external_action:"send"},{...snooze,until:"tomorrow"},{...snooze,until:undefined}
   ])await call("/snooze","POST",{...invalid,operation_id:crypto.randomUUID()},token,400);
   await call("/snooze","POST",{...snooze,operation_id:"not-a-uuid"},token,400);await call("/snooze?x=1","POST",snooze,token,404);await call("/snooze","GET",undefined,token,404);await call("/snooze","POST",{...snooze,row_key:"capture:"+crypto.randomUUID(),operation_id:crypto.randomUUID()},token,404);
-  for(const body of ["{",JSON.stringify({row_key:"x".repeat(9000)})]){const r=await fetch(new URL("/v1/todo/snooze",base),{method:"POST",headers:{authorization:"Bearer "+token},body});assert.equal(r.status,400);trace.push({case:"invalid_or_oversize_json",status:r.status,data:await r.json()});}
+  for(const body of ["{",JSON.stringify({row_key:"x".repeat(9000)})]){const r=await fetch(new URL("/v1/todo/snooze",base),{method:"POST",headers:{authorization:"Bearer "+token,...noReuse("POST")},body});assert.equal(r.status,400);trace.push({case:"invalid_or_oversize_json",status:r.status,data:await r.json()});}
   const race=await Promise.all([request("/snooze","POST",{row_key:row,until,version:2,operation_id:crypto.randomUUID()}),request("/snooze","POST",{row_key:row,until:until+1,version:2,operation_id:crypto.randomUUID()},deviceB)]);
   assert.deepEqual(race.map(r=>r.status).sort(),[200,409]);assert.equal(race.find(r=>r.status===409).data.error,"stale_disposition");
   const expiring={row_key:`mail:${c1}:expiring`,until:Date.now()+1500,version:0,operation_id:crypto.randomUUID()};
