@@ -5,7 +5,9 @@ import type { DurableAgentSession } from "../src/index";
 it("cold-start retires legacy delegation before replay while keeping ordinary work", async () => {
   const ns = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   const stub = ns.getByName(crypto.randomUUID());
-  await runInDurableObject(stub, async (_session, state) => {
+  await runInDurableObject(stub, async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     // No session owner: this fixture isolates cold-start migration from provider calls.
     state.storage.sql.exec(`CREATE TABLE project_thread_runs (id TEXT PRIMARY KEY);
       CREATE TABLE project_spawn_plans (id TEXT PRIMARY KEY);
