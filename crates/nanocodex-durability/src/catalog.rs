@@ -166,7 +166,9 @@ impl SessionRecord {
             history_pruned: self.history_pruned || next.history_pruned,
             // The creation boundary is immutable once recorded.
             branch: self.branch.clone().or(next.branch),
-            start_checkpoint: next.start_checkpoint.or_else(|| self.start_checkpoint.clone()),
+            start_checkpoint: next
+                .start_checkpoint
+                .or_else(|| self.start_checkpoint.clone()),
             initial: next.initial.or(self.initial),
         }
     }
@@ -418,7 +420,10 @@ mod native {
                     Origin::Fork | Origin::SideConversation | Origin::Subagent
                 )
             });
-            if state.operations().is_empty() && state.latest_checkpoint().is_none() && !created_child {
+            if state.operations().is_empty()
+                && state.latest_checkpoint().is_none()
+                && !created_child
+            {
                 return Ok(None);
             }
             let preview = self.first_prompt(id, &state).await;
@@ -1100,8 +1105,9 @@ mod native {
                 // Visible thinking only; signatures and redacted thinking
                 // stay model-bound, like Codex encrypted reasoning.
                 Some("thinking") => {
-                    if let Some(text) =
-                        block["thinking"].as_str().filter(|text| !text.trim().is_empty())
+                    if let Some(text) = block["thinking"]
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
                     {
                         items.push(TranscriptItem::Reasoning(text.into()));
                     }
@@ -1148,8 +1154,7 @@ mod native {
         let messages = conversation["messages"]
             .as_array()
             .map_or(&[][..], Vec::as_slice);
-        let receipt =
-            |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
+        let receipt = |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
         // Code Mode child calls retained by the engine without their results. A
         // call started by exec and finished by a later wait keeps its final status.
         let mut children = std::collections::HashMap::<&str, Vec<(&str, &Value)>>::new();

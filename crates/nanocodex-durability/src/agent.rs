@@ -38,10 +38,14 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
         if let Some(record) = &record {
             builder = builder.lineage(record.lineage.clone());
         }
-        let initial = record.as_ref().and_then(|record| match (record.model, record.initial) {
-            (nanocodex_agent::HarnessModel::Codex(model), Some(initial)) => Some((model, initial)),
-            _ => None,
-        });
+        let initial = record
+            .as_ref()
+            .and_then(|record| match (record.model, record.initial) {
+                (nanocodex_agent::HarnessModel::Codex(model), Some(initial)) => {
+                    Some((model, initial))
+                }
+                _ => None,
+            });
         let branches = Branches {
             store: state.shared_store(),
             record,
@@ -615,10 +619,8 @@ impl LazyExecution {
                 }
                 let record = state.describe(record).await.map_err(agent_error)?;
                 let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
-                self.reopened.store(
-                    checkpoint.is_some(),
-                    std::sync::atomic::Ordering::SeqCst,
-                );
+                self.reopened
+                    .store(checkpoint.is_some(), std::sync::atomic::Ordering::SeqCst);
                 Ok(DurableExecution::ready(
                     owner,
                     record.session_id.clone(),

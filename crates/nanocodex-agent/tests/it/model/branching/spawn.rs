@@ -292,11 +292,14 @@ async fn clean_batch_spawn_is_all_or_nothing() -> Result<()> {
         rolled_back.spawn_many(1).await.is_err(),
         "a child created by a failed batch must not keep running"
     );
-    assert_eq!(root_handle.spawn_many(1).await?.len(), 1, "the parent can still spawn");
+    assert_eq!(
+        root_handle.spawn_many(1).await?.len(),
+        1,
+        "the parent can still spawn"
+    );
     drop((root, root_events));
     Ok(())
 }
-
 
 #[tokio::test]
 async fn clean_spawn_can_override_model_and_thinking_without_mutating_parent() -> Result<()> {

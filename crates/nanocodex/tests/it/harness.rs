@@ -2,12 +2,11 @@
 //! builders, Code Mode, registry admission, eviction and routing run normally.
 use axum::{Json, Router, routing::post};
 use nanocodex::{
-    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Mutability, Nanocodex,
-    NanocodexError, OpenAi, ReasoningMode, SessionCheckpoint, Thinking,
-    DurableAgentExt as _,
+    Claude, ClaudeModel, DurableAgentExt as _, Harness, HarnessFamily, HarnessModel, Model,
+    Mutability, Nanocodex, NanocodexError, OpenAi, ReasoningMode, SessionCheckpoint, Thinking,
     agent::{AgentHandle, SpawnOptions},
-    durability::{MemoryStore, SessionRecord, SessionStore},
     claude::{ClaudeClient, ClaudeToolReply, ClaudeTools, ToolResultContent},
+    durability::{MemoryStore, SessionRecord, SessionStore},
     oai::transport::ResponsesTransport,
     tools::{ToolContext, Tools, runtime::ToolRuntime},
 };
@@ -765,7 +764,9 @@ async fn journey() {
             .unwrap()
             .clone();
         assert!(
-            recall["request"].to_string().contains("Remember cobalt-open"),
+            recall["request"]
+                .to_string()
+                .contains("Remember cobalt-open"),
             "{model} open must replay durable history"
         );
         reopened.shutdown().await.unwrap();
@@ -773,7 +774,10 @@ async fn journey() {
     }
     assert!(matches!(
         harness
-            .open(&store, &nanocodex::oai::session::SessionId::new().to_string())
+            .open(
+                &store,
+                &nanocodex::oai::session::SessionId::new().to_string()
+            )
             .await,
         Err(NanocodexError::InvalidRequest(_))
     ));

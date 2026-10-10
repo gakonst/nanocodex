@@ -402,7 +402,12 @@ async fn rewound_checkpoints_branch_from_their_source_session() {
     let branch = open("branch.json", Some(rewound));
     let branch_id = branch.session_id().to_owned();
     assert_ne!(branch_id, source_id);
-    let expected = Lineage::new(source_id.clone(), Some(source_id.clone()), Origin::Branch, 1);
+    let expected = Lineage::new(
+        source_id.clone(),
+        Some(source_id.clone()),
+        Origin::Branch,
+        1,
+    );
     assert_eq!(branch.session().lineage, expected);
     // The branch continues from the selected boundary, not the later turn.
     branch

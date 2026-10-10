@@ -825,9 +825,7 @@ pub(in crate::rollout) fn visible_rollout_outcome(
                     .map_or_else(|| error.to_string(), str::to_owned);
                 (text, ToolOutcome::Failed)
             };
-            Some(TranscriptItem::tool_result(
-                call_id, &output, outcome,
-            ))
+            Some(TranscriptItem::tool_result(call_id, &output, outcome))
         }
         "web_search_end" => Some(TranscriptItem::tool_result(
             call_id,

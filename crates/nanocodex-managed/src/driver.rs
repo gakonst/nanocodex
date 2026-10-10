@@ -8,8 +8,8 @@ use std::{
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocodex_agent::{
-    AgentSessionContext, Capabilities, ForkRequest, Persistence, HarnessFamily, HarnessModel, Mutability,
-    NanocodexError, SessionCheckpoint, Thinking, TurnResult, TurnUsage,
+    AgentSessionContext, Capabilities, ForkRequest, HarnessFamily, HarnessModel, Mutability,
+    NanocodexError, Persistence, SessionCheckpoint, Thinking, TurnResult, TurnUsage,
     backend::{
         BackendFuture, BackendPrompt, BackendPromptRoute, BackendTurn, BackendTurnKey,
         LifecycleBackend,

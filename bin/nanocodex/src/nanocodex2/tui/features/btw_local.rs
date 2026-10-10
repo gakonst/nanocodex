@@ -94,7 +94,10 @@ pub(in crate::nanocodex2::tui) async fn run(
     mut requests: mpsc::UnboundedReceiver<Request>,
     events: mpsc::UnboundedSender<Event>,
 ) {
-    let (agent, mut agent_events) = match main.fork(nanocodex::ForkRequest::latest().side_conversation()).await {
+    let (agent, mut agent_events) = match main
+        .fork(nanocodex::ForkRequest::latest().side_conversation())
+        .await
+    {
         Ok(fork) => fork,
         Err(error) => {
             let _ = events.send(Event::Failed {
@@ -273,7 +276,11 @@ fn collapse_prompt() -> Result<(Side, (String, String)), &'static str> {
     if !side.completed {
         return Err("BTW needs one completed turn before /collapse");
     }
-    let prompt = match side.agent.persistence().and_then(|persistence| persistence.rollout) {
+    let prompt = match side
+        .agent
+        .persistence()
+        .and_then(|persistence| persistence.rollout)
+    {
         Some(rollout) => collapse_btw_prompt(rollout.thread_id()),
         // Claude forks (and Codex without rollouts) have no session another turn
         // can read, so carry the side exchanges inline.

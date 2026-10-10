@@ -192,7 +192,6 @@ impl SubagentStore for MemorySubagentStore {
                 .get(&(root_session_id.to_owned(), key.to_owned()))
                 .map(|record| record.to_string())
                 .ok_or_else(|| std::io::Error::other(format!("missing subagent checkpoint {key}")))
-
         })
     }
 }
@@ -278,7 +277,6 @@ struct LegacyCheckpointRecord {
     #[serde(default)]
     native_checkpoint: Option<PersistedNative>,
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct PersistedScope {
@@ -722,7 +720,6 @@ impl PersistedAgent {
     pub(super) fn snapshot(&self, lineage: &Lineage) -> std::io::Result<Option<SessionCheckpoint>> {
         if let Some(checkpoint) = &self.checkpoint {
             return checkpoint.checkpoint(lineage).map(Some);
-
         }
         Ok(self
             .native_checkpoint

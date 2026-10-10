@@ -359,9 +359,13 @@ impl ModelCapabilities {
     /// Accepted processing tiers, slowest first.
     pub fn service_tiers(&self) -> impl Iterator<Item = ServiceTier> + use<> {
         let capabilities = *self;
-        [ServiceTier::Standard, ServiceTier::Fast, ServiceTier::Ultrafast]
-            .into_iter()
-            .filter(move |tier| capabilities.supports_service_tier(*tier))
+        [
+            ServiceTier::Standard,
+            ServiceTier::Fast,
+            ServiceTier::Ultrafast,
+        ]
+        .into_iter()
+        .filter(move |tier| capabilities.supports_service_tier(*tier))
     }
     /// Whether this reasoning mode is accepted.
     pub const fn supports_reasoning_mode(&self, mode: ReasoningMode) -> bool {

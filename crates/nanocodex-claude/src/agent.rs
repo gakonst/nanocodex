@@ -6,11 +6,10 @@ use crate::{
 };
 use futures_util::{FutureExt as _, StreamExt};
 use nanocodex_agent::{
-    ModelTransport,
     AgentEvents, AgentHandle, AgentSessionContext, Capabilities, CostStatus, ForkPoint,
-    ForkRequest, HarnessFamily, HarnessModel, Lineage, Mutability, Nanocodex, NanocodexError,
-    Origin, Persistence, ReportedTurnUsage, Result, SessionCheckpoint, SpawnOptions, Thinking,
-    TurnResult, TurnUsage,
+    ForkRequest, HarnessFamily, HarnessModel, Lineage, ModelTransport, Mutability, Nanocodex,
+    NanocodexError, Origin, Persistence, ReportedTurnUsage, Result, SessionCheckpoint,
+    SpawnOptions, Thinking, TurnResult, TurnUsage,
     backend::{
         AgentFactory, BackendFuture, BackendPrompt, BackendPromptRoute, BackendRuntime,
         BackendTurn, BackendTurnKey, BuilderBackend, LifecycleBackend, TurnBoundary,
@@ -1234,7 +1233,9 @@ impl ClaudeBuilder {
         .with_root_session_id(
             self.lineage
                 .as_ref()
-                .map_or(session_id.as_str(), |lineage| lineage.root_session_id.as_str()),
+                .map_or(session_id.as_str(), |lineage| {
+                    lineage.root_session_id.as_str()
+                }),
         )
         .with_native_model_id(self.claude.model.as_str())
         .with_child_journal(self.child_journal.clone());
@@ -1269,7 +1270,9 @@ impl ClaudeBuilder {
                         || block.get("text").and_then(Value::as_str).is_none()
                 })
         }) {
-            return Err(unsupported("system_blocks must be nonempty Claude text blocks"));
+            return Err(unsupported(
+                "system_blocks must be nonempty Claude text blocks",
+            ));
         }
         let mut handlers = HashMap::new();
         let mut definitions = Vec::new();
@@ -1292,7 +1295,9 @@ impl ClaudeBuilder {
         }
         let discovered = Arc::new(Mutex::new(HashSet::<String>::new()));
         if custom_tool_search && !handlers.contains_key("ToolSearch") {
-            return Err(unsupported("custom_tool_search requires a ToolSearch handler"));
+            return Err(unsupported(
+                "custom_tool_search requires a ToolSearch handler",
+            ));
         }
         if self.client_tool_search && !custom_tool_search {
             if handlers.contains_key("ToolSearch")
@@ -1444,7 +1449,9 @@ impl ClaudeBuilder {
         let mut names = handlers.keys().map(String::as_str).collect::<HashSet<_>>();
         for tool in &self.server_tools {
             if tool.kind.is_empty() || tool.name.is_empty() || !names.insert(&tool.name) {
-                return Err(unsupported("duplicate or empty Claude server tool name/type"));
+                return Err(unsupported(
+                    "duplicate or empty Claude server tool name/type",
+                ));
             }
         }
         if self
@@ -2647,7 +2654,8 @@ impl AgentFactory for ClaudeNativeFactory {
             let native_model = state.model();
             let host_context = host_context.or_else(|| state.host_context.clone());
             let mut recipe = recipe;
-            let lineage = Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
+            let lineage =
+                Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
             let child_id = uuid::Uuid::now_v7().to_string();
             state.durable_child(&mut recipe, &child_id, &lineage, "spawn", journal_backed)?;
             recipe.session_id = Some(child_id);
@@ -2709,7 +2717,9 @@ impl AgentFactory for ClaudeNativeFactory {
             let mut recipe = recipe.resume(checkpoint)?;
             // An evicted subagent reopens the durable state it recorded under
             // its own session ID, exactly like a resumed fork.
-            if let (Some(child_id), Some(lineage)) = (recipe.session_id.clone(), recipe.lineage.clone()) {
+            if let (Some(child_id), Some(lineage)) =
+                (recipe.session_id.clone(), recipe.lineage.clone())
+            {
                 state.durable_child(&mut recipe, &child_id, &lineage, "restore", journal_backed)?;
             }
             state.initialize_child_workspace(&mut recipe)?;
@@ -3624,7 +3634,8 @@ impl State {
         let Some(parent) = &self.policy else {
             return Ok(());
         };
-        let child = nanocodex_agent::SessionInfo::new(child_id, HarnessFamily::Claude, lineage.clone());
+        let child =
+            nanocodex_agent::SessionInfo::new(child_id, HarnessFamily::Claude, lineage.clone());
         // A durable parent never silently creates an unsaved child. A durable
         // root without a session catalog still saves its subagents in its
         // task-tree journal, exactly as for Codex.
@@ -6065,7 +6076,10 @@ impl LifecycleBackend for Driver {
             let snapshot = state.latest_boundary().await?;
             let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             policy
-                .initial_checkpoint(serde_json::to_value(&snapshot).map_err(provider_error)?, model)
+                .initial_checkpoint(
+                    serde_json::to_value(&snapshot).map_err(provider_error)?,
+                    model,
+                )
                 .await
         })
     }
@@ -6368,7 +6382,8 @@ impl LifecycleBackend for Driver {
             *state
                 .effort
                 .write()
-                .map_err(|_| unsupported("Claude effort lock poisoned"))? = thinking_effort(thinking);
+                .map_err(|_| unsupported("Claude effort lock poisoned"))? =
+                thinking_effort(thinking);
             state
                 .adaptive_thinking
                 .store(thinking != Thinking::None, Ordering::SeqCst);

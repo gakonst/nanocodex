@@ -2243,7 +2243,12 @@ impl RootNode {
         let default_effort = effort_of(capabilities.default_thinking());
         match self.model_catalog.iter().find(|entry| entry.id == model) {
             Some(entry) => ModelChoices {
-                efforts: entry.thinking.iter().copied().filter_map(effort_of).collect(),
+                efforts: entry
+                    .thinking
+                    .iter()
+                    .copied()
+                    .filter_map(effort_of)
+                    .collect(),
                 default_effort,
                 fast_mode: entry.fast_mode,
                 pro: entry

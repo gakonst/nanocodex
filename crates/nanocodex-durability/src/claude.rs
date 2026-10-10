@@ -95,10 +95,8 @@ impl LazyClaudeExecution {
                 }
                 let record = state.describe(record).await.map_err(agent_error)?;
                 let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
-                self.reopened.store(
-                    checkpoint.is_some(),
-                    std::sync::atomic::Ordering::SeqCst,
-                );
+                self.reopened
+                    .store(checkpoint.is_some(), std::sync::atomic::Ordering::SeqCst);
                 Ok(ClaudeExecution {
                     state_id: record.session_id.clone(),
                     owner,

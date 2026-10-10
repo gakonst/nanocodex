@@ -111,9 +111,7 @@ where
             // its first turn: a fork or restored child from the boundary it
             // inherited, a fresh subagent from its recorded identity alone.
             let child = match self.origin.start {
-                crate::session::SessionStart::New(origin) => {
-                    !matches!(origin, crate::Origin::Root)
-                }
+                crate::session::SessionStart::New(origin) => !matches!(origin, crate::Origin::Root),
                 crate::session::SessionStart::Restore => true,
                 crate::session::SessionStart::Resume => false,
             };

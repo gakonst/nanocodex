@@ -697,7 +697,10 @@ async fn resume_point(
     .canonicalize()
     .wrap_err("failed to resolve the new thread's workspace")?;
     let thread_id = rollout_fork::fork(&source, &point, codex_home, &workspace)?;
-    eprintln!("Started Codex thread {thread_id} from {}.", source.display());
+    eprintln!(
+        "Started Codex thread {thread_id} from {}.",
+        source.display()
+    );
     Ok(thread_id)
 }
 

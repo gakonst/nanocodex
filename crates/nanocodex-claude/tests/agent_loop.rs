@@ -1918,8 +1918,15 @@ async fn fast_mode_applies_per_accepted_turn_on_supported_models() {
         error.contains("Claude Sonnet 4.6 (claude-sonnet-4-6) does not support fast mode"),
         "{error}"
     );
-    let error = opus.set_thinking(nanocodex_agent::Thinking::None).await.unwrap_err().to_string();
-    assert!(error.contains("supported thinking: low, medium, high, xhigh, max"), "{error}");
+    let error = opus
+        .set_thinking(nanocodex_agent::Thinking::None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("supported thinking: low, medium, high, xhigh, max"),
+        "{error}"
+    );
 
     let fast = (Some("fast".to_owned()), true);
     let standard = (None, false);
@@ -3454,7 +3461,10 @@ async fn spawned_children_inherit_fast_mode_only_on_models_that_offer_it() {
                     body["speed"].as_str().map(str::to_owned),
                 ));
                 let text = json!({"type":"text","text":"ok"});
-                ([("content-type", "text/event-stream")], stream(vec![text], "end_turn"))
+                (
+                    [("content-type", "text/event-stream")],
+                    stream(vec![text], "end_turn"),
+                )
             }
         }),
     );
@@ -3490,4 +3500,3 @@ async fn spawned_children_inherit_fast_mode_only_on_models_that_offer_it() {
     );
     server.abort();
 }
-

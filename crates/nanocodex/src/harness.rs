@@ -207,7 +207,10 @@ impl Harness {
         let thinking = stored
             .session_checkpoint()
             .map_err(catalog_error)?
-            .map_or_else(|| model.default_thinking(), |checkpoint| checkpoint.thinking());
+            .map_or_else(
+                || model.default_thinking(),
+                |checkpoint| checkpoint.thinking(),
+            );
         let options = SpawnOptions::new()
             .harness(model.family())
             .harness_model(model)
@@ -384,7 +387,12 @@ impl AgentFactory for RoutedFactory {
                 .thinking(checkpoint.thinking());
             options.validate_harness()?;
             inner
-                .construct(Some(parent), options, host_context, Reopen::checkpoint(checkpoint))
+                .construct(
+                    Some(parent),
+                    options,
+                    host_context,
+                    Reopen::checkpoint(checkpoint),
+                )
                 .await
         })
     }

@@ -38,7 +38,9 @@ pub(in crate::nanocodex2::tui) fn publish(bridge: &Bridge, runtime: &DriverRunti
     if runtime.agent_id.is_empty() {
         return;
     }
-    let rollout = agent.persistence().and_then(|persistence| persistence.rollout);
+    let rollout = agent
+        .persistence()
+        .and_then(|persistence| persistence.rollout);
     if let Some(rollout) = &rollout {
         bridge.committed(&runtime.agent_id, rollout.committed_bytes());
     }
@@ -76,7 +78,11 @@ pub(in crate::nanocodex2::tui) fn dispatch(
             command.reject("session_changed");
             return None;
         }
-        let Some(rollout) = runtime.agent.as_ref().and_then(|agent| agent.persistence().and_then(|persistence| persistence.rollout)) else {
+        let Some(rollout) = runtime.agent.as_ref().and_then(|agent| {
+            agent
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
+        }) else {
             command.reject("history_unavailable");
             return None;
         };

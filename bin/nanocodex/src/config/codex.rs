@@ -141,7 +141,9 @@ pub(super) fn register_codex_recipe(
                 .builder(client, session_id, workspace)
                 .model(model)
                 // The session's fast preference where this model offers it.
-                .fast_mode(recipe.fast_mode && nanocodex::HarnessModel::Codex(model).supports_fast_mode())
+                .fast_mode(
+                    recipe.fast_mode && nanocodex::HarnessModel::Codex(model).supports_fast_mode(),
+                )
                 .thinking(request.thinking)
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);

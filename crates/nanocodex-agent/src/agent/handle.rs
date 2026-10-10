@@ -380,8 +380,7 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
         Box::pin(async move {
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
             created_batch(
-                request_spawn_many(&commands, &shutdown, count, Some(observer), host_context)
-                    .await,
+                request_spawn_many(&commands, &shutdown, count, Some(observer), host_context).await,
             )
             .await
         })

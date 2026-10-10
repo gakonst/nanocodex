@@ -386,7 +386,9 @@ impl AgentArgs {
     pub(crate) fn check_model_settings(&self, model: HarnessModel) -> Result<()> {
         let capabilities = model.capabilities(nanocodex::ModelTransport::Native);
         if let Some(thinking) = self.model_policy.requested_thinking(model.family())? {
-            capabilities.check_thinking(thinking).map_err(|error| eyre!(error))?;
+            capabilities
+                .check_thinking(thinking)
+                .map_err(|error| eyre!(error))?;
         }
         if self.fast_mode == Some(true) {
             capabilities
@@ -760,7 +762,9 @@ impl AgentArgs {
                 managed_memory.as_ref(),
             )
             .await?;
-        let subagent_runtime = self.subagents.then(|| subagents::channel(self.max_subagents));
+        let subagent_runtime = self
+            .subagents
+            .then(|| subagents::channel(self.max_subagents));
         let registry = subagent_runtime
             .as_ref()
             .map(|(registry, _, _)| Arc::clone(registry));
@@ -816,14 +820,20 @@ impl AgentArgs {
                     .is_none()
             {
                 // The resolved root model and effort stay authoritative.
-                builder = builder.resume(snapshot.clone())?.model(model).thinking(thinking);
+                builder = builder
+                    .resume(snapshot.clone())?
+                    .model(model)
+                    .thinking(thinking);
             }
             builder = builder
                 .durability(state)
                 .await
                 .wrap_err("failed to attach session durability")?;
         } else if let Some(snapshot) = fallback {
-            builder = builder.resume(snapshot.clone())?.model(model).thinking(thinking);
+            builder = builder
+                .resume(snapshot.clone())?
+                .model(model)
+                .thinking(thinking);
         }
         let (handle, events) = {
             let _timing = crate::startup_timing::Stage::new("native_agent");
@@ -993,11 +1003,7 @@ impl AgentArgs {
             instructions: self.instructions.clone(),
             additional_instructions: (!exact)
                 .then(|| {
-                    session_instructions(
-                        self.instructions.as_deref(),
-                        registry.is_some(),
-                        memory,
-                    )
+                    session_instructions(self.instructions.as_deref(), registry.is_some(), memory)
                 })
                 .flatten(),
             reasoning_mode: self.reasoning_mode,
@@ -1105,7 +1111,11 @@ type SubagentHandles = (
 );
 
 /// Subagent control for a built root; the TUI services updates itself.
-fn child_agents(handle: &Nanocodex, runtime: Option<SubagentRuntime>, tui: bool) -> SubagentHandles {
+fn child_agents(
+    handle: &Nanocodex,
+    runtime: Option<SubagentRuntime>,
+    tui: bool,
+) -> SubagentHandles {
     runtime.map_or((None, None), |(_, control, updates)| {
         let (drain_updates, subagent_updates) = if tui {
             (None, Some(updates))

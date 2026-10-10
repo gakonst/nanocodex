@@ -664,9 +664,7 @@ pub(super) async fn build_claude(
     }
     builder = builder.host_context(host_context);
     if let Some(checkpoint) = checkpoint {
-        builder = builder
-            .resume(checkpoint)
-            .map_err(js_agent_error)?;
+        builder = builder.resume(checkpoint).map_err(js_agent_error)?;
     }
     builder.build().map_err(js_error)
 }

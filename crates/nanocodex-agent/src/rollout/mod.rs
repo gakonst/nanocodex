@@ -162,7 +162,10 @@ impl RolloutConfig {
             return Ok(None);
         }
         Ok(load::find_rollout_path(&self.codex_home, thread_id)?
-            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
             .map(|path| Self::new(self.codex_home.clone()).resumed(path)))
     }
 

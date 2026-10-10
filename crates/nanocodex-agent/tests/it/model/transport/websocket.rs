@@ -535,9 +535,14 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     agent.set_thinking(Thinking::High).await?;
     // Luna does not offer Ultrafast; the explicit request fails without
     // changing the tier, and the offered Fast tier applies.
-    let rejected = agent.set_service_tier(ServiceTier::Ultrafast).await.unwrap_err();
+    let rejected = agent
+        .set_service_tier(ServiceTier::Ultrafast)
+        .await
+        .unwrap_err();
     assert!(
-        rejected.to_string().contains("supported tiers: standard, fast"),
+        rejected
+            .to_string()
+            .contains("supported tiers: standard, fast"),
         "{rejected}"
     );
     agent.set_service_tier(ServiceTier::Fast).await?;

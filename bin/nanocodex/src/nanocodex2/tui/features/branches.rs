@@ -74,10 +74,13 @@ impl Feature for Branches {
 
     fn attach(&mut self, _parts: &mut LocalParts, cx: &FeatureContext<'_>) {
         if let Some(agent) = cx.agent {
-            let thread = agent.persistence().and_then(|persistence| persistence.rollout).map_or_else(
-                || agent.session_id().to_owned(),
-                |rollout| rollout.thread_id().to_owned(),
-            );
+            let thread = agent
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
+                .map_or_else(
+                    || agent.session_id().to_owned(),
+                    |rollout| rollout.thread_id().to_owned(),
+                );
             self.registry
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -126,7 +129,8 @@ impl Branches {
             BRANCH_HOST.set(cx.host.clone());
             // Edits branch the session through its rollout mirror, for either harness.
             let rollout = agent
-                .persistence().and_then(|persistence| persistence.rollout)
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
                 .map(|rollout| (rollout.thread_id().to_owned(), rollout.path().to_path_buf()));
             Ok((launch, rollout))
         })();
@@ -148,18 +152,15 @@ impl Branches {
         // Reading the transcript touches the disk; keep it off the input loop.
         tokio::spawn(async move {
             let prompts = tokio::task::spawn_blocking(move || {
-                session.as_deref().map(sessions::prompts).unwrap_or_default()
+                session
+                    .as_deref()
+                    .map(sessions::prompts)
+                    .unwrap_or_default()
             })
             .await
             .unwrap_or_default();
-            let navigator = BranchNavigator::new(
-                registry,
-                host.clone(),
-                launch,
-                workspace,
-                rollout,
-                prompts,
-            );
+            let navigator =
+                BranchNavigator::new(registry, host.clone(), launch, workspace, rollout, prompts);
             host.send(FeatureUpdate::OpenOverlay(Box::new(navigator)));
         });
     }
@@ -244,8 +245,8 @@ pub(crate) fn edit(
         });
         fresh
     } else {
-        let (session, source) =
-            rollout.ok_or("editing history needs a saved session rollout; this session has none")?;
+        let (session, source) = rollout
+            .ok_or("editing history needs a saved session rollout; this session has none")?;
         sessions::session_launch(
             launch,
             sessions::Resume::Branch {

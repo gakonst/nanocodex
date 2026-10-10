@@ -1271,7 +1271,8 @@ impl Registry {
                             live.acknowledge(&root_session_id, &records);
                             // Only boundaries already in a saved journal become
                             // sessions, so a recorded child is always restorable.
-                            for (key, checkpoint) in live.child_checkpoints(&root_session_id).await {
+                            for (key, checkpoint) in live.child_checkpoints(&root_session_id).await
+                            {
                                 let session_id = checkpoint.session_id().to_owned();
                                 if recorded.get(&session_id) == Some(&key) {
                                     continue;
@@ -3346,8 +3347,8 @@ pub fn channel(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentDescriptor, AgentId, AgentStatus, ChildSession, OutputContract, Registry,
-        JournalWrite, RegistryState, SessionCheckpoint, complete_session, forward_events,
+        AgentDescriptor, AgentId, AgentStatus, ChildSession, JournalWrite, OutputContract,
+        Registry, RegistryState, SessionCheckpoint, complete_session, forward_events,
     };
     use crate::platform;
     use crate::{

@@ -218,7 +218,6 @@ async fn root_and_side_conversation_write_resumable_codex_rollouts() {
     server.abort();
 }
 
-
 /// Visible thinking and provider server tools reach the mirror as a reasoning
 /// summary and paired function call/output; signatures, redacted thinking and
 /// encrypted search content never do.
@@ -295,7 +294,10 @@ async fn reasoning_and_server_tools_are_mirrored_without_opaque_payloads() {
             .collect::<Vec<_>>()
     };
     assert_eq!(of("reasoning").len(), 1, "{items:?}");
-    assert_eq!(of("reasoning")[0]["summary"][0]["text"], "weigh the sources");
+    assert_eq!(
+        of("reasoning")[0]["summary"][0]["text"],
+        "weigh the sources"
+    );
     assert_eq!(of("function_call")[0]["call_id"], "srv-1");
     assert_eq!(of("function_call")[0]["name"], "web_search");
     assert!(
@@ -321,4 +323,3 @@ async fn reasoning_and_server_tools_are_mirrored_without_opaque_payloads() {
     agent.shutdown().await.unwrap();
     server.abort();
 }
-

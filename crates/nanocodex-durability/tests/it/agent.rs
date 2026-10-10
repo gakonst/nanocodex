@@ -12,8 +12,7 @@ use std::{
 use eyre::{Result, eyre};
 use nanocodex_agent::{
     ExecutionPolicyDisposition, ForkRequest, Model, Nanocodex, NanocodexError, OpenAi,
-    PromptRequest,
-    PromptRoute, ResponseError, ServiceTier, Tools,
+    PromptRequest, PromptRoute, ResponseError, ServiceTier, Tools,
     events::{AgentEventKind, AgentEvents, RunStatus, RunTerminal},
     execution::{
         ExecutionAdmission, ExecutionFuture, ExecutionOutput, ExecutionPolicy,
@@ -4289,7 +4288,9 @@ async fn durable_parent_without_catalog_journals_subagents_and_rejects_forks() -
     // catalog session of its own. A fork has no such home and is rejected.
     let (child, child_events) = parent.spawn().await?;
     assert_ne!(child.session_id(), parent.session_id());
-    let persistence = child.persistence().expect("every subagent mirrors a rollout");
+    let persistence = child
+        .persistence()
+        .expect("every subagent mirrors a rollout");
     assert!(
         persistence.durable_state_id.is_none(),
         "a journal-backed subagent has no catalog session of its own"
@@ -4306,9 +4307,17 @@ async fn durable_parent_without_catalog_journals_subagents_and_rejects_forks() -
         .await?
         .result()
         .await?;
-    assert_eq!(generations.load(Ordering::SeqCst), 1, "the parent stays usable");
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        1,
+        "the parent stays usable"
+    );
     parent.shutdown().await?;
-    assert_eq!(rollout.list_sessions()?.len(), 1, "only the parent has a disk session");
+    assert_eq!(
+        rollout.list_sessions()?.len(),
+        1,
+        "only the parent has a disk session"
+    );
     drop((parent, parent_events));
     std::fs::remove_dir_all(workspace)?;
     Ok(())

@@ -38,8 +38,8 @@ use nanocodex::{
     },
 };
 use nanocodex_agent::{
-    Capabilities, ForkRequest, HarnessFamily, HarnessModel, Origin, Persistence,
-    ServiceTier, SessionCheckpoint, SessionInfo,
+    Capabilities, ForkRequest, HarnessFamily, HarnessModel, Origin, Persistence, ServiceTier,
+    SessionCheckpoint, SessionInfo,
     backend::{AgentFactory, BackendFuture},
 };
 use serde::{Deserialize, Serialize};
@@ -4482,9 +4482,7 @@ async fn build_codex(
     builder = builder.instant_tool_steering(config.instant_tool_steering);
     builder = builder.host_context(host_context);
     if let Some(checkpoint) = checkpoint {
-        builder = builder
-            .resume(checkpoint)
-            .map_err(js_agent_error)?;
+        builder = builder.resume(checkpoint).map_err(js_agent_error)?;
     }
     if config.before_compaction {
         builder = builder.before_compaction(JavaScriptBeforeCompaction { host_definition_id });

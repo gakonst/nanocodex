@@ -156,7 +156,10 @@ async fn latest_branch_is_pinned_at_creation_and_edits_resolve_in_its_source() -
     )
     .await?;
     let branch = store.load(&branch_id).await?;
-    assert_eq!(branch.summary.record.branch, pinned, "the boundary never moves");
+    assert_eq!(
+        branch.summary.record.branch, pinned,
+        "the boundary never moves"
+    );
     assert_eq!(
         user_prompts(&branch.transcript),
         ["first question", "second question", "branch question"]
@@ -187,11 +190,21 @@ async fn latest_branch_is_pinned_at_creation_and_edits_resolve_in_its_source() -
     turns(
         &replies,
         &workspace,
-        store.session(root.derive(legacy_id.clone(), Origin::Fork)).await?,
+        store
+            .session(root.derive(legacy_id.clone(), Origin::Fork))
+            .await?,
         &[("legacy-1", "legacy question")],
     )
     .await?;
-    assert!(store.load(&legacy_id).await?.summary.record.branch.is_none());
+    assert!(
+        store
+            .load(&legacy_id)
+            .await?
+            .summary
+            .record
+            .branch
+            .is_none()
+    );
     assert!(matches!(
         store
             .branch(&legacy_id, BranchPoint::Before("legacy-1".into()), None)
@@ -238,9 +251,7 @@ async fn fork_and_side_first_prompt_edits_keep_their_inherited_history() -> Resu
             .await?;
     }
     let (fork, _fork_events) = root.fork(ForkRequest::latest()).await?;
-    let (side, _side_events) = root
-        .fork(ForkRequest::latest().side_conversation())
-        .await?;
+    let (side, _side_events) = root.fork(ForkRequest::latest().side_conversation()).await?;
     for (child, id, text) in [
         (&fork, "fork-1", "fork question"),
         (&side, "side-1", "side question"),

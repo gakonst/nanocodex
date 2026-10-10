@@ -412,9 +412,14 @@ async fn durable_subagents_are_their_own_resumable_sessions() -> Result<()> {
             agent.session().lineage.parent_session_id.as_deref(),
             Some(parent.as_str())
         );
-        let persistence = agent.persistence().expect("a durable root's subagent persists");
+        let persistence = agent
+            .persistence()
+            .expect("a durable root's subagent persists");
         assert_eq!(persistence.durable_state_id.as_deref(), Some(id.as_str()));
-        assert!(persistence.rollout.is_some(), "every subagent mirrors a Codex rollout");
+        assert!(
+            persistence.rollout.is_some(),
+            "every subagent mirrors a Codex rollout"
+        );
         agent
             .prompt(PromptRequest::new("subagent task").request_id("task-1"))
             .await?
@@ -533,7 +538,6 @@ async fn reopened_branches_mirror_their_provenance() -> Result<()> {
     Ok(())
 }
 
-
 type Handles = Arc<Mutex<std::collections::HashMap<String, nanocodex_agent::AgentHandle>>>;
 
 /// Codex JSONL files recorded for one thread anywhere under a Codex home.
@@ -561,7 +565,9 @@ fn rollout_files(codex_home: &std::path::Path, id: &str) -> Result<Vec<std::path
 /// drive the parent-side lifecycle (atomic batches, restoring an evicted child).
 fn capturing_tools(
     handles: &Handles,
-) -> impl Fn(nanocodex_agent::AgentHandle) -> std::result::Result<nanocodex_agent::Tools, nanocodex_oai_tools::ToolsBuildError>
+) -> impl Fn(
+    nanocodex_agent::AgentHandle,
+) -> std::result::Result<nanocodex_agent::Tools, nanocodex_oai_tools::ToolsBuildError>
 + Send
 + Sync
 + 'static {
@@ -609,14 +615,17 @@ async fn durable_children_are_listed_and_resumable_before_their_first_prompt() -
         .result()
         .await?;
     let (fork, _fork_events) = root.fork(ForkRequest::latest()).await?;
-    let (side, _side_events) = root
-        .fork(ForkRequest::latest().side_conversation())
-        .await?;
+    let (side, _side_events) = root.fork(ForkRequest::latest().side_conversation()).await?;
     let (child, _child_events) = root.spawn().await?;
     let (grandchild, _grandchild_events) = child.spawn().await?;
     let child_id = child.session_id().to_owned();
     let expected = [
-        (fork.session_id().to_owned(), Origin::Fork, root_id.clone(), vec!["root task"]),
+        (
+            fork.session_id().to_owned(),
+            Origin::Fork,
+            root_id.clone(),
+            vec!["root task"],
+        ),
         (
             side.session_id().to_owned(),
             Origin::SideConversation,
@@ -655,7 +664,11 @@ async fn durable_children_are_listed_and_resumable_before_their_first_prompt() -
         );
         assert_eq!(summary.record.lineage.root_session_id, root_id);
         let stored = store.load(id).await?;
-        assert_eq!(user_prompts(&stored.transcript), *prompts, "{origin:?} transcript");
+        assert_eq!(
+            user_prompts(&stored.transcript),
+            *prompts,
+            "{origin:?} transcript"
+        );
         assert!(stored.turns.is_empty(), "{origin:?} child has no turn yet");
         // A fork starts from its inherited boundary; a fresh subagent has no
         // conversation yet and resumes from its recorded identity alone.
@@ -667,7 +680,11 @@ async fn durable_children_are_listed_and_resumable_before_their_first_prompt() -
         // The child's Codex JSONL exists from creation with its provenance;
         // Codex lists it once it holds a turn.
         let files = rollout_files(&home.path().join("codex"), id)?;
-        assert_eq!(files.len(), 1, "{origin:?} child has exactly one Codex rollout file");
+        assert_eq!(
+            files.len(),
+            1,
+            "{origin:?} child has exactly one Codex rollout file"
+        );
         let meta: serde_json::Value = serde_json::from_str(
             std::fs::read_to_string(&files[0])?
                 .lines()
@@ -718,7 +735,11 @@ async fn durable_children_are_listed_and_resumable_before_their_first_prompt() -
         assert_eq!(user_prompts(&store.load(id).await?.transcript), prompts);
         assert_eq!(store.turns(id).await?.len(), 1);
         let mirrored = mirrors(id)?;
-        assert_eq!(mirrored.len(), 1, "{origin:?} child is mirrored exactly once");
+        assert_eq!(
+            mirrored.len(),
+            1,
+            "{origin:?} child is mirrored exactly once"
+        );
         assert_eq!(mirrored[0].origin(), *origin);
         assert_eq!(mirrored[0].parent_session_id(), Some(parent.as_str()));
         assert_eq!(mirrored[0].root_session_id(), root_id);
@@ -918,7 +939,11 @@ async fn failed_atomic_batch_leaves_no_listed_children() -> Result<()> {
     assert!(failed.is_err(), "a batch with an unpersisted child fails");
     fail_nth.store(0, Ordering::SeqCst);
     let listed = store.list().await?;
-    assert_eq!(children_of_root(&listed), 0, "a failed batch leaves no listed child");
+    assert_eq!(
+        children_of_root(&listed),
+        0,
+        "a failed batch leaves no listed child"
+    );
     assert_eq!(listed.len(), 1);
     assert_eq!(
         user_prompts(&store.load(&root_id).await?.transcript),
@@ -928,7 +953,11 @@ async fn failed_atomic_batch_leaves_no_listed_children() -> Result<()> {
 
     let children = owner.spawn_many(2).await?;
     let listed = store.list().await?;
-    assert_eq!(children_of_root(&listed), 2, "a complete batch lists every child");
+    assert_eq!(
+        children_of_root(&listed),
+        2,
+        "a complete batch lists every child"
+    );
     for (child, _events) in &children {
         let stored = store.load(child.session_id()).await?;
         assert_eq!(stored.summary.record.lineage.origin, Origin::Subagent);
@@ -938,8 +967,6 @@ async fn failed_atomic_batch_leaves_no_listed_children() -> Result<()> {
     root.shutdown().await?;
     Ok(())
 }
-
-
 
 /// A subagent created with its own model, reasoning effort and processing
 /// tier keeps them from creation: its catalog record names its model before
@@ -981,7 +1008,11 @@ async fn new_subagent_keeps_its_settings_across_a_restart_before_its_first_promp
     assert_eq!(stored.summary.record.model, HarnessModel::Codex(Model::Sol));
     assert_eq!(stored.summary.record.lineage.origin, Origin::Subagent);
     assert!(stored.turns.is_empty());
-    assert_eq!(generations.load(Ordering::SeqCst), 0, "no model request yet");
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        0,
+        "no model request yet"
+    );
     child.shutdown().await?;
     root.shutdown().await?;
 
@@ -1008,7 +1039,9 @@ async fn new_subagent_keeps_its_settings_across_a_restart_before_its_first_promp
     assert_eq!(checkpoint.model(), HarnessModel::Codex(Model::Sol));
     assert_eq!(checkpoint.thinking(), Thinking::High);
     resumed.shutdown().await?;
-    assert_eq!(store.load(&child_id).await?.summary.record.model, HarnessModel::Codex(Model::Sol));
+    assert_eq!(
+        store.load(&child_id).await?.summary.record.model,
+        HarnessModel::Codex(Model::Sol)
+    );
     Ok(())
 }
-

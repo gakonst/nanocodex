@@ -213,7 +213,11 @@ async fn side_conversation_rollouts_keep_their_recorded_provenance() {
         .unwrap()
         .build()
         .unwrap();
-    assert_eq!(resumed.session_id(), agent.session_id(), "resume keeps identity");
+    assert_eq!(
+        resumed.session_id(),
+        agent.session_id(),
+        "resume keeps identity"
+    );
     resumed
         .prompt("after loading")
         .await

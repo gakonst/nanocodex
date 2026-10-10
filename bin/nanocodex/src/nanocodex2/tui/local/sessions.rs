@@ -185,20 +185,24 @@ pub(crate) fn search(
         let Ok(loaded) = blocking(crate::sessions::load(&home, &session.id)) else {
             continue;
         };
-        let found = loaded.transcript().iter().enumerate().find_map(|(index, item)| {
-            let text = match item {
-                TranscriptItem::User(text)
-                | TranscriptItem::Assistant(text)
-                | TranscriptItem::Reasoning(text) => text.as_str(),
-                TranscriptItem::Tool { arguments, .. } => arguments.as_str(),
-                TranscriptItem::ToolResult { output, .. } => output.as_str(),
-            };
-            let lower = text.to_lowercase();
-            terms
-                .iter()
-                .all(|term| lower.contains(term))
-                .then(|| (index, excerpt(text, &terms[0])))
-        });
+        let found = loaded
+            .transcript()
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| {
+                let text = match item {
+                    TranscriptItem::User(text)
+                    | TranscriptItem::Assistant(text)
+                    | TranscriptItem::Reasoning(text) => text.as_str(),
+                    TranscriptItem::Tool { arguments, .. } => arguments.as_str(),
+                    TranscriptItem::ToolResult { output, .. } => output.as_str(),
+                };
+                let lower = text.to_lowercase();
+                terms
+                    .iter()
+                    .all(|term| lower.contains(term))
+                    .then(|| (index, excerpt(text, &terms[0])))
+            });
         if let Some((index, snippet)) = found {
             hits.push(nanocodex_managed::SessionSearchHit {
                 session_id: session.id.clone(),

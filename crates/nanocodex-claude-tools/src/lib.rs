@@ -16,9 +16,9 @@ pub use host::{
     ClaudeHost, ClaudeHostTools, ClaudeMcp, ClaudeMcpProvider, HostContext, HostRequest, HostTool,
     ImageSource, McpToolDefinition, ToolContent, ToolOutput, ToolResultBlock,
 };
+pub use nanocodex_home::SessionEnvironment;
 #[cfg(not(target_family = "wasm"))]
 pub use notebook::ClaudeNotebook;
-pub use nanocodex_home::SessionEnvironment;
 pub use tasks::ClaudeTasks;
 pub use web::{
     ApprovedPage, ApprovedWebFetchSource, ApprovedWebProvider, ClaudeWeb, WebFetchRequest,

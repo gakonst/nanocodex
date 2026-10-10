@@ -291,17 +291,15 @@ impl EffortSelector {
 
     fn render_labels(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let effort = self.selected_effort();
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("Selected Effort:", Style::default().fg(theme.border())),
-                Span::styled(
-                    format!(" {}", effort.as_str()),
-                    Style::default()
-                        .fg(theme.effort(effort))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ];
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Selected Effort:", Style::default().fg(theme.border())),
+            Span::styled(
+                format!(" {}", effort.as_str()),
+                Style::default()
+                    .fg(theme.effort(effort))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])];
         if self.pro_available {
             lines.push(Line::from(vec![
                 Span::styled("Pro: ", Style::default().fg(Color::Green)),

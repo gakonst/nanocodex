@@ -3627,13 +3627,15 @@ async fn claude_sessions_share_the_family_neutral_catalog() {
     server.abort();
 }
 
-
 /// Disconnecting a durable Claude client leaves its accepted turn running to a
 /// committed result, refuses new work through every clone, and releases the
 /// local owner so a reopened session replays the settled receipt.
 #[tokio::test]
 async fn disconnect_keeps_accepted_turn_and_releases_local_owner() {
-    use std::{sync::atomic::{AtomicUsize, Ordering}, time::Duration};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.sqlite");
     let (client, requests, server) = server(|index, _| match index {
@@ -3701,13 +3703,15 @@ async fn disconnect_keeps_accepted_turn_and_releases_local_owner() {
         .unwrap();
     assert_eq!(replayed.final_message(), "settled after disconnect");
     assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(requests.lock().unwrap().len(), 2, "replay makes no provider call");
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        2,
+        "replay makes no provider call"
+    );
     reopened.shutdown().await.unwrap();
     drop((reopened, events));
     server.abort();
 }
-
-
 
 /// The family-neutral catalog reads a durable Claude session like a Codex one:
 /// the transcript keeps visible reasoning and server tools (never signatures or
@@ -3868,7 +3872,6 @@ async fn durable_claude_fork_without_catalog_record_is_unsupported() {
     server.abort();
 }
 
-
 /// A durable Claude root's subagents are their own listed, readable and
 /// resumable sessions with their own Codex-format rollouts, exactly like Codex.
 #[tokio::test]
@@ -3993,9 +3996,12 @@ async fn durable_claude_subagents_are_their_own_resumable_sessions() {
         prompts(&store.load(&child_id).await.unwrap().transcript),
         ["subagent task", "resumed subagent"]
     );
-    assert_eq!(mirrored(&child_id), 1, "resuming appends to the subagent's own rollout");
+    assert_eq!(
+        mirrored(&child_id),
+        1,
+        "resuming appends to the subagent's own rollout"
+    );
 }
-
 
 /// A durable Claude session resumed from the catalog keeps its recorded fast
 /// mode and thinking level: the host does not configure them again, and the
@@ -4078,7 +4084,6 @@ async fn durable_claude_resume_keeps_recorded_fast_mode_and_thinking() {
     assert_eq!(checkpoint.thinking(), Thinking::High);
     server.abort();
 }
-
 
 #[tokio::test]
 async fn automatic_turn_admitted_behind_a_running_turn_starts_under_its_identity() {
@@ -4826,7 +4831,6 @@ async fn cancelling_a_turn_queued_behind_an_unfinished_operation_settles_immedia
     server.abort();
 }
 
-
 /// A durable Claude root's subagents, nested subagents and forks are listed,
 /// loadable and mirrored as soon as they are created, before any child
 /// prompt, and resume from a fresh store without having been prompted.
@@ -4886,7 +4890,12 @@ async fn durable_claude_children_are_listed_and_resumable_before_their_first_pro
             child_id.clone(),
             vec![],
         ),
-        (fork.session_id().to_owned(), Origin::Fork, root_id.clone(), vec!["root task"]),
+        (
+            fork.session_id().to_owned(),
+            Origin::Fork,
+            root_id.clone(),
+            vec!["root task"],
+        ),
     ];
     let mirrored = |id: &str| {
         rollout
@@ -4902,8 +4911,13 @@ async fn durable_claude_children_are_listed_and_resumable_before_their_first_pro
         let summary = listed
             .iter()
             .find(|summary| summary.record.session_id == *id)
-            .unwrap_or_else(|| panic!("Claude {origin:?} {id} is not listed before its first prompt"));
-        assert_eq!(summary.record.family(), nanocodex_agent::HarnessFamily::Claude);
+            .unwrap_or_else(|| {
+                panic!("Claude {origin:?} {id} is not listed before its first prompt")
+            });
+        assert_eq!(
+            summary.record.family(),
+            nanocodex_agent::HarnessFamily::Claude
+        );
         assert_eq!(summary.record.lineage.origin, *origin);
         assert_eq!(
             summary.record.lineage.parent_session_id.as_deref(),
@@ -4917,7 +4931,10 @@ async fn durable_claude_children_are_listed_and_resumable_before_their_first_pro
             stored.session_checkpoint().unwrap().is_some(),
             "Claude {origin:?} has a resumable initial checkpoint"
         );
-        assert!(mirrored(id) <= 1, "Claude {origin:?} is never mirrored twice");
+        assert!(
+            mirrored(id) <= 1,
+            "Claude {origin:?} is never mirrored twice"
+        );
     }
     assert_eq!(
         requests.lock().unwrap().len(),
@@ -4959,8 +4976,6 @@ async fn durable_claude_children_are_listed_and_resumable_before_their_first_pro
         assert_eq!(mirrored(id), 1, "Claude {origin:?} has exactly one rollout");
     }
 }
-
-
 
 /// Claude subagents created with their own model, effort and speed keep them
 /// from creation: the catalog names each child's model before any prompt, and
@@ -5005,8 +5020,18 @@ async fn new_claude_subagents_keep_their_settings_across_a_restart_before_their_
         .await
         .unwrap();
     let expected = [
-        (fast.session_id().to_owned(), ClaudeModel::Opus55, "high", true),
-        (sonnet.session_id().to_owned(), ClaudeModel::Sonnet55, "low", false),
+        (
+            fast.session_id().to_owned(),
+            ClaudeModel::Opus55,
+            "high",
+            true,
+        ),
+        (
+            sonnet.session_id().to_owned(),
+            ClaudeModel::Sonnet55,
+            "low",
+            false,
+        ),
     ];
     assert!(requests.lock().unwrap().is_empty(), "no model request yet");
     for (id, model, _, _) in &expected {
@@ -5030,14 +5055,13 @@ async fn new_claude_subagents_keep_their_settings_across_a_restart_before_their_
             panic!("Claude child recorded a non-Claude model");
         };
         assert_eq!(recorded, *model);
-        let (resumed, _events) =
-            Nanocodex::builder(Claude::new(client.clone(), recorded.as_str()))
-                .max_tokens(4096)
-                .durability(store.resume(id).await.unwrap())
-                .await
-                .unwrap()
-                .build()
-                .unwrap();
+        let (resumed, _events) = Nanocodex::builder(Claude::new(client.clone(), recorded.as_str()))
+            .max_tokens(4096)
+            .durability(store.resume(id).await.unwrap())
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
         assert_eq!(resumed.session_id(), id.as_str());
         resumed
             .prompt(PromptRequest::new("first child prompt").request_id("child-1"))
@@ -5123,10 +5147,17 @@ async fn restored_claude_subagent_keeps_its_durable_history() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(prompts, ["child task"], "restoring never blanks the stored history");
+    assert_eq!(
+        prompts,
+        ["child task"],
+        "restoring never blanks the stored history"
+    );
     assert_eq!(stored.turns.len(), 1);
-    assert_eq!(requests.lock().unwrap().len(), sent, "restoring sends no request");
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        sent,
+        "restoring sends no request"
+    );
     restored.shutdown().await.unwrap();
     root.shutdown().await.unwrap();
 }
-
