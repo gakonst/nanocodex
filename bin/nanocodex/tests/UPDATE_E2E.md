@@ -94,6 +94,11 @@ python3 bin/nanocodex/tests/nightly_install_e2e.py --old-sha PREVIOUS_NIGHTLY_SH
   --new-sha NEW_NIGHTLY_SHA --output output/nightly-install
 ```
 
+Status (WIP): only steps `a1` and `old-modes` have run against a published
+nightly (nightly-2639aec9fadd458adfeeb1ec53395932137c3bc3). The NEW-version steps
+(`a2`–`a5`, `b1`–`b4`, `modes`, `c1`/`c2`, `final-modes`) are pending their
+first run against an actual published second nightly.
+
 Run it only after `nightly-NEW_NIGHTLY_SHA` is published and the `nightly` pointer
 names it. It installs real immutable nightlies with the public installer
 (`curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --no-setup --no-modify-path`
