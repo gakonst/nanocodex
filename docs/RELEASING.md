@@ -91,8 +91,21 @@ nightly update to promote the bundle-aware manager and a second invocation to
 fetch `nanocodex2`; subsequent nightly updates install the complete bundle in
 one invocation.
 
-To bootstrap an exact published nightly, pin its full commit tag on the shell
-side of the public installer pipeline:
+To install the newest published nightly, including the CLI, Hand, and voice
+bundle, use:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --nightly
+```
+
+Use `--help` to inspect the installer options without downloading a binary. For
+an unattended installation into a separate prefix, pass `--no-setup` and
+`--no-modify-path`, and set `NANOCODEX_DIR` on the shell side of the pipe.
+The native updater bounds metadata retries and reports rate-limit reset times;
+a transient failure can be retried with the same command.
+
+To bootstrap or roll back to an exact published nightly, pin its full commit
+tag on the shell side of the public installer pipeline:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | NANOCODEX_RELEASE_TAG='nightly-<full-40-hex-commit>' sh
