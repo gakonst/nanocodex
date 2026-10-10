@@ -235,11 +235,16 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
-/// User prompts of a saved session of either harness, oldest first.
+/// User prompts of a saved session of either harness, oldest first. A durable
+/// session lists one prompt per turn, including the turns a branch continues
+/// from its source, so prompt `i` is the branch point [`branch`] resolves.
 pub(crate) fn prompts(id: &str) -> Vec<String> {
     let Ok(home) = crate::config::default_codex_home() else {
         return Vec::new();
     };
+    if let Ok(prompts) = blocking(crate::sessions::conversation_prompts(&home, id)) {
+        return prompts.into_iter().map(|prompt| prompt.text).collect();
+    }
     blocking(crate::sessions::load(&home, id))
         .map(|session| {
             session
@@ -347,16 +352,26 @@ fn resolve_blocking(mut launch: LocalLaunch) -> Result<LocalLaunch> {
     Ok(launch)
 }
 
-/// Starts a new session holding `fork.turns` completed turns of its source.
+/// Starts a new session holding the first `fork.turns` prompts of its source's
+/// conversation. Kept turns a branch continues from its own source are branched
+/// from the session that stores them.
 fn branch(home: &Path, fork: &Fork) -> Result<String> {
-    if let Ok((store, turns)) = blocking(crate::sessions::turns(home, &fork.session)) {
-        let at = match turns.get(fork.turns) {
-            Some(turn) => nanocodex_durability::BranchPoint::Before(turn.id.clone()),
-            None => nanocodex_durability::BranchPoint::Latest,
+    if let Ok(prompts) = blocking(crate::sessions::conversation_prompts(home, &fork.session)) {
+        let (store, session, at) = match prompts.get(fork.turns) {
+            Some(prompt) => (
+                prompt.store.clone(),
+                prompt.session.clone(),
+                nanocodex_durability::BranchPoint::Before(prompt.turn.clone()),
+            ),
+            None => (
+                blocking(crate::sessions::turns(home, &fork.session))?.0,
+                fork.session.clone(),
+                nanocodex_durability::BranchPoint::Latest,
+            ),
         };
         let branched = blocking(crate::sessions::branch(
             &store,
-            &fork.session,
+            &session,
             at,
             Some(fork.workspace.clone()),
         ))?;
