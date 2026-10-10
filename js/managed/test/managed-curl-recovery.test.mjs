@@ -116,7 +116,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: a follow-up turn's history still contains its predecessor's marker.
-  const markers = ['CURL_NEST_LEAF', 'CURL_NEST_PARENT', 'CURL_ROOT_NEST', 'CURL_IDLE_TASK', 'CURL_ROOT_IDLE', 'CURL_DTASK_NEW', 'CURL_DTASK_ORIG', 'CURL_ROOT_DTASK', 'CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_YIELD_TASK', 'CURL_ROOT_YIELD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
+  const markers = ['CURL_CLOSE_TASK', 'CURL_ROOT_CLOSE', 'CURL_NEST_LEAF', 'CURL_NEST_PARENT', 'CURL_ROOT_NEST', 'CURL_IDLE_TASK', 'CURL_ROOT_IDLE', 'CURL_DTASK_NEW', 'CURL_DTASK_ORIG', 'CURL_ROOT_DTASK', 'CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_YIELD_TASK', 'CURL_ROOT_YIELD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
   const baselines = {};
   // Delegated-task journey state (3g): owner losses before and after the
   // child's result for its newest delegation is accepted.
@@ -131,6 +131,14 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     return (text.match(new RegExp("action: '" + action + "',\\s*agent_id: '1',\\s*revision: " + revision + '\\b', 'g')) ?? []).length;
   };
   // Nested completion journey state (3i): root -> parent child -> leaf.
+  // Explicit close journey state (3j).
+  const closing = { submits: 0, root: [] };
+  // Host outbox log entries of one root agent in one workerd process.
+  const agentOutbox = async (process, agent) => {
+    const text = await readFile(join(output, 'workerd-' + process + '.log'), 'utf8').catch(() => '');
+    return text.split("type: '").slice(1).filter(chunk => chunk.startsWith('managed.subagent_completion') && chunk.includes("agent: '" + agent + "'"))
+      .map(chunk => ({ type: chunk.slice(0, chunk.indexOf("'")), action: chunk.match(/action: '([a-z_]+)'/)?.[1] ?? null }));
+  };
   const nest = { leafKilled: false, parentKilled: false, leafSubmits: 0, parentSubmits: 0, leaf: [], parent: [], root: [] };
   // Idle-parent completion journey state (3h).
   const idle = { childKilled: false, wakeKilled: false, child: [], root: [] };
@@ -204,6 +212,18 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
         if (/NEW_OK|without a valid submit_result/.test(seen) || outputs.length >= steps.length + 8) { dtask.lastRootCall = null; return say('DTASK_ROOT_DONE'); }
         dtask.lastRootCall = 'dtask-wait-' + outputs.length;
         return exec('dtask-wait-' + outputs.length, 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));');
+      }
+      case 'CURL_ROOT_CLOSE': {
+        const done = outputs.map(item => item.call_id);
+        closing.root.push({ process: processNumber, outputs: done, completed: outputs.filter(item => showsCompleted(item, 'CLOSE_OK')).map(item => item.call_id) });
+        if (done.length === 0) return exec('close-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl closed child', task: 'CURL_CLOSE_TASK: submit the close token.', model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));');
+        if (!outputs.some(item => showsCompleted(item, 'CLOSE_OK'))) return done.length > 8 ? say('CLOSE_ROOT_GAVE_UP') : exec('close-wait-' + done.length, 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));');
+        if (!done.includes('close-close')) return exec('close-close', 'text(await tools.close_agent({agent_id:1}));');
+        return say('CLOSE_ROOT_DONE');
+      }
+      case 'CURL_CLOSE_TASK': {
+        if (!outputs.some(item => item.call_id === 'close-submit')) { closing.submits++; return exec('close-submit', 'text(await tools.submit_result({output:"CLOSE_OK"}));'); }
+        return say('CLOSE_CHILD_DONE');
       }
       case 'CURL_ROOT_NEST': {
         nest.root.push({ process: processNumber, outputs: outputs.map(item => item.call_id),
@@ -915,6 +935,28 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(nestWakes, 0, 'the waiting root is never woken for it');
     assert.deepEqual(openToolCalls(nestHistory), [], 'every root call has a terminal result');
     assert.equal(nestDone.state, 'completed', JSON.stringify(nestDone));
+
+    // 3j. A busy root spawns, waits for and explicitly closes its child in one
+    // turn. The closed child's outbox row settles; the root is never woken and
+    // no outbox alarm or runtime rebuild is left behind.
+    const closeRun = (await curl('close-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_ROOT_CLOSE: spawn, wait for and close a child.', settings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const closeDone = await terminal('close-terminal', closeRun.agent_id, closeRun.turn_id);
+    await delay(1_500);
+    const closeHistory = await history('close-history', closeRun.agent_id);
+    const closeOutbox = await agentOutbox(fixture.number, closeRun.agent_id);
+    const closeRoot = closing.root.at(-1);
+    const closeWakes = modelCalls.filter(call => call.scenario === 'CURL_ROOT_CLOSE' && /subagent_completion agent_id/.test(call.last_instruction)).length;
+    summary.close = { terminal: closeDone.state, submits: closing.submits, root_calls: closing.root, outbox: closeOutbox, wake_calls: closeWakes };
+    assert.equal(closeDone.state, 'completed', JSON.stringify(closeDone));
+    assert.equal(closing.submits, 1, 'the child submits once');
+    assert.ok(closeRoot.outputs.includes('close-close'), 'the root closed its child in the same turn');
+    assert.equal(closeRoot.completed.length, 1, 'the root saw the result once');
+    assert.equal(closeWakes, 0, 'a root that closed its child is never woken for it');
+    const settles = closeOutbox.filter(entry => entry.action?.startsWith('settled_'));
+    assert.equal(settles.length, 1, 'the closed child completion settles exactly once: ' + JSON.stringify(closeOutbox));
+    assert.deepEqual(closeOutbox.filter(entry => entry.type === 'managed.subagent_completion_alarm'), [], 'no outbox alarm remains for this root');
+    assert.deepEqual(closeOutbox.filter(entry => /^kept_/.test(entry.action ?? '')), [], 'no undecided row remains for this root');
+    assert.deepEqual(openToolCalls(closeHistory), [], 'every root call has a terminal result');
 
     // 4. A child whose every inference dies with its owner exhausts bounded
     // automatic recovery; the root reaches a terminal and the agent stays usable.

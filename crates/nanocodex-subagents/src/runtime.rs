@@ -155,6 +155,14 @@ pub struct Registry {
     /// journal write and announcement run off the harness loop, in order with
     /// that agent's other status updates.
     status_queues: std::sync::Mutex<HashMap<(String, AgentId), mpsc::UnboundedSender<OrderedJob>>>,
+    /// Completions a live host failed to take: (attempts, retry scheduled).
+    completion_retries: std::sync::Mutex<HashMap<(String, AgentId), (u32, bool)>>,
+}
+
+/// Bounded backoff for re-announcing an undelivered completion in a live
+/// runtime: 2 s doubling to a 5 minute ceiling, never a hot loop.
+fn completion_retry_delay(attempt: u32) -> Duration {
+    Duration::from_millis(1000_u64 << attempt.clamp(1, 9)).min(Duration::from_secs(300))
 }
 
 #[derive(Default)]
@@ -1166,6 +1174,7 @@ impl Registry {
             idle_waits: std::sync::Mutex::new(HashMap::new()),
             this: std::sync::OnceLock::new(),
             status_queues: std::sync::Mutex::new(HashMap::new()),
+            completion_retries: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -2235,8 +2244,57 @@ impl Registry {
             }
         };
         if acknowledged {
+            lock_unpoisoned(&self.completion_retries).remove(&(root_session_id.to_owned(), id));
             self.changed();
         }
+    }
+
+    /// The live host could not take a completion (its callback failed or the
+    /// child was not yet bound). The completion stays pending in the journal,
+    /// so a restore announces it again; until then this re-announces it after
+    /// a bounded backoff while it is still the pending completion.
+    pub fn retry_completion(self: &Arc<Self>, root_session_id: &str, id: AgentId, revision: u64) {
+        let key = (root_session_id.to_owned(), id);
+        let delay = {
+            let mut retries = lock_unpoisoned(&self.completion_retries);
+            let entry = retries.entry(key.clone()).or_insert((0, false));
+            if entry.1 {
+                return;
+            }
+            entry.1 = true;
+            entry.0 = entry.0.saturating_add(1);
+            completion_retry_delay(entry.0)
+        };
+        tracing::warn!(%id, revision, ?delay, "subagent completion was not delivered; retrying");
+        let registry = Arc::clone(self);
+        drop(platform::spawn(async move {
+            platform::sleep(delay).await;
+            if let Some(entry) = lock_unpoisoned(&registry.completion_retries).get_mut(&key) {
+                entry.1 = false;
+            }
+            let status = {
+                let state = registry.state.lock().await;
+                state
+                    .scopes
+                    .get(&key.0)
+                    .and_then(|scope| scope.sessions.get(&key.1))
+                    .filter(|session| {
+                        session.pending_completion == Some(revision)
+                            && matches!(session.status, AgentStatus::Completed { .. })
+                    })
+                    .map(|session| session.status.clone())
+            };
+            if let Some(status) = status {
+                registry.send_status(
+                    &key.0,
+                    AgentUpdate::Completion {
+                        id: key.1,
+                        status,
+                        revision,
+                    },
+                );
+            }
+        }));
     }
 
     /// Synchronously journals one root, ordered with the background writer.
@@ -6621,5 +6679,60 @@ mod tests {
                 "parent {parent:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn undelivered_completion_is_retried_with_backoff_while_pending() {
+        let (registry, _control, mut updates) = super::channel(4);
+        let id = {
+            let mut state = registry.state.lock().await;
+            let reservation = state.reserve("main", None).unwrap();
+            let mut session = test_session(reservation.id, "child-session", None);
+            session.status = AgentStatus::Completed {
+                output: json!("DONE"),
+            };
+            session.settled_revision = Some(3);
+            session.pending_completion = Some(3);
+            state
+                .insert(
+                    reservation.root_session_id,
+                    reservation.id,
+                    "child-session".to_owned(),
+                    session,
+                )
+                .unwrap();
+            reservation.id
+        };
+        let completions =
+            |updates: &mut tokio::sync::mpsc::UnboundedReceiver<super::ScopedAgentUpdate>| {
+                let mut found = Vec::new();
+                while let Ok(update) = updates.try_recv() {
+                    if let AgentUpdate::Completion { id, revision, .. } = update.update {
+                        found.push((id, revision));
+                    }
+                }
+                found
+            };
+        // The host failed to take it: one retry is scheduled, never a burst.
+        registry.retry_completion("main", id, 3);
+        registry.retry_completion("main", id, 3);
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            completions(&mut updates).is_empty(),
+            "no hot loop before the backoff"
+        );
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        assert_eq!(completions(&mut updates), vec![(id, 3)]);
+        // A second failure backs off further (4 s).
+        registry.retry_completion("main", id, 3);
+        tokio::time::sleep(Duration::from_millis(3_000)).await;
+        assert!(completions(&mut updates).is_empty());
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert_eq!(completions(&mut updates), vec![(id, 3)]);
+        // Once acknowledged, a stale retry announces nothing.
+        registry.acknowledge_completion("main", id, 3).await;
+        registry.retry_completion("main", id, 3);
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        assert!(completions(&mut updates).is_empty());
     }
 }

@@ -115,12 +115,12 @@ where
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn sleep(duration: Duration) {
+pub(crate) async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
 }
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-async fn sleep(duration: Duration) {
+pub(crate) async fn sleep(duration: Duration) {
     let _ = schedule_timeout(duration).await;
 }
 

@@ -1099,13 +1099,17 @@ function cloudflareSubagentSessions(reservation, lifecycle) {
     status(sessionId, status) {
       if (!mayBindCloudflareSubagentSession(reservation)) return;
       const retained = bindings.get(sessionId);
-      if (!retained || retained.status === status.state) return;
-      retained.status = status.state;
+      // A completion is identified by its turn revision: a retried delivery
+      // of the same completion after a failed callback must reach the host.
+      const key = Number.isSafeInteger(status.completion_revision)
+        ? status.state + ":" + status.completion_revision : status.state;
+      if (!retained || retained.status === key) return;
       notifySubagentLifecycle(lifecycle, {
         type: "status", rootSessionId: reservation.sessionId, sessionId,
         descriptor: retained.descriptor, hostContextRef: retained.hostContextRef,
         status,
       });
+      retained.status = key;
     },
     release(sessionId, hostContextRef, options) {
       const retained = bindings.get(sessionId);

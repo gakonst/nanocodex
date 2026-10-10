@@ -1465,12 +1465,19 @@ function dropStaleSubagentStatus(rootSessionId: string, sessionId: string, reaso
 // or (b) the parent turn being terminal after a COMMITTED root wait_agent or
 // list_agents receipt reported exactly (child, revision); receipt_committed is
 // written in the same transaction as that receipt. A live wait report alone
-// never settles anything. Settled rows stay as tombstones, so a completion
-// re-announced after a restart cannot reopen a decided one.
+// never settles anything. An explicit close (release) of the child settles its
+// rows. Settled rows stay as tombstones for SUBAGENT_COMPLETION_TOMBSTONE_MS,
+// far beyond the registry's acknowledgement journal write, so a completion
+// re-announced after a restart cannot reopen a decided one. next_at/attempts
+// back off undecided idle-parent rows; rows waiting on a busy parent need no
+// alarm because every terminal turn re-drains.
 const SUBAGENT_COMPLETIONS_TABLE = `CREATE TABLE IF NOT EXISTS managed_subagent_completions (
   session_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
-  receipt_committed INTEGER NOT NULL DEFAULT 0, settled TEXT,
+  receipt_committed INTEGER NOT NULL DEFAULT 0, settled TEXT, settled_at INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, revision))`;
+const SUBAGENT_COMPLETION_TOMBSTONE_MS = 7 * 24 * 60 * 60 * 1000;
+const SUBAGENT_COMPLETION_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
 type SubagentCompletionRow = { session_id: string; revision: number; receipt_committed: number };
 
@@ -1506,21 +1513,48 @@ export function reportedSubagentCompletions(name: string, receipt: unknown): { a
 
 function recordSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): void {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  storage.sql.exec("INSERT OR IGNORE INTO managed_subagent_completions (session_id, revision, created_at) VALUES (?, ?, ?)",
-    sessionId, revision, Date.now());
+  const now = Date.now();
+  storage.sql.exec("DELETE FROM managed_subagent_completions WHERE settled IS NOT NULL AND settled_at < ?",
+    now - SUBAGENT_COMPLETION_TOMBSTONE_MS);
+  storage.sql.exec("INSERT OR IGNORE INTO managed_subagent_completions (session_id, revision, created_at, next_at) VALUES (?, ?, ?, ?)",
+    sessionId, revision, now, now);
 }
 
 function markSubagentCompletionReceipt(storage: DurableObjectStorage, sessionId: string, revision: number): void {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  storage.sql.exec(`INSERT INTO managed_subagent_completions (session_id, revision, created_at, receipt_committed)
-    VALUES (?, ?, ?, 1) ON CONFLICT(session_id, revision) DO UPDATE SET receipt_committed = 1`,
-  sessionId, revision, Date.now());
+  const now = Date.now();
+  storage.sql.exec(`INSERT INTO managed_subagent_completions (session_id, revision, created_at, receipt_committed, next_at)
+    VALUES (?, ?, ?, 1, ?) ON CONFLICT(session_id, revision) DO UPDATE SET receipt_committed = 1`,
+  sessionId, revision, now, now);
 }
 
-function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): void {
+/** True only for the decision that actually settled the row. */
+function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): boolean {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  storage.sql.exec("UPDATE managed_subagent_completions SET settled = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
-    reason, sessionId, revision);
+  return storage.sql.exec("UPDATE managed_subagent_completions SET settled = ?, settled_at = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
+    reason, Date.now(), sessionId, revision).rowsWritten > 0;
+}
+
+/** An explicitly closed child's completions need no decision any more. */
+function settleReleasedSubagentCompletions(storage: DurableObjectStorage, sessionId: string): number {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  return storage.sql.exec("UPDATE managed_subagent_completions SET settled = 'released', settled_at = ? WHERE session_id = ? AND settled IS NULL",
+    Date.now(), sessionId).rowsWritten;
+}
+
+/** An idle parent's undecided row is retried later: 2 s doubling to 1 h. */
+function deferSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  storage.sql.exec("UPDATE managed_subagent_completions SET attempts = attempts + 1, "
+    + "next_at = ? + MIN(?, 2000 * (1 << MIN(attempts, 11))) WHERE session_id = ? AND revision = ? AND settled IS NULL",
+  Date.now(), SUBAGENT_COMPLETION_MAX_BACKOFF_MS, sessionId, revision);
+}
+
+function nextSubagentCompletionAttempt(storage: DurableObjectStorage): number | undefined {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  const next = storage.sql.exec<{ next: number | null }>(
+    "SELECT MIN(next_at) AS next FROM managed_subagent_completions WHERE settled IS NULL").toArray()[0]?.next;
+  return typeof next === "number" ? next : undefined;
 }
 
 function subagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): SubagentCompletionRow & { settled: string | null } | undefined {
@@ -6427,7 +6461,8 @@ export class DurableAgentSession extends DurableComputerObject {
       this.#scheduleRecovery();
       return;
     }
-    if (this.#session() !== undefined && pendingSubagentCompletions(this.ctx.storage).length > 0) {
+    const nextCompletion = nextSubagentCompletionAttempt(this.ctx.storage);
+    if (this.#session() !== undefined && nextCompletion !== undefined && nextCompletion <= Date.now()) {
       // Recorded completions outlive the runtime that received them.
       try {
         if (!this.#agent) await this.#ensureAgent();
@@ -11754,6 +11789,14 @@ export class DurableAgentSession extends DurableComputerObject {
         preserveRootTransport: !this.#threadRoute(),
         subagentLifecycle: (event: unknown) => {
           const completed = applyManagedSubagentLifecycle(this.ctx.storage, bindings, event);
+          const lifecycle = event as { type?: unknown; sessionId?: unknown };
+          if (lifecycle.type === "release" && typeof lifecycle.sessionId === "string") {
+            // An explicit close (runtime teardown detaches without a release):
+            // the parent itself ended this child, so nothing is left to decide.
+            const released = settleReleasedSubagentCompletions(this.ctx.storage, lifecycle.sessionId);
+            if (released > 0) console.info({ type: "managed.subagent_completion", action: "settled_released", rows: released, agent: this.#sessionId() });
+            return;
+          }
           if (completed?.parentAgentId === null) {
             const revision = subagentCompletionRevision(event);
             if (revision === undefined) {
@@ -11764,7 +11807,7 @@ export class DurableAgentSession extends DurableComputerObject {
             // Recorded before this callback returns: the registry treats a
             // returned delivery as acknowledged and stops re-announcing it.
             recordSubagentCompletion(this.ctx.storage, completed.sessionId, revision);
-            console.info({ type: "managed.subagent_completion", action: "received", agent_id: completed.agentId, revision });
+            console.info({ type: "managed.subagent_completion", action: "received", agent_id: completed.agentId, revision, agent: this.#sessionId() });
             this.ctx.waitUntil(this.#track(this.#decideSubagentCompletion(completed.sessionId, revision)).catch(error => {
               console.warn({ type: "managed.subagent_continuation_failed", error_kind: errorKind(error) });
             }));
@@ -12254,7 +12297,7 @@ export class DurableAgentSession extends DurableComputerObject {
           row.root_session_id === context.sessionId && row.agentId === agentId && row.parentAgentId === null);
         if (!child) continue;
         markSubagentCompletionReceipt(this.ctx.storage, child.sessionId, revision);
-        console.info({ type: "managed.subagent_completion", action: "receipt_committed", agent_id: agentId, revision, tool: context.name });
+        console.info({ type: "managed.subagent_completion", action: "receipt_committed", agent_id: agentId, revision, tool: context.name, agent: this.#sessionId() });
       }
     } catch (error) {
       // Never fail the receipt itself: without the mark the parent is woken,
@@ -12278,29 +12321,35 @@ export class DurableAgentSession extends DurableComputerObject {
     const runtimeGeneration = this.#runtimeOwnershipGeneration;
     const child = bindings.authorizations.get(sessionId);
     const decide = (action: string) => console.info({ type: "managed.subagent_completion", action, agent_id: child?.agentId ?? null,
-      revision, turns: this.#turns.size, recoverable: this.#recoverableTurnCount() });
-    const settle = (reason: string) => { decide("settled_" + reason); settleSubagentCompletion(this.ctx.storage, sessionId, revision, reason); };
+      revision, turns: this.#turns.size, recoverable: this.#recoverableTurnCount(), agent: this.#sessionId() });
+    const settle = (reason: string) => { if (settleSubagentCompletion(this.ctx.storage, sessionId, revision, reason)) decide("settled_" + reason); };
+    // An idle parent's undecided row: retried by the alarm with backoff.
+    const retry = (action: string) => { decide(action); deferSubagentCompletion(this.ctx.storage, sessionId, revision); };
     const row = () => subagentCompletion(this.ctx.storage, sessionId, revision);
     if (row()?.settled !== null) return;
-    // The restored registry rebinds the child before re-announcing it.
-    if (!child) { decide("kept_unbound"); return; }
-    if (child.parentAgentId !== null) { settle("nested"); return; }
     const transient = () => this.#runtimeOwnershipGeneration !== runtimeGeneration || this.#agent === undefined
       || this.#deleting || this.#deleted || this.#streamError || this.#durabilityExported
       || this.#durabilityImportState === "pending" || this.#subagentBindings !== bindings;
-    // Including a turn replayed by restart recovery: its outcome decides.
+    // Including a turn replayed by restart recovery: its outcome decides, and
+    // its terminal transition re-drains (no alarm needed while busy).
     const busy = () => this.#turns.size > 0 || this.#recoverableTurnCount() > 0;
     const hold = (): boolean => {
-      if (transient()) { decide("kept_transient"); return true; }
+      if (transient()) { retry("kept_transient"); return true; }
       if (busy()) { decide("deferred_busy"); return true; }
       return false;
     };
     if (hold()) return;
     // One logical completion admits at most one wake turn, across restarts.
-    const id = `subagent:${(await hashManagedInput(`${child.sessionId}:${revision}`)).slice(0, 48)}`;
+    // Durable consumption is checked before the binding: a closed child's
+    // binding is gone, but its committed receipt or wake still decides.
+    const id = "subagent:" + (await hashManagedInput(sessionId + ":" + revision)).slice(0, 48);
     if (await this.#findManagedTurn(id)) { settle("woken"); return; }
     if (row()?.settled !== null) return;
     if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
+    // Bindings are persisted and only an explicit release deletes them (which
+    // settles the rows itself): an unbound row has no child left to report.
+    if (!child) { settle("unbound"); return; }
+    if (child.parentAgentId !== null) { settle("nested"); return; }
     const source = await this.#findManagedTurn(child.host_context_ref);
     if (hold()) return;
     if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
@@ -12328,10 +12377,12 @@ A direct subagent completed after the previous turn ended. Continue the current 
         }, undefined, "unknown", {}, false);
     } catch (error) {
       if (error instanceof ManagedRequestError && error.code === "subagent_continuation_superseded") {
-        // Re-decided by the next drain (after the turn that superseded it).
-        decide("kept_superseded");
+        // Re-decided by the next drain: after the turn that superseded it, or
+        // by the backed-off alarm if the parent stays idle.
+        retry("kept_superseded");
         return;
       }
+      retry("kept_admission_failed");
       throw error;
     }
     settle("woken");
@@ -14711,7 +14762,15 @@ A direct subagent completed after the previous turn ended. Continue the current 
     if (this.#deleting || !this.#sessionId()) return;
     const now = Date.now();
     const targets: number[] = [];
-    if (pendingSubagentCompletions(this.ctx.storage).length > 0) targets.push(now + MAX_RETRY_DELAY_MS);
+    // Only an idle parent's undecided completions need the alarm (backed off
+    // per row); a busy parent's are re-decided when its turn ends.
+    if (this.#turns.size === 0 && this.#recoverableTurnCount() === 0) {
+      const nextCompletion = nextSubagentCompletionAttempt(this.ctx.storage);
+      if (nextCompletion !== undefined) {
+        targets.push(Math.max(now + 1, nextCompletion));
+        console.info({ type: "managed.subagent_completion_alarm", at: nextCompletion, agent: this.#sessionId() });
+      }
+    }
     const presentationAlarm = presentationRetryAt(this.ctx.storage);
     if (presentationAlarm !== undefined) targets.push(Math.max(now + 1, presentationAlarm));
     const webhookAlarm = this.#operations.nextAlarm();

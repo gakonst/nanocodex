@@ -3633,10 +3633,15 @@ fn forward_subagent_updates(
                         .cloned();
                     // The host deduplicates by (agent, completion_revision).
                     // Only a delivered completion is acknowledged; otherwise
-                    // the registry announces it again after its next restore.
-                    if let Some(session_id) = session_id
-                        && let Ok(mut encoded) = serde_json::to_value(&status)
-                    {
+                    // it stays pending: retried with backoff in this runtime
+                    // and announced again after the next restore.
+                    let Some(session_id) = session_id else {
+                        if let Some(registry) = registry.upgrade() {
+                            registry.retry_completion(&root_session_id, id, revision);
+                        }
+                        continue;
+                    };
+                    if let Ok(mut encoded) = serde_json::to_value(&status) {
                         if let Some(object) = encoded.as_object_mut() {
                             object.insert("completion_revision".into(), revision.into());
                         }
@@ -3649,11 +3654,16 @@ fn forward_subagent_updates(
                                     });
                                 }
                             }
-                            Err(error) => report_subagent_host_error(
-                                "forwarding a subagent completion",
-                                &session_id,
-                                &error,
-                            ),
+                            Err(error) => {
+                                report_subagent_host_error(
+                                    "forwarding a subagent completion",
+                                    &session_id,
+                                    &error,
+                                );
+                                if let Some(registry) = registry.upgrade() {
+                                    registry.retry_completion(&root_session_id, id, revision);
+                                }
+                            }
                         }
                     }
                 }
