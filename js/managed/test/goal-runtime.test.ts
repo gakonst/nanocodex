@@ -20,7 +20,8 @@ describe("goal runtime", () => {
     expect(() => parseGoalCommand([{ type: "text", text: "/goal ship" }, { type: "image", image_url: "image" }])).toThrow("attachments");
   });
   it("retains continuation accounting, excludes cached tokens, and stops cancelled or empty runs", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       runtime.command("Ship");
@@ -55,6 +56,7 @@ describe("goal runtime", () => {
   it("handles status, edit, pause and clear as completed durable commands without a model", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
       stubMemory(session);
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES(1,'thread','owner','org','team',1,'https://example.com','managed',?)`, Date.now());
       const goals = new Goals(state.storage, () => "thread");
       goals.create({ objective: "Ship" });
@@ -72,6 +74,7 @@ describe("goal runtime", () => {
   it("recovers a retained command receipt without executing it again or loading the model", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
       stubMemory(session);
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES(1,'thread','owner','org','team',1,'https://example.com','managed',?)`, Date.now());
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
@@ -89,6 +92,7 @@ describe("goal runtime", () => {
   it("drops a persisted continuation when the authorization epoch changes", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
       stubMemory(session);
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES(1,'thread','owner','org','team',2,'https://example.com','managed',?)`, Date.now());
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
@@ -105,7 +109,8 @@ describe("goal runtime", () => {
   });
 
   it("stops budgeted work on missing provider usage and freezes elapsed time at stop", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       goals.create({ objective: "Ship", token_budget: 100 }); runtime.bind("turn", 1);

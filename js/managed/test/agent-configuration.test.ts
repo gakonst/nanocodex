@@ -93,7 +93,8 @@ it("authorizes operational routes before exposing another session or allowing a 
     authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
   };
   const id = "0198d3f0-8844-7000-8000-000000000091";
-  await runInDurableObject(sessions().getByName(id), async (_, state) => {
+  await runInDurableObject(sessions().getByName(id), async (session, state) => {
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`, id, principal.userId, principal.organizationId, principal.teamId, Date.now());
   });
