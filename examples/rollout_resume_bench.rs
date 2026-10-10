@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
                 .wrap_err_with(|| format!("failed to load {thread_id}"))?;
             samples.push(started.elapsed().as_secs_f64() * 1_000.0);
             rollout_bytes = session.rollout_path().metadata()?.len();
-            history_items = serde_json::to_value(session.snapshot())?["history"]
+            history_items = session.checkpoint()?.payload()["conversation"]["history"]
                 .as_array()
                 .map_or(0, Vec::len);
             transcript_items = session.transcript().len();
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
         }
         let session = loaded.ok_or_else(|| eyre!("iteration count must be positive"))?;
         let (agent, events) = Nanocodex::builder(openai.clone())
-            .resume(session.snapshot().clone())
+            .resume(session.checkpoint()?)?
             .build()
             .wrap_err_with(|| format!("failed to construct resumed driver for {thread_id}"))?;
         drop((agent, events));

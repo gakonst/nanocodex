@@ -1,5 +1,5 @@
 use eyre::{Result, WrapErr};
-use nanocodex::{Nanocodex, OpenAi, Thinking, agent::session::SessionSnapshot};
+use nanocodex::{Nanocodex, OpenAi, SessionCheckpoint, Thinking};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,17 +20,17 @@ async fn main() -> Result<()> {
         .await?;
 
     // The embedding application chooses the storage and retention policy.
-    let snapshot = completed
-        .snapshot()
-        .ok_or_else(|| eyre::eyre!("the local agent did not retain a snapshot"))?;
-    let stored = serde_json::to_vec(&snapshot)?;
+    let checkpoint = completed
+        .checkpoint()
+        .ok_or_else(|| eyre::eyre!("the local agent did not retain a checkpoint"))?;
+    let stored = checkpoint.to_json()?;
     drop((agent, completed));
 
-    let snapshot: SessionSnapshot = serde_json::from_slice(&stored)?;
+    let checkpoint = SessionCheckpoint::from_json(&stored)?;
     let (resumed, events) = Nanocodex::builder(openai)
         .instructions("Remember explicit release facts and never infer missing values.")
         .thinking(Thinking::Low)
-        .resume(snapshot)
+        .resume(checkpoint)?
         .build()?;
     drop(events);
     let result = resumed

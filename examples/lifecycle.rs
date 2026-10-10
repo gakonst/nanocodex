@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use eyre::{Result, WrapErr};
 use nanocodex::{
-    AgentEvents, Nanocodex, NanocodexError, OpenAi, Thinking, Tools,
+    AgentEvents, ForkRequest, Nanocodex, NanocodexError, OpenAi, Thinking, Tools,
     agent::{events::AgentEventKind, session::SessionId},
 };
 use tokio::task::JoinHandle;
@@ -80,13 +80,16 @@ async fn main() -> Result<()> {
         active.final_message()
     );
 
-    // Fork commands remain responsive while a root turn runs. fork() samples
-    // the latest resumable checkpoint; fork_from() selects an exact old result.
+    // Fork commands remain responsive while a root turn runs. ForkRequest::latest()
+    // samples the latest resumable checkpoint; ForkRequest::at_turn() selects an
+    // exact old result.
     let mainline = agent
         .prompt("Record the mainline-only fact `release=Tuesday`.")
         .await?;
-    let ((historical, historical_events), (latest, latest_events)) =
-        tokio::try_join!(agent.fork_from(&historical_checkpoint), agent.fork(),)?;
+    let ((historical, historical_events), (latest, latest_events)) = tokio::try_join!(
+        agent.fork(ForkRequest::at_turn(&historical_checkpoint)),
+        agent.fork(ForkRequest::latest()),
+    )?;
     observers.push(observe("historical", historical_events));
     observers.push(observe("latest", latest_events));
 
