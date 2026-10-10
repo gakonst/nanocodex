@@ -222,13 +222,13 @@ describe("Session-owned credential authority", () => {
         public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS,
       };
       let registrationAvailable = false;
-      let binds = 0, registrations = 0;
+      let binds = 0, registrations = 0, registered = 0;
       const create = async (input = initialization) => runInDurableObject(stub, async (session, state) => {
         const originalEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { configurable: true, value: {
           ...originalEnv, MANAGED_AGENT_DIRECT_CREDENTIALS: String(direct),
           NANOCODEX: { fetch: async () => { binds += 1; return new Response(null, { status: 204 }); } },
-          NANOCODEX_USERS: { getByName: () => ({ fetch: async () => { registrations += 1; return new Response(null, {
+          NANOCODEX_USERS: { getByName: () => ({ fetch: async () => { registrations += 1; if (registrationAvailable) registered += 1; return new Response(null, {
             status: registrationAvailable ? 204 : 503,
           }); } }) },
           NANOCODEX_MEMORY: { getByName: () => { throw new Error("Unexpected memory initialization"); } },
@@ -254,6 +254,8 @@ describe("Session-owned credential authority", () => {
       registrationAvailable = true;
       const firstSuccess = await create();
       expect(firstSuccess).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
+      // Once the registry recovers, the direct create's publication is delivered.
+      if (direct) await vi.waitFor(() => expect(registered).toBeGreaterThan(0));
       expect(firstSuccess.body.handler_entered_at_ms).toBeGreaterThan(0);
       expect(firstSuccess.body.response_ready_at_ms).toBeGreaterThanOrEqual(firstSuccess.body.handler_entered_at_ms);
       expect(firstSuccess.body.handler_ms).toBeGreaterThanOrEqual(0);
