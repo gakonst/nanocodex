@@ -187,7 +187,28 @@ def base_env(p):
             "NANOCODEX_COMPUTER": "off", "BROWSER": "/bin/false", "SHELL": "/bin/sh"}
 
 
+def wait_for_api_quota(minimum=6, limit_s=3900):
+    """The installer and updater call api.github.com unauthenticated (60/h per IP,
+    shared with every process on the host). Wait for the reset instead of reporting
+    an exhausted shared quota as a product failure; /rate_limit itself is free."""
+    deadline = time.time() + limit_s
+    while True:
+        try:
+            with http_get("https://api.github.com/rate_limit") as r:
+                core = json.load(r)["resources"]["core"]
+        except Exception as e:  # network trouble is left to the real command
+            log(f"  rate-limit probe failed: {e}")
+            return
+        if core["remaining"] >= minimum or time.time() > deadline:
+            return
+        pause = max(5, min(core["reset"] - time.time() + 5, deadline - time.time()))
+        log(f"  GitHub API quota {core['remaining']}/{core['limit']}; waiting {pause:.0f}s for reset {core['reset']}")
+        time.sleep(pause)
+
+
 def run(name, argv, env, cwd=None, timeout=900, input=None):
+    if "update" in argv or any(str(a).endswith("public-install.sh") for a in argv):
+        wait_for_api_quota()
     counter[0] += 1
     stem = ART / "cmd" / f"{counter[0]:03d}-{cur_step[0]}-{name}"
     stem.parent.mkdir(exist_ok=True)
@@ -1026,9 +1047,31 @@ def step_p1():
     links = {n: os.readlink(p["store"] / "bin" / n) if (p["store"] / "bin" / n).is_symlink() else None for n in CLI_ALIASES + HAND_ALIASES}
     state.setdefault("candidate", {})["links_after_old_activation"] = links; save()
     log(f"  links after OLD-updater activation, before any candidate run: {json.dumps(links)}")
-    # First command a user runs: the managed CLI through the stale bin/nanocodex2.
-    # It must keep forwarding and is expected to trigger the candidate's self-repair.
-    managed_status(p["store"] / "bin/nanocodex2", base_env(p), "candidate first run via stale bin/nanocodex2")
+    import fcntl as _fcntl
+
+    def current_links():
+        return {n: os.readlink(p["store"] / "bin" / n) if (p["store"] / "bin" / n).is_symlink() else None for n in CLI_ALIASES + HAND_ALIASES}
+
+    stale = p["store"] / "bin/nanocodex2"
+    # 1. Another updater holds the store's update.lock: the first managed command
+    #    through the stale link must still finish (repair is non-blocking) and must
+    #    leave every link untouched.
+    with open(p["store"] / "update.lock", "a+") as lock:
+        _fcntl.flock(lock, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        managed_status(stale, base_env(p), "candidate stale bin/nanocodex2 while update.lock is held")
+        check("held update.lock: no entrypoint changed", current_links() == links, links=current_links())
+    # 2. A foreign NANOCODEX_DIR must not receive (or redirect) the repair.
+    foreign = p["root"] / "foreign-store"
+    foreign.mkdir(exist_ok=True)
+    before_foreign = sorted(str(x.relative_to(foreign)) for x in foreign.rglob("*"))
+    managed_status(stale, dict(base_env(p), NANOCODEX_DIR=str(foreign)), "candidate stale bin/nanocodex2 with a foreign NANOCODEX_DIR")
+    after_foreign = sorted(str(x.relative_to(foreign)) for x in foreign.rglob("*"))
+    check("foreign NANOCODEX_DIR: no entrypoint written there", not [x for x in after_foreign if x.startswith("bin")] ,
+          before=before_foreign, after=after_foreign)
+    state["candidate"]["links_after_foreign"] = current_links(); save()
+    # 3. The ordinary next run through the stale link repairs every alias.
+    managed_status(stale, base_env(p), "candidate stale bin/nanocodex2 after the lock is released")
+    state["candidate"]["links_after_repair"] = current_links(); save()
     probes = probe_versions(p, base_env(p))
     check_entrypoints(p, probes, sha, "candidate after OLD-updater activation and its first run")
     state["steps"]["p1"] = {"snapshot": snapshot(p), "key": key, "sha": sha, "probes": probes}; save()

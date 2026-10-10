@@ -159,9 +159,10 @@ With `--candidate CLI HAND VOICE_ARCHIVE` (an unpublished pair built with
 `VERGEN_GIT_SHA` and `NANOCODEX_HAND_IDENTITY`), step `p1` installs the published OLD
 nightly in prefix P, lets OLD's own `update --path ... --hand-binary ... --voice-archive`
 activate the candidate (the legacy activation that leaves `bin/nanocodex2` on the Hand),
-runs `nanocodex2 status` through the stale link first (it must forward to the
-CLI and is where a self-repairing candidate fixes its links), then requires every
-entrypoint role to be correct; `p2` repeats
+runs `nanocodex2 status` through the stale link (it must forward to the CLI): first
+while the journey holds the store's `update.lock` (it must finish and change no link),
+then with a foreign `NANOCODEX_DIR` (no entrypoint may be written there), then
+normally, after which every entrypoint role must be correct; `p2` repeats
 the selection and requires no version, Hand or manager-copy rewrite. Run
 `--steps p1,p2` with the same `--old-sha`/`--new-sha` against a candidate fix before
 publishing it. Once the `nightly` pointer names the fixed release, run the full matrix
