@@ -2266,9 +2266,13 @@ impl Registry {
             completion_retry_delay(entry.0)
         };
         tracing::warn!(%id, revision, ?delay, "subagent completion was not delivered; retrying");
-        let registry = Arc::clone(self);
+        // A pending retry never keeps a shut-down runtime's registry alive.
+        let registry = Arc::downgrade(self);
         drop(platform::spawn(async move {
             platform::sleep(delay).await;
+            let Some(registry) = registry.upgrade() else {
+                return;
+            };
             if let Some(entry) = lock_unpoisoned(&registry.completion_retries).get_mut(&key) {
                 entry.1 = false;
             }

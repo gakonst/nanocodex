@@ -1477,6 +1477,23 @@ const SUBAGENT_COMPLETIONS_TABLE = `CREATE TABLE IF NOT EXISTS managed_subagent_
   attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, revision))`;
 const SUBAGENT_COMPLETION_TOMBSTONE_MS = 7 * 24 * 60 * 60 * 1000;
+// Highest decided revision per child session, kept for the life of the object
+// (one row per child): a pending completion re-announced from an old registry
+// journal after its tombstone was collected is still recognised as decided.
+// Instruction revisions only grow, so nothing new is at or below it.
+const SUBAGENT_COMPLETIONS_DECIDED_TABLE = "CREATE TABLE IF NOT EXISTS managed_subagent_completion_decided (session_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)";
+
+function decidedSubagentRevision(storage: DurableObjectStorage, sessionId: string): number | undefined {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_DECIDED_TABLE);
+  return storage.sql.exec<{ revision: number }>(
+    "SELECT revision FROM managed_subagent_completion_decided WHERE session_id = ?", sessionId).toArray()[0]?.revision;
+}
+
+function raiseDecidedSubagentRevision(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_DECIDED_TABLE);
+  storage.sql.exec(`INSERT INTO managed_subagent_completion_decided (session_id, revision) VALUES (?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET revision = MAX(revision, excluded.revision)`, sessionId, revision);
+}
 const SUBAGENT_COMPLETION_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
 type SubagentCompletionRow = { session_id: string; revision: number; receipt_committed: number };
@@ -1511,17 +1528,23 @@ export function reportedSubagentCompletions(name: string, receipt: unknown): { a
   return [];
 }
 
-function recordSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+/** False for a completion already decided (re-announced from an old journal). */
+export function recordSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): boolean {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
   const now = Date.now();
   storage.sql.exec("DELETE FROM managed_subagent_completions WHERE settled IS NOT NULL AND settled_at < ?",
     now - SUBAGENT_COMPLETION_TOMBSTONE_MS);
+  const decided = decidedSubagentRevision(storage, sessionId);
+  if (decided !== undefined && revision <= decided) return false;
   storage.sql.exec("INSERT OR IGNORE INTO managed_subagent_completions (session_id, revision, created_at, next_at) VALUES (?, ?, ?, ?)",
     sessionId, revision, now, now);
+  return subagentCompletion(storage, sessionId, revision)?.settled === null;
 }
 
-function markSubagentCompletionReceipt(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+export function markSubagentCompletionReceipt(storage: DurableObjectStorage, sessionId: string, revision: number): void {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  const decided = decidedSubagentRevision(storage, sessionId);
+  if (decided !== undefined && revision <= decided) return;
   const now = Date.now();
   storage.sql.exec(`INSERT INTO managed_subagent_completions (session_id, revision, created_at, receipt_committed, next_at)
     VALUES (?, ?, ?, 1, ?) ON CONFLICT(session_id, revision) DO UPDATE SET receipt_committed = 1`,
@@ -1529,42 +1552,72 @@ function markSubagentCompletionReceipt(storage: DurableObjectStorage, sessionId:
 }
 
 /** True only for the decision that actually settled the row. */
-function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): boolean {
+export function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): boolean {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  return storage.sql.exec("UPDATE managed_subagent_completions SET settled = ?, settled_at = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
+  const settled = storage.sql.exec("UPDATE managed_subagent_completions SET settled = ?, settled_at = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
     reason, Date.now(), sessionId, revision).rowsWritten > 0;
+  if (settled) raiseDecidedSubagentRevision(storage, sessionId, revision);
+  return settled;
 }
 
 /** An explicitly closed child's completions need no decision any more. */
-function settleReleasedSubagentCompletions(storage: DurableObjectStorage, sessionId: string): number {
+export function settleReleasedSubagentCompletions(storage: DurableObjectStorage, sessionId: string): number {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  return storage.sql.exec("UPDATE managed_subagent_completions SET settled = 'released', settled_at = ? WHERE session_id = ? AND settled IS NULL",
-    Date.now(), sessionId).rowsWritten;
+  const released = storage.sql.exec<{ revision: number }>("UPDATE managed_subagent_completions SET settled = 'released', settled_at = ? "
+    + "WHERE session_id = ? AND settled IS NULL RETURNING revision", Date.now(), sessionId).toArray();
+  if (released.length > 0) raiseDecidedSubagentRevision(storage, sessionId, Math.max(...released.map(row => row.revision)));
+  return released.length;
 }
 
 /** An idle parent's undecided row is retried later: 2 s doubling to 1 h. */
-function deferSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+export function deferSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): { attempts: number; next_at: number } | undefined {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  storage.sql.exec("UPDATE managed_subagent_completions SET attempts = attempts + 1, "
-    + "next_at = ? + MIN(?, 2000 * (1 << MIN(attempts, 11))) WHERE session_id = ? AND revision = ? AND settled IS NULL",
-  Date.now(), SUBAGENT_COMPLETION_MAX_BACKOFF_MS, sessionId, revision);
+  return storage.sql.exec<{ attempts: number; next_at: number }>("UPDATE managed_subagent_completions SET attempts = attempts + 1, "
+    + "next_at = ? + MIN(?, 2000 * (1 << MIN(attempts, 11))) WHERE session_id = ? AND revision = ? AND settled IS NULL "
+    + "RETURNING attempts, next_at",
+  Date.now(), SUBAGENT_COMPLETION_MAX_BACKOFF_MS, sessionId, revision).toArray()[0];
 }
 
-function nextSubagentCompletionAttempt(storage: DurableObjectStorage): number | undefined {
+/** Undecided rows already due: a failed alarm drain must back them all off. */
+export function dueSubagentCompletions(storage: DurableObjectStorage, now: number): SubagentCompletionRow[] {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  return storage.sql.exec<SubagentCompletionRow>(
+    "SELECT session_id, revision, receipt_committed FROM managed_subagent_completions WHERE settled IS NULL AND next_at <= ?", now).toArray();
+}
+
+// The outbox alarm never fires sooner than this after it is scheduled.
+const SUBAGENT_COMPLETION_MIN_ALARM_MS = 2_000;
+
+/** A failed alarm drain (for example a runtime rebuild that throws) backs off
+ * every due row, so the next alarm can't fire at once again. */
+export function backOffDueSubagentCompletions(storage: DurableObjectStorage, now: number): { session_id: string; revision: number; attempts: number; next_at: number }[] {
+  return dueSubagentCompletions(storage, now).flatMap(row => {
+    const next = deferSubagentCompletion(storage, row.session_id, row.revision);
+    return next ? [{ session_id: row.session_id, revision: row.revision, ...next }] : [];
+  });
+}
+
+/** When an idle parent's outbox needs the alarm, never sooner than the floor. */
+export function subagentCompletionAlarmAt(storage: DurableObjectStorage, now: number): number | undefined {
+  const next = nextSubagentCompletionAttempt(storage);
+  return next === undefined ? undefined : Math.max(now + SUBAGENT_COMPLETION_MIN_ALARM_MS, next);
+}
+
+export function nextSubagentCompletionAttempt(storage: DurableObjectStorage): number | undefined {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
   const next = storage.sql.exec<{ next: number | null }>(
     "SELECT MIN(next_at) AS next FROM managed_subagent_completions WHERE settled IS NULL").toArray()[0]?.next;
   return typeof next === "number" ? next : undefined;
 }
 
-function subagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): SubagentCompletionRow & { settled: string | null } | undefined {
+export function subagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): SubagentCompletionRow & { settled: string | null } | undefined {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
   return storage.sql.exec<SubagentCompletionRow & { settled: string | null }>(
     "SELECT session_id, revision, receipt_committed, settled FROM managed_subagent_completions WHERE session_id = ? AND revision = ?",
     sessionId, revision).toArray()[0];
 }
 
-function pendingSubagentCompletions(storage: DurableObjectStorage): SubagentCompletionRow[] {
+export function pendingSubagentCompletions(storage: DurableObjectStorage): SubagentCompletionRow[] {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
   return storage.sql.exec<SubagentCompletionRow>(
     "SELECT session_id, revision, receipt_committed FROM managed_subagent_completions WHERE settled IS NULL ORDER BY created_at").toArray();
@@ -6468,7 +6521,12 @@ export class DurableAgentSession extends DurableComputerObject {
         if (!this.#agent) await this.#ensureAgent();
         await this.#drainSubagentCompletions();
       } catch (error) {
-        console.warn({ type: "managed.subagent_completion_drain_failed", error_kind: errorKind(error) });
+        // A persistent failure (for example rebuilding the runtime) must back
+        // off every due row, never re-arm the alarm at once.
+        for (const row of backOffDueSubagentCompletions(this.ctx.storage, Date.now())) {
+          console.warn({ type: "managed.subagent_completion", action: "alarm_drain_failed", revision: row.revision,
+            attempts: row.attempts, next_at: row.next_at, agent: this.#sessionId(), error_kind: errorKind(error) });
+        }
       }
     }
     if (!this.#agent && !this.#agentPromise && this.#session() !== undefined
@@ -11806,10 +11864,13 @@ export class DurableAgentSession extends DurableComputerObject {
             }
             // Recorded before this callback returns: the registry treats a
             // returned delivery as acknowledged and stops re-announcing it.
-            recordSubagentCompletion(this.ctx.storage, completed.sessionId, revision);
+            if (!recordSubagentCompletion(this.ctx.storage, completed.sessionId, revision)) {
+              console.info({ type: "managed.subagent_completion", action: "ignored_decided", agent_id: completed.agentId, revision, agent: this.#sessionId() });
+              return;
+            }
             console.info({ type: "managed.subagent_completion", action: "received", agent_id: completed.agentId, revision, agent: this.#sessionId() });
             this.ctx.waitUntil(this.#track(this.#decideSubagentCompletion(completed.sessionId, revision)).catch(error => {
-              console.warn({ type: "managed.subagent_continuation_failed", error_kind: errorKind(error) });
+              this.#deferSubagentCompletion(completed.sessionId, revision, "decision_failed", error);
             }));
           }
         },
@@ -12324,7 +12385,7 @@ export class DurableAgentSession extends DurableComputerObject {
       revision, turns: this.#turns.size, recoverable: this.#recoverableTurnCount(), agent: this.#sessionId() });
     const settle = (reason: string) => { if (settleSubagentCompletion(this.ctx.storage, sessionId, revision, reason)) decide("settled_" + reason); };
     // An idle parent's undecided row: retried by the alarm with backoff.
-    const retry = (action: string) => { decide(action); deferSubagentCompletion(this.ctx.storage, sessionId, revision); };
+    const retry = (action: string) => this.#deferSubagentCompletion(sessionId, revision, action);
     const row = () => subagentCompletion(this.ctx.storage, sessionId, revision);
     if (row()?.settled !== null) return;
     const transient = () => this.#runtimeOwnershipGeneration !== runtimeGeneration || this.#agent === undefined
@@ -12382,10 +12443,22 @@ A direct subagent completed after the previous turn ended. Continue the current 
         retry("kept_superseded");
         return;
       }
-      retry("kept_admission_failed");
+      // The caller's catch backs the row off (decision_failed).
       throw error;
     }
     settle("woken");
+  }
+
+  /** Backs an undecided row off (2 s doubling to 1 h) and logs its new schedule. */
+  #deferSubagentCompletion(sessionId: string, revision: number, action: string, error?: unknown): void {
+    try {
+      const next = deferSubagentCompletion(this.ctx.storage, sessionId, revision);
+      console[error === undefined ? "info" : "warn"]({ type: "managed.subagent_completion", action, revision,
+        attempts: next?.attempts ?? null, next_at: next?.next_at ?? null, agent: this.#sessionId(),
+        ...(error === undefined ? {} : { error_kind: errorKind(error) }) });
+    } catch (deferError) {
+      console.warn({ type: "managed.subagent_completion_defer_failed", error_kind: errorKind(deferError) });
+    }
   }
 
   /** Re-evaluates recorded root-child completions whose wake was not decided. */
@@ -12393,7 +12466,7 @@ A direct subagent completed after the previous turn ended. Continue the current 
     if (!this.#agent) return;
     for (const row of pendingSubagentCompletions(this.ctx.storage)) {
       await this.#decideSubagentCompletion(row.session_id, row.revision).catch(error => {
-        console.warn({ type: "managed.subagent_completion_drain_failed", error_kind: errorKind(error) });
+        this.#deferSubagentCompletion(row.session_id, row.revision, "decision_failed", error);
       });
     }
   }
@@ -14765,9 +14838,9 @@ A direct subagent completed after the previous turn ended. Continue the current 
     // Only an idle parent's undecided completions need the alarm (backed off
     // per row); a busy parent's are re-decided when its turn ends.
     if (this.#turns.size === 0 && this.#recoverableTurnCount() === 0) {
-      const nextCompletion = nextSubagentCompletionAttempt(this.ctx.storage);
+      const nextCompletion = subagentCompletionAlarmAt(this.ctx.storage, now);
       if (nextCompletion !== undefined) {
-        targets.push(Math.max(now + 1, nextCompletion));
+        targets.push(nextCompletion);
         console.info({ type: "managed.subagent_completion_alarm", at: nextCompletion, agent: this.#sessionId() });
       }
     }
