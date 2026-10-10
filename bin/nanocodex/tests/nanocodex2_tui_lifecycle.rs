@@ -367,10 +367,14 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
         assert_eq!(restarted["active_turns"][AGENT], json!([turn]));
         assert_eq!(restarted["active_turns"][child], json!([]));
 
-        if keyboard_stop {
+        let cancelled = if keyboard_stop {
             fixture.terminal.input("\x1b");
             fixture.terminal.wait_text("Interrupt").await;
             fixture.terminal.input("\x1b");
+            fixture
+                .cancellation(TIMEOUT)
+                .await
+                .expect("confirmed Stop never reached the service")
         } else {
             let request = json!({"id":"cancel-discovered-local-root","method":"cancel","params":{
             "expected_instance_id":restarted["instance_id"],
@@ -381,6 +385,16 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
                 .write_all(format!("{request}\n").as_bytes())
                 .await
                 .unwrap();
+            // The backend holds its reply: the receipt cannot precede admission.
+            let (cancelled, ack) = tokio::time::timeout(TIMEOUT, async {
+                tokio::select! {
+                    command = fixture.cancellations.recv() => command.unwrap(),
+                    response = lines.next_line() => panic!("control cancel was resolved before backend admission: {response:?}"),
+                }
+            })
+            .await
+            .expect("confirmed Stop never reached the service");
+            ack.send(true).unwrap();
             let response: Value = serde_json::from_str(
                 &tokio::time::timeout(TIMEOUT, lines.next_line())
                     .await
@@ -393,11 +407,8 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
             assert_eq!(response["result"]["status"], "accepted");
             assert_eq!(response["result"]["result"]["turn_id"], turn);
             assert_eq!(response["result"]["result"]["state"], "cancelling");
-        }
-        let cancelled = tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .expect("confirmed Stop never reached the service")
-            .unwrap();
+            cancelled
+        };
         eprintln!(
             "Stop HTTP cancellation target: {cancelled}; expected durable root: {turn}; keyboard={keyboard_stop}"
         );
@@ -536,15 +547,14 @@ async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
         .write_all(format!("{cancel}\n").as_bytes())
         .await
         .unwrap();
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, async {
-            tokio::select! {
-                command = fixture.cancellations.recv() => command.unwrap(),
-                response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
-            }
-        }).await.unwrap(),
-        turn
-    );
+    let (cancelled, ack) = tokio::time::timeout(TIMEOUT, async {
+        tokio::select! {
+            command = fixture.cancellations.recv() => command.unwrap(),
+            response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
+        }
+    }).await.unwrap();
+    assert_eq!(cancelled, turn);
+    ack.send(true).unwrap();
     let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
     assert_eq!(reply["result"]["status"], "accepted");
     write
@@ -1713,7 +1723,7 @@ struct Service {
     submitted: mpsc::UnboundedSender<Value>,
     steered: mpsc::UnboundedSender<(Value, oneshot::Sender<bool>)>,
     rejected: mpsc::UnboundedSender<Value>,
-    cancelled: mpsc::UnboundedSender<String>,
+    cancelled: mpsc::UnboundedSender<(String, oneshot::Sender<bool>)>,
 }
 
 impl Service {
@@ -2100,12 +2110,23 @@ async fn steer(
     Ok(Json(json!({"turn_id": turn, "state": "steering"})))
 }
 
+/// Held until the test acknowledges admission, like steer, so a client reply
+/// can never be observed before the backend has seen the cancellation.
 async fn cancel(
     State(service): State<Service>,
     axum::extract::Path((_, turn)): axum::extract::Path<(String, String)>,
-) -> Json<Value> {
-    service.cancelled.send(turn.clone()).unwrap();
-    Json(json!({"turn_id": turn, "state": "cancelling"}))
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let (ack, acknowledged) = oneshot::channel();
+    service.cancelled.send((turn.clone(), ack)).unwrap();
+    if !acknowledged.await.unwrap_or(false) {
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(
+                json!({"error": "upstream_failure", "message": "cancellation acknowledgement was lost"}),
+            ),
+        ));
+    }
+    Ok(Json(json!({"turn_id": turn, "state": "cancelling"})))
 }
 
 struct Fixture {
@@ -2136,12 +2157,22 @@ struct Fixture {
     submissions: mpsc::UnboundedReceiver<Value>,
     steers: mpsc::UnboundedReceiver<(Value, oneshot::Sender<bool>)>,
     rejections: mpsc::UnboundedReceiver<Value>,
-    cancellations: mpsc::UnboundedReceiver<String>,
+    cancellations: mpsc::UnboundedReceiver<(String, oneshot::Sender<bool>)>,
     server: tokio::task::JoinHandle<()>,
     cursor: u64,
 }
 
 impl Fixture {
+    /// The next backend cancellation, acknowledged so its held reply returns.
+    async fn cancellation(&mut self, timeout: Duration) -> Option<String> {
+        let (turn, ack) = tokio::time::timeout(timeout, self.cancellations.recv())
+            .await
+            .ok()
+            .flatten()?;
+        let _ = ack.send(true);
+        Some(turn)
+    }
+
     async fn start() -> Self {
         Self::start_with_active(false).await
     }
@@ -3268,13 +3299,7 @@ async fn terminal_fresh_session_can_cancel_an_external_turn_without_capabilities
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        REMOTE_TURN
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
     fixture.emit(
         REMOTE_TURN,
         json!({"type": "turn_cancelled", "id": REMOTE_TURN}),
@@ -3300,13 +3325,7 @@ async fn terminal_cancels_during_a_steer_ack_without_repeating_applied_input() {
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        REMOTE_TURN
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
     fixture.terminal.wait_text("Interrupted response").await;
     fixture.emit(
         REMOTE_TURN,
@@ -3715,10 +3734,7 @@ async fn terminal_cancellation_remains_usable_with_unknown_steering_delivery() {
     fixture.terminal.input("\x1b");
     tokio::time::sleep(Duration::from_millis(100)).await;
     fixture.terminal.input("\x1b");
-    let cancelled = tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let cancelled = fixture.cancellation(TIMEOUT).await.unwrap();
     assert_eq!(cancelled, REMOTE_TURN);
     fixture.terminal.wait_text("Interrupted response").await;
     fixture.nested(
@@ -5205,13 +5221,7 @@ async fn assert_terminal_durable_stop(cancelled: bool) {
         fixture.terminal.input("\x1b");
         fixture.terminal.wait_text("Interrupt").await;
         fixture.terminal.input("\x1b");
-        assert_eq!(
-            tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-            REMOTE_TURN
-        );
+        assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
         fixture.terminal.wait_text("Interrupted response").await;
     }
     fixture.terminal.prompt("DRAFT_AFTER_DURABLE_STOP", "");
@@ -7503,13 +7513,7 @@ async fn terminal_review_interrupts_and_returns_to_normal_chat() {
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        turn
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), turn);
     fixture.emit(&turn, json!({"type":"turn_cancelled","id":turn}));
     fixture.terminal.wait_text("Enter send").await;
     review_journey_snapshot(&fixture, "Esc twice cancels the streamed review turn");
@@ -8786,10 +8790,9 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     tokio::time::sleep(Duration::from_millis(50)).await;
     let start = std::time::Instant::now();
     fixture.terminal.input("\x1b");
-    let cancelled = tokio::time::timeout(Duration::from_secs(5), fixture.cancellations.recv())
+    let cancelled = fixture
+        .cancellation(Duration::from_secs(5))
         .await
-        .ok()
-        .flatten()
         .map(|turn| {
             assert_eq!(turn, REMOTE_TURN);
             start.elapsed()
