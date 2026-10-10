@@ -54,10 +54,12 @@ runner.get = (id: unknown) => new Proxy(get(id), {
   },
 });
 
-// abortAllDurableObjects()/evict*() tear objects down mid-call: their pending
-// I/O never settles and nothing awaits it any more, so forget those calls.
+// abortAllDurableObjects()/evictAllDurableObjects()/deleteAllDurableObjects()
+// tear every object down mid-call: their pending I/O never settles and nothing
+// awaits it any more, so forget those calls. Targeted evict(stub) is graceful
+// and must not forget unrelated objects' calls, so it is not wrapped.
 const unsafe = workerdUnsafe as unknown as Record<string, unknown>;
-for (const name of ["abortAllDurableObjects", "evictAllDurableObjects", "deleteAllDurableObjects", "evict"]) {
+for (const name of ["abortAllDurableObjects", "evictAllDurableObjects", "deleteAllDurableObjects"]) {
   const original = unsafe[name];
   if (typeof original !== "function") continue;
   unsafe[name] = (...args: unknown[]) => {
