@@ -1,8 +1,11 @@
 //! Host-owned composition of native harness recipes.
 
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, fmt, future::Future, sync::Arc};
 
-use crate::{AgentEvents, HarnessFamily, HarnessModel, Nanocodex, NanocodexError, Thinking};
+use crate::{
+    AgentEvents, ClaudeModel, HarnessFamily, HarnessModel, Model, Nanocodex, NanocodexError,
+    Thinking,
+};
 use nanocodex_agent::{
     AgentHandle, ChildSnapshot, SpawnOptions,
     backend::{AgentFactory, BackendFuture},
@@ -15,6 +18,12 @@ type Recipe = Arc<dyn Fn(HarnessRequest) -> BackendFuture<AgentResult> + Send + 
 ///
 /// Recipes keep their native builders, credentials, tools and checkpoint policy.
 /// The shared router erases only the finished lifecycle and construction future.
+///
+/// The router only invokes a recipe with a model from the family it was
+/// registered for, so [`HarnessRequest::codex_model`] or
+/// [`HarnessRequest::claude_model`] is the typed way to read the selection.
+/// New fields may be added; the struct is not constructible outside this crate.
+#[non_exhaustive]
 pub struct HarnessRequest {
     /// Family-scoped model selected before any recipe executes.
     pub model: HarnessModel,
@@ -33,7 +42,59 @@ pub struct HarnessRequest {
     pub spawn_factory: Arc<dyn AgentFactory>,
 }
 
+impl HarnessRequest {
+    /// The family whose recipe is being invoked.
+    pub const fn family(&self) -> HarnessFamily {
+        self.model.family()
+    }
+
+    /// The selected Responses model for a Codex recipe.
+    ///
+    /// Returns [`NanocodexError::InvalidRequest`] when the request belongs to
+    /// another family, which only happens if a recipe is registered for the
+    /// wrong [`HarnessFamily`].
+    pub fn codex_model(&self) -> crate::agent::Result<Model> {
+        self.model
+            .as_codex()
+            .ok_or_else(|| self.wrong_family(HarnessFamily::Codex))
+    }
+
+    /// The selected Messages model for a Claude recipe.
+    ///
+    /// Returns [`NanocodexError::InvalidRequest`] when the request belongs to
+    /// another family, which only happens if a recipe is registered for the
+    /// wrong [`HarnessFamily`].
+    pub fn claude_model(&self) -> crate::agent::Result<ClaudeModel> {
+        self.model
+            .as_claude()
+            .ok_or_else(|| self.wrong_family(HarnessFamily::Claude))
+    }
+
+    fn wrong_family(&self, expected: HarnessFamily) -> NanocodexError {
+        NanocodexError::InvalidRequest(format!(
+            "{expected} recipe received {} model {}",
+            self.model.family(),
+            self.model
+        ))
+    }
+}
+
+impl fmt::Debug for HarnessRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HarnessRequest")
+            .field("model", &self.model)
+            .field("thinking", &self.thinking)
+            .field("options", &self.options)
+            .field("parent", &self.parent.as_ref().map(AgentHandle::session_id))
+            .field("has_host_context", &self.host_context.is_some())
+            .field("has_snapshot", &self.snapshot.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A reusable registry of explicitly authorized native harness recipes.
+///
+/// Cloning is cheap and shares the same recipes.
 #[derive(Clone)]
 pub struct Harness {
     inner: Arc<Router>,
@@ -41,12 +102,37 @@ pub struct Harness {
 
 /// Configures concrete recipes before crossing the lifecycle-erasure boundary.
 #[derive(Default)]
+#[must_use = "a HarnessBuilder does nothing until .build() is called"]
 pub struct HarnessBuilder {
     recipes: HashMap<HarnessFamily, Recipe>,
 }
 
+fn sorted_families<'a>(families: impl Iterator<Item = &'a HarnessFamily>) -> Vec<HarnessFamily> {
+    let mut families: Vec<_> = families.copied().collect();
+    families.sort_by_key(|family| HarnessFamily::ALL.iter().position(|known| known == family));
+    families
+}
+
+impl fmt::Debug for HarnessBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HarnessBuilder")
+            .field("families", &sorted_families(self.recipes.keys()))
+            .finish()
+    }
+}
+
+impl fmt::Debug for Harness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Harness")
+            .field("families", &self.families())
+            .finish()
+    }
+}
+
 impl HarnessBuilder {
     /// Registers one native construction recipe for a family.
+    ///
+    /// Registering the same family again replaces its earlier recipe.
     #[cfg(not(target_family = "wasm"))]
     pub fn register<F, Fut>(mut self, family: HarnessFamily, recipe: F) -> Self
     where
@@ -59,6 +145,8 @@ impl HarnessBuilder {
     }
 
     /// Registers an isolate-local native construction recipe for a family.
+    ///
+    /// Registering the same family again replaces its earlier recipe.
     #[cfg(target_family = "wasm")]
     pub fn register<F, Fut>(mut self, family: HarnessFamily, recipe: F) -> Self
     where
@@ -86,8 +174,22 @@ impl Harness {
         HarnessBuilder::default()
     }
 
+    /// Registered families, in [`HarnessFamily::ALL`] order.
+    pub fn families(&self) -> Vec<HarnessFamily> {
+        sorted_families(self.inner.recipes.keys())
+    }
+
+    /// Whether a recipe is registered for this family.
+    pub fn supports(&self, family: HarnessFamily) -> bool {
+        self.inner.recipes.contains_key(&family)
+    }
+
     /// Starts a new thread with one selected native model and its default effort.
-    pub async fn start(&self, model: HarnessModel) -> AgentResult {
+    ///
+    /// Accepts a [`HarnessModel`] or either family's model directly, for
+    /// example `harness.start(Model::Sol)` or `harness.start(ClaudeModel::Sonnet55)`.
+    pub async fn start(&self, model: impl Into<HarnessModel>) -> AgentResult {
+        let model = model.into();
         self.start_with(
             SpawnOptions::new()
                 .harness(model.family())
@@ -97,6 +199,9 @@ impl Harness {
     }
 
     /// Starts a new thread after validating its family, model and effort.
+    ///
+    /// The family is taken from the selected model when only a model is set;
+    /// with neither selected, the Codex family default is used.
     pub async fn start_with(&self, options: SpawnOptions) -> AgentResult {
         options.validate_harness()?;
         let family = options

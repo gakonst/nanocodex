@@ -109,8 +109,7 @@ Enable `claude` alongside `openai` to compose both families:
 # #[cfg(all(feature = "claude", feature = "openai"))]
 # async fn mixed() -> Result<(), Box<dyn std::error::Error>> {
 use nanocodex::{
-    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model,
-    Nanocodex, OpenAi,
+    Claude, ClaudeModel, Harness, HarnessFamily, Model, Nanocodex, OpenAi, Thinking,
     agent::SpawnOptions,
     claude::ClaudeClient,
 };
@@ -123,9 +122,8 @@ let harness = Harness::builder()
     .register(HarnessFamily::Codex, move |request| {
         let openai = openai.clone();
         async move {
-            let HarnessModel::Codex(model) = request.model else { unreachable!() };
             let mut builder = Nanocodex::builder(openai)
-                .model(model).thinking(request.thinking)
+                .model(request.codex_model()?).thinking(request.thinking)
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);
             if let Some(snapshot) = request.snapshot {
@@ -137,7 +135,8 @@ let harness = Harness::builder()
     .register(HarnessFamily::Claude, move |request| {
         let claude = claude.clone();
         async move {
-            let mut builder = Nanocodex::builder(Claude::new(claude, request.model.as_str()))
+            let model = request.claude_model()?;
+            let mut builder = Nanocodex::builder(Claude::new(claude, model.as_str()))
                 .thinking(request.thinking)?
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);
@@ -149,10 +148,11 @@ let harness = Harness::builder()
     })
     .build();
 
-let (codex, _events) = harness.start(HarnessModel::Codex(Model::Sol)).await?;
+let (codex, _events) = harness.start(Model::Sol).await?;
 let (claude, _events) = harness.start_with(
-    SpawnOptions::new().harness(HarnessFamily::Claude)
-        .harness_model(HarnessModel::Claude(ClaudeModel::Sonnet55)),
+    SpawnOptions::new()
+        .harness_model(ClaudeModel::Sonnet55.into())
+        .thinking(Thinking::Low),
 ).await?;
 println!("{}", claude.prompt("Explain the parser.").await?.await?.final_message());
 claude.shutdown().await?;
@@ -170,6 +170,13 @@ bridge and its authorization. Registration alone supplies no tools or credential
 `request.spawn_factory` must be attached to each recipe so descendants can route
 through the same harness. `Harness::spawn_factory()` also attaches that router
 to an independently constructed concrete builder.
+
+Recipes read the selection with `request.codex_model()?` or
+`request.claude_model()?`; the router only invokes a recipe with a model from
+its registered family. `Harness::families()` and `Harness::supports(family)`
+let a frontend offer only the routes the host actually registered, and
+identifiers parse into `HarnessModel`/`HarnessFamily` with a typed
+`ParseHarnessError` that lists every accepted choice.
 
 Omitting child overrides inherits the live parent's family, model and effort.
 Selecting another family uses that family's model and effort defaults; selecting

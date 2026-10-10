@@ -156,7 +156,7 @@ pub mod __private {
 pub const MODEL: &str = Model::Astra.as_str();
 
 /// Supported coding models.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Model {

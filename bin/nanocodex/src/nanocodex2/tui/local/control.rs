@@ -15,8 +15,7 @@ use super::super::{
 
 /// The local model catalog (legacy `models()`).
 fn models() -> Value {
-    json!({"models": HarnessModel::for_family(nanocodex::HarnessFamily::Codex)
-        .chain(HarnessModel::for_family(nanocodex::HarnessFamily::Claude))
+    json!({"models": HarnessModel::all()
         .map(|model| json!({
             "id": model.as_str(),
             "efforts": Thinking::ALL.iter().filter(|effort| model.supports_thinking(**effort)).map(ToString::to_string).collect::<Vec<_>>(),

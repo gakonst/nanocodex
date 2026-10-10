@@ -8,8 +8,8 @@ pub use nanocodex_agent::NanocodexBuilder;
 pub use nanocodex_agent::{
     AgentEvents, AgentSessionContext, ClaudeModel, CostStatus, EstimatedUsdCost,
     ExecutionPolicyDisposition, HarnessFamily, HarnessModel, Nanocodex, NanocodexError,
-    PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, Turn, TurnControl, TurnResult,
-    TurnUsage, UsdAmount,
+    ParseHarnessError, ParseHarnessErrorKind, PromptRequest, PromptRoute, ReportedTurnUsage,
+    ServiceTier, Turn, TurnControl, TurnResult, TurnUsage, UsdAmount,
 };
 mod harness;
 pub use harness::{Harness, HarnessBuilder, HarnessRequest};

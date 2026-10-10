@@ -16,6 +16,9 @@ pub enum HarnessFamily {
 }
 
 impl HarnessFamily {
+    /// Every family, in stable presentation order.
+    pub const ALL: [Self; 2] = [Self::Codex, Self::Claude];
+
     /// Stable public family identifier.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -40,13 +43,13 @@ impl fmt::Display for HarnessFamily {
 }
 
 impl FromStr for HarnessFamily {
-    type Err = &'static str;
+    type Err = ParseHarnessError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "codex" => Ok(Self::Codex),
             "claude" => Ok(Self::Claude),
-            _ => Err("expected harness family codex or claude"),
+            _ => Err(ParseHarnessError::new(ParseHarnessErrorKind::Family, value)),
         }
     }
 }
@@ -130,7 +133,7 @@ impl fmt::Display for ClaudeModel {
 }
 
 impl FromStr for ClaudeModel {
-    type Err = &'static str;
+    type Err = ParseHarnessError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -141,15 +144,29 @@ impl FromStr for ClaudeModel {
             "claude-opus-4-6" => Ok(Self::Opus46),
             "claude-sonnet-4-6" => Ok(Self::Sonnet46),
             "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => Ok(Self::Haiku45),
-            _ => Err(
-                "unsupported Claude routing model; use opus, sonnet, fable, haiku or a supported Claude model ID",
-            ),
+            _ => Err(ParseHarnessError::new(
+                ParseHarnessErrorKind::ClaudeModel,
+                value,
+            )),
         }
     }
 }
 
+impl Serialize for ClaudeModel {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+impl<'de> Deserialize<'de> for ClaudeModel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
 /// A model belongs to exactly one native harness family.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HarnessModel {
     /// A model implemented by the Responses harness.
     Codex(Model),
@@ -163,6 +180,22 @@ impl HarnessModel {
         match self {
             Self::Codex(_) => HarnessFamily::Codex,
             Self::Claude(_) => HarnessFamily::Claude,
+        }
+    }
+
+    /// The Responses-harness model, when this is a Codex-family model.
+    pub const fn as_codex(self) -> Option<Model> {
+        match self {
+            Self::Codex(model) => Some(model),
+            Self::Claude(_) => None,
+        }
+    }
+
+    /// The Messages-harness model, when this is a Claude-family model.
+    pub const fn as_claude(self) -> Option<ClaudeModel> {
+        match self {
+            Self::Claude(model) => Some(model),
+            Self::Codex(_) => None,
         }
     }
 
@@ -200,13 +233,17 @@ impl HarnessModel {
         )
     }
 
-    /// Validated model choices within one family.
-    pub fn for_family(family: HarnessFamily) -> impl Iterator<Item = Self> {
+    /// Every validated model choice, grouped by [`HarnessFamily::ALL`] order.
+    pub fn all() -> impl Iterator<Item = Self> {
         Model::ALL
             .into_iter()
             .map(Self::Codex)
             .chain(ClaudeModel::ALL.into_iter().map(Self::Claude))
-            .filter(move |model| model.family() == family)
+    }
+
+    /// Validated model choices within one family.
+    pub fn for_family(family: HarnessFamily) -> impl Iterator<Item = Self> {
+        Self::all().filter(move |model| model.family() == family)
     }
 }
 
@@ -241,14 +278,93 @@ impl fmt::Display for HarnessModel {
     }
 }
 impl FromStr for HarnessModel {
-    type Err = &'static str;
+    type Err = ParseHarnessError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         value
             .parse::<Model>()
             .map(Self::Codex)
             .or_else(|_| value.parse::<ClaudeModel>().map(Self::Claude))
+            .map_err(|_| ParseHarnessError::new(ParseHarnessErrorKind::Model, value))
     }
 }
+
+/// Which harness identifier failed to parse.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum ParseHarnessErrorKind {
+    /// A [`HarnessFamily`] name.
+    Family,
+    /// A [`ClaudeModel`] identifier or alias.
+    ClaudeModel,
+    /// A [`HarnessModel`] identifier or alias from any family.
+    Model,
+}
+
+/// Error returned when a harness family or model identifier is not recognized.
+///
+/// The message names every accepted choice for the identifier that was parsed,
+/// so it can be shown directly to an operator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseHarnessError {
+    kind: ParseHarnessErrorKind,
+    value: String,
+}
+
+impl ParseHarnessError {
+    fn new(kind: ParseHarnessErrorKind, value: &str) -> Self {
+        Self {
+            kind,
+            value: value.to_owned(),
+        }
+    }
+
+    /// Which identifier failed to parse.
+    pub const fn kind(&self) -> ParseHarnessErrorKind {
+        self.kind
+    }
+
+    /// The rejected input.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+const CLAUDE_CHOICES: &str = "opus, sonnet, haiku, fable or a supported claude-* model ID";
+
+impl fmt::Display for ParseHarnessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = &self.value;
+        match self.kind {
+            ParseHarnessErrorKind::Family => {
+                write!(
+                    f,
+                    "unknown harness family {value:?}; expected codex or claude"
+                )
+            }
+            ParseHarnessErrorKind::ClaudeModel => {
+                write!(
+                    f,
+                    "unknown Claude model {value:?}; expected {CLAUDE_CHOICES}"
+                )
+            }
+            ParseHarnessErrorKind::Model => {
+                write!(f, "unknown model {value:?}; expected a Codex model (")?;
+                for (index, model) in Model::ALL.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(model.as_str())?;
+                }
+                write!(
+                    f,
+                    " or a routed model such as glm-5.3, kimi or mimo) or a Claude model ({CLAUDE_CHOICES})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseHarnessError {}
 
 impl Serialize for HarnessModel {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -260,5 +376,63 @@ impl<'de> Deserialize<'de> for HarnessModel {
         String::deserialize(deserializer)?
             .parse()
             .map_err(de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_errors_name_the_accepted_choices_for_their_identifier() {
+        let error = "gpt-7".parse::<HarnessModel>().unwrap_err();
+        assert_eq!(error.kind(), ParseHarnessErrorKind::Model);
+        assert_eq!(error.value(), "gpt-7");
+        let message = error.to_string();
+        assert!(message.starts_with("unknown model \"gpt-7\"; expected a Codex model ("));
+        for model in Model::ALL {
+            assert!(message.contains(model.as_str()), "{message}");
+        }
+        assert!(message.contains("opus, sonnet, haiku, fable"), "{message}");
+        assert!(!message.contains("unknown Claude model"), "{message}");
+
+        let error = "gemini".parse::<HarnessFamily>().unwrap_err();
+        assert_eq!(error.kind(), ParseHarnessErrorKind::Family);
+        assert_eq!(
+            error.to_string(),
+            "unknown harness family \"gemini\"; expected codex or claude"
+        );
+        let error = "claude-opus-9".parse::<ClaudeModel>().unwrap_err();
+        assert_eq!(error.kind(), ParseHarnessErrorKind::ClaudeModel);
+        let _: Box<dyn std::error::Error + Send + Sync> = Box::new(error);
+    }
+
+    #[test]
+    fn catalog_round_trips_and_accessors_select_one_family() {
+        assert_eq!(
+            HarnessModel::all().count(),
+            Model::ALL.len() + ClaudeModel::ALL.len()
+        );
+        for family in HarnessFamily::ALL {
+            assert_eq!(family.as_str().parse::<HarnessFamily>(), Ok(family));
+            assert!(HarnessModel::for_family(family).all(|m| m.family() == family));
+        }
+        for model in HarnessModel::all() {
+            assert_eq!(model.as_str().parse::<HarnessModel>(), Ok(model));
+            assert_eq!(
+                model.as_codex().is_some(),
+                model.family() == HarnessFamily::Codex
+            );
+            assert_eq!(
+                model.as_claude().is_some(),
+                model.family() == HarnessFamily::Claude
+            );
+        }
+        for model in ClaudeModel::ALL {
+            let json = serde_json::to_string(&model).unwrap();
+            assert_eq!(json, format!("\"{}\"", model.as_str()));
+            assert_eq!(serde_json::from_str::<ClaudeModel>(&json).unwrap(), model);
+        }
+        assert!(serde_json::from_str::<ClaudeModel>("\"gpt-6-luna\"").is_err());
     }
 }

@@ -593,7 +593,7 @@ impl ClaudeBuilder {
     }
     /// Applies the shared catalog's validated effort to native Claude policy.
     pub fn thinking(mut self, thinking: Thinking) -> Result<Self> {
-        let model: HarnessModel = self.claude.model.parse().map_err(unsupported)?;
+        let model: HarnessModel = self.claude.model.parse().map_err(invalid_model)?;
         if model.family() != HarnessFamily::Claude || !model.supports_thinking(thinking) {
             return Err(unsupported(
                 "Claude model does not support selected thinking",
@@ -2405,7 +2405,7 @@ impl AgentFactory for ClaudeNativeFactory {
         let state = self.owner();
         Box::pin(async move {
             let state = state?;
-            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
+            let model: HarnessModel = state.model().parse().map_err(invalid_model)?;
             let thinking = if state.effort().is_none() {
                 model.default_thinking()
             } else {
@@ -2442,7 +2442,7 @@ impl AgentFactory for ClaudeNativeFactory {
                 state.initialize_child_workspace(&mut recipe)?;
                 return recipe.host_context(host_context).build();
             }
-            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
+            let model: HarnessModel = state.model().parse().map_err(invalid_model)?;
             let thinking = if state.effort().is_none() {
                 model.default_thinking()
             } else {
@@ -2771,6 +2771,9 @@ struct Driver {
 }
 fn unsupported(message: &str) -> NanocodexError {
     NanocodexError::InvalidRequest(message.into())
+}
+fn invalid_model(error: nanocodex_agent::ParseHarnessError) -> NanocodexError {
+    NanocodexError::InvalidRequest(error.to_string())
 }
 fn provider_error(error: impl std::fmt::Display) -> NanocodexError {
     unsupported(&format!("Claude Messages: {error}"))
@@ -5272,7 +5275,7 @@ impl LifecycleBackend for Driver {
                     }
                 }
             };
-            let model = state.model().parse().map_err(unsupported)?;
+            let model = state.model().parse().map_err(invalid_model)?;
             let thinking = if state.effort().is_none() {
                 HarnessModel::default_thinking(model)
             } else {
@@ -5610,7 +5613,7 @@ impl LifecycleBackend for Driver {
             if state.accepted_turns.load(Ordering::SeqCst) != 0 {
                 return Err(unsupported("Claude effort is fixed after the first prompt"));
             }
-            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
+            let model: HarnessModel = state.model().parse().map_err(invalid_model)?;
             if !model.supports_thinking(thinking) {
                 return Err(unsupported(
                     "Claude model does not support selected thinking",

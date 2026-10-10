@@ -59,6 +59,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 [dev-dependencies]
 async-trait.workspace = true
 criterion.workspace = true
+serde_json.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 nanocodex-oai-tools = { workspace = true, features = ["mcp"] }
