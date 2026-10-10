@@ -311,6 +311,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_clean_many(
         &self,
         workspace: Option<Arc<str>>,

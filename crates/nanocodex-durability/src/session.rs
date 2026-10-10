@@ -1478,6 +1478,7 @@ fn reduce(stored: StoredState) -> Result<DurableState> {
 }
 
 /// Reduces a head observed without ownership, for read-only inspection.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn reduce_peeked(stored: StoredState) -> Result<DurableState> {
     reduce(stored)
 }

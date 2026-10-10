@@ -14,7 +14,8 @@ use std::collections::HashSet;
 pub(crate) enum Reader<'a> {
     Owner(&'a DurableOwner),
     Session(&'a crate::DurableSession),
-    /// Non-fencing reads of one state's immutable records.
+    /// Non-fencing reads of one state's immutable records (native catalog).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Store(&'a crate::shared_store::SharedStore, &'a str),
 }
 impl<'a> From<&'a DurableOwner> for Reader<'a> {

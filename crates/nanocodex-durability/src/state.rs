@@ -131,6 +131,7 @@ impl EncodedPayload {
     }
 
     /// A stored payload addressed by its content key.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn from_key(key: &str) -> Self {
         Self {
             key: key.into(),

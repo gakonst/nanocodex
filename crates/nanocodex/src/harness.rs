@@ -250,7 +250,8 @@ impl Reopen {
     fn checkpoint(checkpoint: SessionCheckpoint) -> Self {
         Self {
             checkpoint: Some(checkpoint),
-            ..Self::default()
+            #[cfg(all(feature = "durability", not(target_family = "wasm")))]
+            durable_state: None,
         }
     }
 }
