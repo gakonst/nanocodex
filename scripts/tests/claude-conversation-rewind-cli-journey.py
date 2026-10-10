@@ -168,7 +168,7 @@ def main():
                 state = json.loads(dict(rows())[branch])['nanocodex_durable_state']
                 settled = bool(state['operations']) and all(isinstance(op['status'], dict) and 'completed' in op['status'] for op in state['operations'].values())
                 if (name + '-complete').encode() in transcript and settled and time.monotonic() - exited > .5:
-                    os.write(master, b'\x04')
+                    os.write(master, b'\x03\x03')
                     exited = time.monotonic()
                 if child.poll() is not None:
                     break
