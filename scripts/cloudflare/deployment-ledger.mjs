@@ -52,9 +52,16 @@ export function deploymentEnvironment(worker) {
 // releases, including explicit rollbacks, across the entire selection/mutation.
 // API contract: https://docs.github.com/en/rest/deployments/deployments
 // https://docs.github.com/en/rest/deployments/statuses
+// Cloudflare's deployments listing is eventually consistent: immediately after
+// wrangler reports a new version, the listing can still show the previous
+// deployment for several seconds. Read-only verification therefore polls with
+// bounded backoff (about 45 s in total) before declaring the release uncertain.
+const SETTLE_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 8_000, 15_000, 15_000]);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSITORY,
   ref = process.env.GITHUB_SHA, request = ghRequest, account = process.env.CLOUDFLARE_ACCOUNT_ID,
-  live = currentWorkerDeployment } = {}) {
+  live = currentWorkerDeployment, settleDelays = SETTLE_DELAYS_MS, wait = sleep } = {}) {
   if (typeof repository !== 'string' || /\s/.test(repository)
     || !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository)) {
     throw new Error('Deployment ledger requires a repository');
@@ -78,6 +85,16 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
       || !providerIdValid(current.deploymentId) || !providerIdValid(current.versionId)
       || current.tag !== releaseTag(fingerprint)) throw failure();
     return `cf:v1:${current.deploymentId}:${current.versionId}`;
+  };
+  // Only for certifying a deployment this job just ran: reads are idempotent,
+  // and a lagging listing must not turn a live release into a failed one.
+  const settledReceipt = async (worker, fingerprint) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await liveReceipt(worker, fingerprint); } catch (error) {
+        if (attempt >= settleDelays.length) throw error;
+        await wait(settleDelays[attempt]);
+      }
+    }
   };
   const status = async (record, state, description) => {
     const result = await call({ method: 'POST', path: `${base}/${record.id}/statuses`,
@@ -121,15 +138,28 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
         throw new Error('Deployment ledger requires a full commit SHA');
       }
       const expected = context(worker);
-      const result = await call({ method: 'POST', path: base, body: {
-        ref, environment, payload: { schema: 2, fingerprint, ...expected, ...(fingerprintValid(topology) ? { topology } : {}) }, auto_merge: false,
-        required_contexts: [], production_environment: true, transient_environment: false,
-      } });
-      if (!idValid(result?.id) || result.environment !== environment || result.sha !== ref) throw failure();
-      const record = Object.freeze({ id: result.id, environment, worker, fingerprint });
-      // Caller must await this before ANY external mutation. If interrupted or
-      // status creation fails, the newest deployment remains unsafe to skip.
-      await status(record, 'in_progress');
+      const admit = async () => {
+        const result = await call({ method: 'POST', path: base, body: {
+          ref, environment, payload: { schema: 2, fingerprint, ...expected, ...(fingerprintValid(topology) ? { topology } : {}) }, auto_merge: false,
+          required_contexts: [], production_environment: true, transient_environment: false,
+        } });
+        if (!idValid(result?.id) || result.environment !== environment || result.sha !== ref) throw failure();
+        const record = Object.freeze({ id: result.id, environment, worker, fingerprint });
+        // Caller must await this before ANY external mutation. If interrupted or
+        // status creation fails, the newest deployment remains unsafe to skip.
+        await status(record, 'in_progress');
+        return record;
+      };
+      // Admission precedes every Cloudflare mutation, so a fresh attempt is safe:
+      // a record left by an uncertain earlier attempt is older than the retry's
+      // record and, lacking a success status, can only force a later redeploy.
+      let record;
+      for (let attempt = 0; ; attempt++) {
+        try { record = await admit(); break; } catch (error) {
+          if (attempt >= 2) throw error;
+          await wait(settleDelays[attempt] ?? 1_000);
+        }
+      }
       active.add(record);
       return record;
     },
@@ -142,7 +172,7 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
       }
       // Verify the sole live version's tag before success. Capture the deployment
       // identity too: a later rollback to the same tagged version must not reuse it.
-      const description = state === 'success' ? await liveReceipt(record.worker, record.fingerprint) : undefined;
+      const description = state === 'success' ? await settledReceipt(record.worker, record.fingerprint) : undefined;
       active.delete(record); // A status write with an uncertain outcome is never retried.
       await status(record, state, description);
     },

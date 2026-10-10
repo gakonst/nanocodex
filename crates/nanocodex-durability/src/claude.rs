@@ -9,7 +9,7 @@ use nanocodex_claude::{
         Admission as ClaudeAdmission, ClaudeExecutionPolicy, ClaudeSteer, PolicyFuture, Step,
     },
 };
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 
 use crate::{
     Admission, BeginStep, DurableAgentExt, DurableSession, EncodedPayload, SessionRecord,
@@ -344,6 +344,33 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 .map_err(agent_error)?
                 .map(|value| value.decode().map_err(agent_error))
                 .transpose()
+        })
+    }
+
+    fn advance_encoded(&self, id: String, state: Box<RawValue>) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            let state = EncodedPayload::encode(&*state).map_err(agent_error)?;
+            self.owner.advance(id, state).await.map_err(agent_error)
+        })
+    }
+
+    fn begin_step_encoded(
+        &self,
+        id: String,
+        step_id: String,
+        kind: String,
+        input: Box<RawValue>,
+    ) -> PolicyFuture<'_, Step> {
+        Box::pin(async move {
+            match self
+                .owner
+                .begin_step(id, step_id, kind, &*input)
+                .await
+                .map_err(agent_error)?
+            {
+                BeginStep::Execute => Ok(Step::Execute),
+                BeginStep::Replay(value) => Ok(Step::Replay(value.decode().map_err(agent_error)?)),
+            }
         })
     }
 

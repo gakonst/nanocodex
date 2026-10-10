@@ -3132,7 +3132,7 @@ impl State {
     }
     async fn response(
         &self,
-        messages: Vec<Message>,
+        messages: &[Message],
         tools: Vec<ClaudeToolSpec>,
         cancel: &Cancellation,
         events: Option<&AgentEventPublisher>,
@@ -3186,8 +3186,17 @@ impl State {
             .template
             .cloned()
             .unwrap_or_else(|| self.request_template(self.speed()));
-        request.messages = messages;
-        separate_tool_references(&mut request.messages);
+        // The request owns a copy of the transcript only while it is encoded
+        // and sent. Streaming can last minutes; holding it for the whole round
+        // trip doubled each concurrently running agent's conversation memory.
+        let mut suffix: Vec<Message> = Vec::new();
+        let fill = |request: &mut MessagesRequest, suffix: &[Message]| {
+            request.messages = Vec::with_capacity(messages.len() + suffix.len());
+            request.messages.extend_from_slice(messages);
+            request.messages.extend_from_slice(suffix);
+            separate_tool_references(&mut request.messages);
+        };
+        fill(&mut request, &suffix);
         request.tools = tools;
         request.container = context.container.map(str::to_owned);
         if request.diagnostics.is_some() {
@@ -3207,7 +3216,7 @@ impl State {
         let admitted = match &context.effect {
             Some(effect) => {
                 effect
-                    .begin(
+                    .begin_encoded(
                         "model",
                         client.durable_request(&request).map_err(provider_error)?,
                     )
@@ -3254,6 +3263,7 @@ impl State {
             request
                 .messages
                 .push(Message::text(Role::User, &upgrade.notice));
+            suffix.push(Message::text(Role::User, &upgrade.notice));
             // Retain uncertainty from the retired request even if the strict
             // replacement fails or is cancelled before producing a response.
             recovery = Some(ServerRecovery {
@@ -3262,7 +3272,7 @@ impl State {
             });
             if let Some(effect) = &replacement_effect
                 && let Step::Replay(value) = effect
-                    .begin(
+                    .begin_encoded(
                         "model",
                         client.durable_request(&request).map_err(provider_error)?,
                     )
@@ -3282,6 +3292,7 @@ impl State {
         let max_attempts = if context.disable_tools { 3 } else { 5 };
         let mut attempt = 0;
         let mut dispatched: Option<u64> = None;
+        request.messages = Vec::new();
         loop {
             if cancel.flag.load(Ordering::SeqCst) {
                 return Err(ResponseFailure {
@@ -3302,12 +3313,16 @@ impl State {
             // Pre-send work (durable admission, output gate, request build)
             // is the part of time-to-first-event spent before the provider fetch.
             dispatched.get_or_insert_with(&elapsed_ns);
+            // Rebuild the identical admitted request; preparation already
+            // fixed its system blocks, and the transcript is unchanged.
+            fill(&mut request, &suffix);
             let opened = tokio::select! {
                 result = client.stream(&request) => result,
                 () = cancel.cancelled() => return Err(ResponseFailure {
                     error: NanocodexError::TurnCancelled, recovery,
                 }),
             };
+            request.messages = Vec::new();
             let result = match opened {
                 Err(error) => Err(error),
                 Ok(mut stream) => {
@@ -3775,7 +3790,7 @@ impl State {
         messages.push(Message::text(Role::User, COMPACTION_INSTRUCTIONS));
         let response = self
             .response(
-                messages,
+                &messages,
                 tools.clone(),
                 cancel,
                 None,
@@ -4423,7 +4438,7 @@ impl State {
             }
             let response = self
                 .response(
-                    pending.clone(),
+                    &pending,
                     cursor.template.tools.clone(),
                     cancel,
                     Some(&request.events),
@@ -4670,7 +4685,12 @@ impl State {
             }
             // Capture the fork boundary before reserving this unfinished batch's
             // call identities. The child receives completed history and its guards.
-            let mut fork_snapshot = self.snapshot(conversation).await?;
+            // Snapshot without cloning the superseded transcript first: the
+            // boundary's messages are the pending round.
+            let committed = std::mem::take(&mut conversation.messages);
+            let fork_snapshot = self.snapshot(conversation).await;
+            conversation.messages = committed;
+            let mut fork_snapshot = fork_snapshot?;
             fork_snapshot.conversation.messages = pending.clone();
             fork_snapshot.conversation.summary.clear();
             // Reserve identities before invoking any handler. Compaction may

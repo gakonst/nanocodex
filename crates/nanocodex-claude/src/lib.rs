@@ -1082,11 +1082,21 @@ impl ClaudeClient {
             })?)
         }
     }
-    pub(crate) fn durable_request(&self, request: &MessagesRequest) -> Result<Value, ClaudeError> {
+    /// Durable step identity of a request, encoded once without a [`Value`] tree.
+    pub(crate) fn durable_request(
+        &self,
+        request: &MessagesRequest,
+    ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         if self.subscription_compatibility {
-            Ok(serde_json::json!({"subscription_wire_v1":self.request_body(request,true)?}))
+            #[derive(Serialize)]
+            struct Wire {
+                subscription_wire_v1: String,
+            }
+            Ok(serde_json::value::to_raw_value(&Wire {
+                subscription_wire_v1: self.request_body(request, true)?,
+            })?)
         } else {
-            Ok(serde_json::to_value(request)?)
+            Ok(serde_json::value::to_raw_value(request)?)
         }
     }
     fn decode_block(&self, block: &mut ContentBlock) {
@@ -2198,8 +2208,8 @@ mod cache_tail_profile_tests {
         // Durable identity is the final wire body, so it is deterministic.
         let restored = client.restore_wire_profile(Some(&fresh));
         assert_eq!(
-            restored.durable_request(&request).unwrap(),
-            restored.durable_request(&request).unwrap()
+            restored.durable_request(&request).unwrap().get(),
+            restored.durable_request(&request).unwrap().get()
         );
     }
 }

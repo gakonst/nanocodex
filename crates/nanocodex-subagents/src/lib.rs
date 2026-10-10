@@ -44,6 +44,8 @@ pub const DEFAULT_MAX_SUBAGENTS: usize = usize::MAX;
 /// returns to this bound. Their topology, status, and last output remain
 /// inspectable.
 pub const DEFAULT_MAX_RESIDENT_SUBAGENTS: usize = 16;
+/// Idle children kept resident by a durable registry; others reload from the journal.
+pub const DURABLE_MAX_RESIDENT_SUBAGENTS: usize = 2;
 
 #[cfg(feature = "claude")]
 pub use tools::install_claude_tools;

@@ -3,7 +3,7 @@
 //! The `nanocodex-durability` crate supplies the store-backed implementation.
 //! Payloads retain provider-native blocks without translating signed content.
 use nanocodex_agent::{NanocodexError, Result, SessionInfo};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use std::{future::Future, pin::Pin, sync::Arc};
 
 /// Future returned by a host execution policy.
@@ -95,6 +95,21 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     }
     fn continuation(&self, id: String) -> PolicyFuture<'_, Option<Value>>;
     fn advance(&self, id: String, state: Value) -> PolicyFuture<'_, ()>;
+    /// Advances with an already encoded cursor. A cursor carries the whole
+    /// conversation, so stores should override this to avoid materializing an
+    /// intermediate [`Value`] tree on every round.
+    // RawValue is unsized; overriding stores take ownership of the encoded text.
+    #[allow(clippy::boxed_local)]
+    fn advance_encoded(&self, id: String, state: Box<RawValue>) -> PolicyFuture<'_, ()> {
+        match serde_json::from_str(state.get()) {
+            Ok(state) => self.advance(id, state),
+            Err(error) => Box::pin(async move {
+                Err(NanocodexError::InvalidRequest(format!(
+                    "invalid encoded Claude execution state: {error}"
+                )))
+            }),
+        }
+    }
     fn begin_step(
         &self,
         id: String,
@@ -102,6 +117,25 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
         kind: String,
         input: Value,
     ) -> PolicyFuture<'_, Step>;
+    /// Begins a step whose input is already encoded, such as a whole model request.
+    // RawValue is unsized; overriding stores take ownership of the encoded text.
+    #[allow(clippy::boxed_local)]
+    fn begin_step_encoded(
+        &self,
+        id: String,
+        step_id: String,
+        kind: String,
+        input: Box<RawValue>,
+    ) -> PolicyFuture<'_, Step> {
+        match serde_json::from_str(input.get()) {
+            Ok(input) => self.begin_step(id, step_id, kind, input),
+            Err(error) => Box::pin(async move {
+                Err(NanocodexError::InvalidRequest(format!(
+                    "invalid encoded Claude execution state: {error}"
+                )))
+            }),
+        }
+    }
     fn complete_step(&self, id: String, step_id: String, output: Value) -> PolicyFuture<'_, ()>;
     fn complete(&self, id: String, checkpoint: Value, output: Value) -> PolicyFuture<'_, ()>;
     fn fail(&self, id: String, checkpoint: Value, error: String) -> PolicyFuture<'_, ()>;
