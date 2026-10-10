@@ -149,6 +149,17 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     fn release(&self, id: String) -> PolicyFuture<'_, ()>;
     fn shutdown(&self) -> PolicyFuture<'_, ()>;
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()>;
+    /// Persists a just-created child's first checkpoint so it is listed and
+    /// resumable before its first turn. A store that reopens a restored child
+    /// must keep the checkpoint it already holds. The default persists nothing.
+    fn initial_checkpoint(&self, _state: Value) -> PolicyFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Retracts state written only by [`Self::initial_checkpoint`] when the
+    /// child's creation is abandoned. The default keeps it.
+    fn discard_initial(&self) -> PolicyFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
     /// Opens independent durable state for a fork, side conversation or
     /// subagent of this session before it starts (or reopens it for a restored
     /// subagent), so the child is resumable on its own.

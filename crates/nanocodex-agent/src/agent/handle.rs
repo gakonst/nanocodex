@@ -159,11 +159,14 @@ impl AgentHandle {
     ) -> Result<(Nanocodex, AgentEvents)> {
         options.validate_harness()?;
         self.native.ensure_available(self.clone()).await?;
-        self.factory
-            .as_ref()
-            .unwrap_or(&self.native)
-            .spawn(self.clone(), options, host_context)
-            .await
+        created(
+            self.factory
+                .as_ref()
+                .unwrap_or(&self.native)
+                .spawn(self.clone(), options, host_context)
+                .await,
+        )
+        .await
     }
     /// Invokes the parent's native factory directly, bypassing mixed routing.
     pub async fn spawn_native_with_host_context(
@@ -172,7 +175,7 @@ impl AgentHandle {
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         options.validate_harness()?;
-        self.native.spawn(self.clone(), options, host_context).await
+        created(self.native.spawn(self.clone(), options, host_context).await).await
     }
     /// Restores an evicted child from its checkpoint without changing its identity.
     ///
@@ -188,7 +191,7 @@ impl AgentHandle {
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         self.native.ensure_available(self.clone()).await?;
-        if checkpoint.family() == self.harness_family() {
+        let restored = if checkpoint.family() == self.harness_family() {
             self.native
                 .restore(self.clone(), checkpoint, host_context)
                 .await
@@ -200,7 +203,8 @@ impl AgentHandle {
                 })?
                 .restore(self.clone(), checkpoint, host_context)
                 .await
-        }
+        };
+        created(restored).await
     }
     /// Restores through the native factory, bypassing mixed routing.
     ///
@@ -211,9 +215,12 @@ impl AgentHandle {
         checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
-        self.native
-            .restore(self.clone(), checkpoint, host_context)
-            .await
+        created(
+            self.native
+                .restore(self.clone(), checkpoint, host_context)
+                .await,
+        )
+        .await
     }
     /// Starts an ordered batch, closing created children if construction fails.
     pub async fn spawn_many(&self, count: usize) -> Result<Vec<(Nanocodex, AgentEvents)>> {
@@ -240,11 +247,14 @@ impl AgentHandle {
         // A configured factory routes batches with the same family resolution
         // as single spawns; it reaches the native atomic batch through
         // `Self::spawn_many_native_with_host_context`.
-        self.factory
-            .as_ref()
-            .unwrap_or(&self.native)
-            .spawn_many(self.clone(), count, Arc::new(observer), host_context)
-            .await
+        created_batch(
+            self.factory
+                .as_ref()
+                .unwrap_or(&self.native)
+                .spawn_many(self.clone(), count, Arc::new(observer), host_context)
+                .await,
+        )
+        .await
     }
     /// Invokes the parent's native batch directly, bypassing mixed routing and
     /// preserving Responses atomic admission and cancellation cleanup.
@@ -255,9 +265,12 @@ impl AgentHandle {
         host_context: Option<Arc<str>>,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         self.native.ensure_available(self.clone()).await?;
-        self.native
-            .spawn_many(self.clone(), count, Arc::new(observer), host_context)
-            .await
+        created_batch(
+            self.native
+                .spawn_many(self.clone(), count, Arc::new(observer), host_context)
+                .await,
+        )
+        .await
     }
     /// Forks the owning conversation. Forking is deliberately a native
     /// lifecycle operation rather than mixed routing.
@@ -267,8 +280,41 @@ impl AgentHandle {
     /// boundary, or when the request's boundary belongs to another conversation.
     pub async fn fork(&self, request: ForkRequest) -> Result<(Nanocodex, AgentEvents)> {
         self.native.ensure_available(self.clone()).await?;
-        self.native.fork(self.clone(), request).await
+        created(self.native.fork(self.clone(), request).await).await
     }
+}
+
+/// Completes one child's creation: a durable child's first checkpoint is
+/// persisted before the caller receives it, so it is already listed and
+/// resumable. A child that cannot persist is retracted and stopped.
+async fn created(child: Result<(Nanocodex, AgentEvents)>) -> Result<(Nanocodex, AgentEvents)> {
+    let child = child?;
+    if let Err(error) = child.0.backend.persist_initial().await {
+        child.0.abandon_created().await;
+        return Err(error);
+    }
+    Ok(child)
+}
+
+/// Completes an atomic batch: every child persists, or every child is
+/// retracted and stopped so none remains listed.
+async fn created_batch(
+    children: Result<Vec<(Nanocodex, AgentEvents)>>,
+) -> Result<Vec<(Nanocodex, AgentEvents)>> {
+    let children = children?;
+    let mut failure = None;
+    for (child, _) in &children {
+        if let Err(error) = child.backend.persist_initial().await {
+            failure.get_or_insert(error);
+        }
+    }
+    if let Some(error) = failure {
+        for (child, _) in &children {
+            child.abandon_created().await;
+        }
+        return Err(error);
+    }
+    Ok(children)
 }
 
 #[cfg(feature = "openai")]
@@ -808,7 +854,18 @@ impl Nanocodex {
     /// [`NanocodexError::ReplayedCheckpointUnavailable`] for a turn without a
     /// live boundary, or an error when the backend has stopped.
     pub async fn fork(&self, request: ForkRequest) -> Result<(Self, AgentEvents)> {
-        self.backend.fork(request).await
+        created(self.backend.fork(request).await).await
+    }
+
+    /// Retracts and stops a just-created child whose creation the caller
+    /// abandoned, such as a member of a failed atomic batch, so it is not left
+    /// listed. A restored child keeps the history it held before.
+    #[doc(hidden)]
+    pub async fn abandon_created(&self) {
+        // Settle a pending first checkpoint so it cannot land after retraction.
+        let _ = self.backend.persist_initial().await;
+        let _ = self.backend.discard_initial().await;
+        let _ = self.shutdown().await;
     }
 }
 

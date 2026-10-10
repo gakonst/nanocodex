@@ -6040,6 +6040,30 @@ impl LifecycleBackend for Driver {
             state.boundary(Arc::new(snapshot)).checkpoint()
         })
     }
+    fn persist_initial(&self) -> BackendFuture<Result<()>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            // A durable child is listed and resumable from creation: a fresh
+            // subagent from its empty conversation, a fork or restored child
+            // from the transcript it starts with.
+            let Some(policy) = state.policy.clone() else {
+                return Ok(());
+            };
+            let snapshot = state.latest_boundary().await?;
+            policy
+                .initial_checkpoint(serde_json::to_value(&snapshot).map_err(provider_error)?)
+                .await
+        })
+    }
+    fn discard_initial(&self) -> BackendFuture<Result<()>> {
+        let policy = self.state.policy.clone();
+        Box::pin(async move {
+            match policy {
+                Some(policy) => policy.discard_initial().await,
+                None => Ok(()),
+            }
+        })
+    }
     fn set_harness_model(&self, model: HarnessModel) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {

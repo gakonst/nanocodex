@@ -477,11 +477,16 @@ impl<S> ModelRun<S> {
                 "initial checkpoint did not establish a model session".to_owned(),
             )
         })?;
-        Ok(Self::checkpoint_from_session(
-            session,
-            false,
-            self.global_instructions.clone(),
-        ))
+        Ok(ModelCheckpoint {
+            workspace: session.workspace.clone(),
+            provider_session_id: Arc::from(session.factory.profile().session_id()),
+            conversation: session.conversation.clone(),
+            request_prefix: session.factory.profile().shared_prefix(),
+            prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
+            preserve_inherited_delta: false,
+            global_instructions: self.global_instructions.clone(),
+            context_baseline: session.context.baseline(),
+        })
     }
 
     fn empty_session(&mut self, requested_workspace: Option<&str>) -> Result<ModelSessionState> {
