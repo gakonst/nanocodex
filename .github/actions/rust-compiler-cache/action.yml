@@ -17,7 +17,8 @@ runs:
       # these profile values at workflow level, while the Cloudflare deploy and
       # preview jobs did not, so they stored a separate ~690MB cargo-home copy
       # under every lockfile hash. Pin the values set below (CARGO_INCREMENTAL
-      # is forced to 0 by rust-cache itself) so every Rust 1.97 job shares one.
+      # is forced to 0 by rust-cache itself). Matching jobs on the same runner
+      # platform and toolchain then reuse the same source-cache key.
       env:
         CARGO_PROFILE_DEV_DEBUG: "0"
         CARGO_PROFILE_TEST_DEBUG: "0"
@@ -28,10 +29,6 @@ runs:
         workspaces: ${{ inputs.workspace }}
         save-if: ${{ github.ref == 'refs/heads/master' && github.event_name != 'pull_request' }}
         cache-on-failure: "true"
-        # No extra prefixes for cargo-home: its key is rustc + lockfiles + the
-        # pinned env above. Per-job env hashes stored identical 690MB copies and
-        # pushed the repository past its 10GB cache limit, evicting sccache.
-        env-vars: ${{ inputs.cache-targets == 'true' && 'CARGO CC CFLAGS CXX CMAKE RUST' || 'NANOCODEX_CARGO_HOME_CACHE' }}
     - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
       with:
         version: v0.16.0
