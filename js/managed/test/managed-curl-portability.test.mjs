@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { accountProxyWorker } from '../benchmark/account-proxy.mjs';
+import { claudeProvider } from '../../egress/test/claude-provider.fixture.mjs';
 
 // Public HTTP portability journey: every API call is the curl executable
 // against the normal account ingress, Managed API and Egress workers on
@@ -20,6 +21,9 @@ import { accountProxyWorker } from '../benchmark/account-proxy.mjs';
 // archive is exported, rejected in representative tampered forms, imported
 // into a new agent, and the destination serves a further turn whose provider
 // request carries the preserved history.
+// It also imports a keyless (UUIDv7 state ID) source beside its still-resident
+// fenced source object, and shows the export gate refusing a Codex root with a
+// cross-harness Claude child (409 subagent_routes_not_portable) without fencing it.
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const owner = '11111111-1111-4111-8111-111111111166';
 const settings = { model: 'gpt-6.1-sol', thinking: 'low', reasoning_mode: 'standard', fast_mode: false };
@@ -89,7 +93,7 @@ async function bundle(output, name, source, cwd) {
   return [{ type: 'ESModule', path }, ...[...new Set(lazy)].map(path => ({ type: 'ESModule', path })), ...[...wasm].map(path => ({ type: 'CompiledWasm', path }))];
 }
 
-test('curl exports a managed agent with its completed child and imports it into a new agent that keeps serving the preserved history', { timeout: 240_000 }, async () => {
+test('curl exports a managed agent with its completed child and imports it into a new agent that keeps serving the preserved history', { timeout: 360_000 }, async () => {
   const output = join(root, 'output/managed-curl-portability', new Date().toISOString().replaceAll(':', '-') + '-' + randomUUID().slice(0, 8));
   await mkdir(join(output, 'curl'), { recursive: true });
   const git = args => { try { return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim(); } catch { return 'unavailable'; } };
@@ -120,7 +124,7 @@ test('curl exports a managed agent with its completed child and imports it into 
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: the destination turn's history still holds the root marker.
-  const markers = ['PORT_DEST_WIDEN', 'PORT_CHILD_WIDEN', 'PORT_DEST_FOLLOWUP', 'PORT_CHILD_FOLLOWUP', 'PORT_CHILD_TASK', 'PORT_ROOT'];
+  const markers = ['PORT_KEYLESS_DEST', 'PORT_KEYLESS_ROOT', 'PORT_CLAUDE_AFTER', 'PORT_CLAUDE_ROOT', 'PORT_DEST_WIDEN', 'PORT_CHILD_WIDEN', 'PORT_DEST_FOLLOWUP', 'PORT_CHILD_FOLLOWUP', 'PORT_CHILD_TASK', 'PORT_ROOT'];
   // Memory tools authorize with the calling session's bound authority.
   const memoryProbe = callId => exec(callId, 'text(JSON.stringify(await (async () => tools.memories__status({}))().then(() => ({ memory: "allowed" }), error => ({ memory: "denied", error: String(error?.message ?? error) }))));');
   const decide = ({ history }) => {
@@ -156,8 +160,34 @@ test('curl exports a managed agent with its completed child and imports it into 
         () => memoryProbe('port-child-widen-memory'),
         () => exec('port-child-widen-submit', 'text(await tools.submit_result({output:"PORT_CHILD_WIDEN_OK"}));'),
       ][fresh.length]?.() ?? say('PORT_CHILD_WIDEN_OK');
+      // Keyless (UUIDv7) source and its destination: plain answers.
+      case 'PORT_KEYLESS_ROOT': return say('PORT_KEYLESS_ROOT_DONE');
+      case 'PORT_KEYLESS_DEST': return say('PORT_KEYLESS_DEST_OK');
+      // A Codex root delegating to a cross-harness Claude child.
+      case 'PORT_CLAUDE_ROOT': return [
+        () => exec('port-claude-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Claude child', task: 'PORT_CLAUDE_CHILD: submit the synthetic result.', harness: 'claude', model: claudeModel, output_contract: { kind: 'string' } }) + '));'),
+        () => exec('port-claude-wait', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
+      ][fresh.length]?.() ?? say('PORT_CLAUDE_ROOT_DONE');
+      case 'PORT_CLAUDE_AFTER': return say('PORT_CLAUDE_AFTER_OK');
       default: unexpected.push({ kind: 'model', user: user.slice(0, 2000) }); return say('UNEXPECTED');
     }
+  };
+  // Anthropic Messages stub for the cross-harness Claude child.
+  const claudeModel = 'claude-sonnet-4-6', claudeCalls = [];
+  const claudeSse = blocks => [
+    { type: 'message_start', message: { id: 'msg_' + randomUUID(), type: 'message', role: 'assistant', model: claudeModel, content: [], usage: { input_tokens: 10, output_tokens: 0 } } },
+    ...blocks.flatMap((block, index) => block.type === 'tool_use'
+      ? [{ type: 'content_block_start', index, content_block: { ...block, input: {} } }, { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } }, { type: 'content_block_stop', index }]
+      : [{ type: 'content_block_start', index, content_block: { type: 'text', text: '' } }, { type: 'content_block_delta', index, delta: { type: 'text_delta', text: block.text } }, { type: 'content_block_stop', index }]),
+    { type: 'message_delta', delta: { stop_reason: blocks.some(block => block.type === 'tool_use') ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ].map(event => 'event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n').join('');
+  const decideClaudeChild = body => {
+    const results = body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(block => block.type === 'tool_result');
+    claudeCalls.push({ model: body.model, tool_results: results.length, at: new Date().toISOString() });
+    return results.length === 0
+      ? claudeSse([{ type: 'tool_use', id: 'toolu_port_claude_submit', name: 'exec', input: { code: 'text(await tools.submit_result({output:"PORT_CLAUDE_CHILD_OK"}));' } }])
+      : claudeSse([{ type: 'text', text: 'PORT_CLAUDE_CHILD_OK' }]);
   };
   const sockets = new Set();
   const control = createServer(async (req, res) => {
@@ -167,6 +197,16 @@ test('curl exports a managed agent with its completed child and imports it into 
     if (url.href === 'https://control.internal/model') return send(200, decide(JSON.parse(call.body)));
     if (url.origin === 'https://chatgpt.com' && call.body?.includes('"gpt-6-luna"')) {
       return send(200, { id: 'title', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Synthetic portability' }] }], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } });
+    }
+    if (url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/models') return send(200, { data: [{ id: claudeModel, display_name: 'Synthetic Claude Sonnet' }], has_more: false });
+    if (url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/messages') {
+      const body = JSON.parse(call.body);
+      if (body.stream === true && JSON.stringify(body.messages).includes('PORT_CLAUDE_CHILD')) return send(200, decideClaudeChild(body), 'text/event-stream');
+      unexpected.push({ kind: 'claude', model: body.model, stream: body.stream ?? null }); return send(400, { type: 'error', error: { type: 'invalid_request_error', message: 'unexpected synthetic Claude request' } });
+    }
+    if (/^https:\/\/(platform\.claude\.com|claude\.ai|api\.anthropic\.com)\//.test(call.url)) {
+      const response = await claudeProvider(new Request(call.url, { method: call.method, headers: call.headers, body: call.body ?? undefined }));
+      if (response) { res.writeHead(response.status, Object.fromEntries(response.headers)); return void res.end(Buffer.from(await response.arrayBuffer())); }
     }
     // Default hosted MCP catalog discovery is optional background work; it
     // stays offline here and is recorded, never answered with fabricated tools.
@@ -382,6 +422,81 @@ test('curl exports a managed agent with its completed child and imports it into 
       assert.doesNotMatch(outputOf('port-child-widen-memory'), /allowed/);
     });
     check('the imported child completes the broader turn delegation', () => assert.match(outputOf('port-dest-widen-wait'), /PORT_CHILD_WIDEN_OK/));
+    // 8. Keyless source (no Idempotency-Key): its agent ID and durability
+    // state ID are UUIDv7, and the destination adopts that state ID as its
+    // runtime session ID while the exported source object is still live in
+    // the same workerd isolate.
+    // Combined /v1/agent-runs requires a key, so a keyless client creates then admits.
+    const keylessAgent = (await curl('keyless-agent-create', '/v1/agents', { method: 'POST', body: { settings }, expected: 201 })).value.agent_id;
+    const keyless = { agent_id: keylessAgent, ...(await curl('keyless-turn-admit', '/v1/agents/' + keylessAgent + '/turns', { method: 'POST', body: { input: 'PORT_KEYLESS_ROOT: answer.' },
+      headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value };
+    check('keyless source agent ID is a UUIDv7', () => assert.match(keyless.agent_id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-/));
+    const keylessDone = await terminal('keyless-run-terminal', keyless.agent_id, keyless.turn_id);
+    check('keyless source turn completed', () => assert.equal(keylessDone.state, 'completed', JSON.stringify(keylessDone)));
+    let keylessExport;
+    for (let attempt = 1; attempt <= 30; attempt++) {
+      keylessExport = await curl('keyless-export-' + attempt, '/v1/agents/' + keyless.agent_id + '/durability', { method: 'POST' });
+      if (keylessExport.status !== 202) break;
+      await delay(500);
+    }
+    check('keyless export completes with a UUIDv7 state ID', () => {
+      assert.equal(keylessExport.status, 200, JSON.stringify(keylessExport.value).slice(0, 2000));
+      assert.match(keylessExport.value.durability.stateId, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-/);
+    });
+    let keylessImport;
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      keylessImport = await curl('keyless-import-' + attempt, '/v1/agents', { method: 'POST', body: { durability: keylessExport.value }, headers: { 'Idempotency-Key': randomUUID() }, maxTime: 60 });
+      if (keylessImport.status !== 503) break;
+      await delay(1000);
+    }
+    check('keyless import creates a destination holding the source state ID', () => {
+      assert.equal(keylessImport.status, 201, JSON.stringify(keylessImport.value));
+      assert.equal(keylessImport.value.durability_id, keylessExport.value.durability.stateId);
+    });
+    // Touch the fenced source so its object is resident while the destination runs.
+    const keylessSourceFenced = await curl('keyless-source-fenced', '/v1/agents/' + keyless.agent_id + '/turns', { method: 'POST', body: { input: 'PORT_KEYLESS_ROOT: must not run.' }, headers: { 'Idempotency-Key': randomUUID() } });
+    check('keyless exported source is fenced (409)', () => assert.equal(keylessSourceFenced.status, 409, JSON.stringify(keylessSourceFenced.value)));
+    const keylessNext = (await curl('keyless-destination-admit', '/v1/agents/' + keylessImport.value.agent_id + '/turns', { method: 'POST', body: { input: 'PORT_KEYLESS_DEST: answer.' },
+      headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value;
+    const keylessNextDone = await terminal('keyless-destination-terminal', keylessImport.value.agent_id, keylessNext.turn_id);
+    summary.keyless = { source: keyless.agent_id, state_id: keylessExport.value.durability.stateId, destination: keylessImport.value.agent_id, destination_turn: keylessNextDone };
+    check('keyless destination turn completes beside the live source (no session ID collision)', () => assert.equal(keylessNextDone.state, 'completed', JSON.stringify(keylessNextDone)));
+    check('keyless destination provider request carries the source answer', () =>
+      assert.match(JSON.stringify(modelCalls.filter(call => call.scenario === 'PORT_KEYLESS_DEST')[0]?.history ?? null), /PORT_KEYLESS_ROOT_DONE/));
+
+    // 9. Export gate: a Codex root whose retained child is a cross-harness
+    // Claude child is refused before anything is fenced or exported.
+    const login = await curl('claude-login', '/v1/credentials/claude/login', { method: 'POST' });
+    assert.ok(login.status >= 200 && login.status < 300 && login.value.authorization_url, 'Claude login starts: ' + login.status);
+    const loginState = new URL(login.value.authorization_url).searchParams.get('state');
+    const connected = await curl('claude-login-complete', '/v1/credentials/claude/login/complete', { method: 'POST', body: { code: 'curl-portability#' + loginState } });
+    assert.ok(connected.status >= 200 && connected.status < 300, 'Claude login completes: ' + connected.status + ' ' + JSON.stringify(connected.value));
+    const mixed = (await curl('claude-child-run-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'PORT_CLAUDE_ROOT: delegate one synthetic result to a Claude child, then answer.', settings },
+      headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const mixedDone = await terminal('claude-child-run-terminal', mixed.agent_id, mixed.turn_id);
+    const claudeWait = JSON.stringify(modelCalls.flatMap(call => call.history).filter(item => item.call_id === 'port-claude-wait' && /_call_output$/.test(item.type ?? '')).at(-1) ?? null);
+    summary.claude_child = { agent: mixed.agent_id, terminal: mixedDone, claude_calls: claudeCalls, wait: claudeWait.slice(0, 2000) };
+    check('Codex root with a Claude child completed', () => assert.equal(mixedDone.state, 'completed', JSON.stringify(mixedDone)));
+    check('the Claude child ran through the Claude Messages provider and its result reached the root', () => {
+      assert.ok(claudeCalls.length >= 1 && claudeCalls.every(call => call.model === claudeModel), JSON.stringify(claudeCalls));
+      assert.match(claudeWait, /PORT_CLAUDE_CHILD_OK/);
+    });
+    const gated = await curl('claude-child-export', '/v1/agents/' + mixed.agent_id + '/durability', { method: 'POST' });
+    check('export with a cross-harness child is 409 subagent_routes_not_portable with an actionable message', () => {
+      assert.equal(gated.status, 409, JSON.stringify(gated.value));
+      assert.equal(gated.value.error, 'subagent_routes_not_portable');
+      assert.match(gated.value.message, /cross-harness subagents are not yet portable.*Close them before exporting/);
+      assert.equal(gated.value.durability, undefined);
+    });
+    const after = (await curl('claude-child-source-turn-after-gate', '/v1/agents/' + mixed.agent_id + '/turns', { method: 'POST', body: { input: 'PORT_CLAUDE_AFTER: answer.' },
+      headers: { 'Idempotency-Key': randomUUID() }, expected: 202 })).value;
+    const afterDone = await terminal('claude-child-source-after-terminal', mixed.agent_id, after.turn_id);
+    check('refused export fenced nothing: the source still serves a new turn', () => {
+      assert.equal(afterDone.state, 'completed', JSON.stringify(afterDone));
+      assert.ok(modelCalls.some(call => call.scenario === 'PORT_CLAUDE_AFTER'));
+    });
+    const gatedAgain = await curl('claude-child-export-again', '/v1/agents/' + mixed.agent_id + '/durability', { method: 'POST' });
+    check('the gate is stable: a repeated export is refused the same way', () => { assert.equal(gatedAgain.status, 409); assert.equal(gatedAgain.value.error, 'subagent_routes_not_portable'); });
     check('no unexpected external requests', () => assert.deepEqual(unexpected, []));
   } finally {
     await writeFile(join(output, 'trace.json'), JSON.stringify({ summary, assertions, model_calls: modelCalls, unexpected, offline_mcp_discovery: discovery.length }, null, 2));
