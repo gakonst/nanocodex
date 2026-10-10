@@ -106,7 +106,11 @@ else: print('{}')
         require(visible('tui','Exact input'),'exact input missing'); os.write(fd,b'\r'); pending(3,drain)
         os.write(fd,b'deny\r'); wait(lambda:len(requests)==4 and visible('tui','ask-approve.txt'),drain,'next approval absent'); pending(4,drain)
         os.write(fd,b'approve\r'); wait(lambda:len(requests)==5 and visible('tui','ask-cancel.txt'),drain,'cancel approval absent'); pending(5,drain)
-        os.write(fd,b'/cancel\r'); wait(lambda:visible('tui','tui-permissions-complete'),drain,'TUI final missing'); os.write(fd,b'\x03\x03')
+        os.write(fd,b'/cancel\r'); wait(lambda:visible('tui','tui-permissions-complete'),drain,'TUI final missing')
+        # Streamed text precedes lifecycle hooks and the durable terminal commit;
+        # "Turn completed" renders from the committed run terminal record. Exiting
+        # earlier abandons a running turn, which the next process must refuse.
+        wait(lambda:visible('tui','Turn completed'),drain,'TUI turn never reached its terminal record'); os.write(fd,b'\x03\x03')
         wait(lambda:p.poll() is not None,drain,'TUI exit stuck',timeout=10); drain(); os.close(fd)
         require((workspace/'ask-approve.txt').read_text()=='approved-ask-approve.txt','approved call not dispatched')
         require((workspace/'allowed.txt').exists(),'allow rule failed')
