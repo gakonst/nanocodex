@@ -254,8 +254,23 @@ def main():
             if predicate(screen):
                 return screen
             if time.monotonic() > deadline:
-                raise AssertionError(f"{name}: timed out; see {name}.frames.txt")
+                raise AssertionError(f"{name}: timed out; see {name}.frames.txt\n" + timeout_evidence(session, screen))
             time.sleep(0.4)
+
+    def timeout_evidence(session, screen):
+        """Inline diagnostics: CI does not upload output/claude-resume-cli."""
+        parts = ["--- last frame ---", "\n".join(line.rstrip() for line in screen.splitlines() if line.strip())[-4000:]]
+        panes = tmux("list-panes", "-t", session, "-F", "#{pane_pid} dead=#{pane_dead} status=#{pane_dead_status}")
+        parts += ["--- pane ---", (panes.stdout + panes.stderr).strip()]
+        pid = panes.stdout.split(" ", 1)[0].strip()
+        if pid.isdigit():
+            tree = subprocess.run(["ps", "-o", "pid,ppid,stat,wchan:24,etime,args", "--forest", "-s", pid], capture_output=True, text=True)
+            parts += ["--- processes ---", tree.stdout.strip()]
+        logs = sorted((home / ".local/state/nanocodex/logs").glob("tui-*.log"), key=lambda path: path.stat().st_mtime)
+        if logs:
+            text = re.sub(r"\x1b\[[0-9;]*m", "", logs[-1].read_text(errors="replace"))
+            parts += [f"--- {logs[-1].name} (tail) ---", "\n".join(line[:400] for line in text.splitlines()[-40:])]
+        return "\n".join(parts)
 
     def close(name, session):
         # Ctrl+C asks for confirmation; a second Ctrl+C quits.
