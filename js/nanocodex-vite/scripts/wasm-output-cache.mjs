@@ -138,10 +138,10 @@ async function inputFiles(repository) {
 }
 
 // Resolution errors propagate: an unprovable input set fails the build loudly.
-export async function fingerprintInputs(repository = root, mode = "release", environment = process.env) {
+export async function fingerprintInputs(repository = root, mode = "release", environment = process.env, files) {
   repository = await realpath(repository);
   assert.ok(["release", "development"].includes(mode));
-  const files = await inputFiles(repository);
+  files ??= await inputFiles(repository);
   const pkg = JSON.parse(await readFile(resolve(repository, "js/nanocodex/package.json"), "utf8"));
   const buildEnvironment = Object.fromEntries(Object.entries(environment)
     .filter(([name]) => /^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_INCREMENTAL|CARGO_PROFILE_.*|CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_.*)$/.test(name))
@@ -170,8 +170,8 @@ async function outputs(repository) {
 }
 
 // Resolution errors propagate before the try, so they are never mistaken for a miss.
-export async function check(repository = root, mode = "release") {
-  const key = await fingerprintInputs(repository, mode);
+export async function check(repository = root, mode = "release", files) {
+  const key = await fingerprintInputs(repository, mode, process.env, files);
   try {
     const retained = JSON.parse(await readFile(resolve(repository, metadataPath), "utf8"));
     assert.equal(retained.schema, 1);
@@ -188,7 +188,7 @@ export class CacheMiss extends Error {}
 // downstream tasks (Worker bundles embedding the WASM) replay stale outputs
 // after a Rust edit. Supported input forms: $TURBO_DEFAULT$ (the package),
 // $TURBO_ROOT$/<file>, and $TURBO_ROOT$/<directory>/**.
-export async function assertTurboInputs(repository = root) {
+export async function assertTurboInputs(repository = root, files) {
   repository = await realpath(repository);
   const inputs = JSON.parse(await readFile(resolve(repository, "turbo.json"), "utf8")).tasks?.["nanocodex#build"]?.inputs ?? [];
   const covered = inputs.map((input) => {
@@ -198,7 +198,7 @@ export async function assertTurboInputs(repository = root) {
     if (/[*?[{!]/.test(path.replace(/\/\*\*$/, ""))) throw new Error(`unsupported nanocodex#build input glob ${input}`);
     return path;
   });
-  const missing = (await inputFiles(repository)).map((path) => relative(repository, path))
+  const missing = (files ?? await inputFiles(repository)).map((path) => relative(repository, path))
     .filter((path) => !covered.some((input) => input.endsWith("/**") ? path.startsWith(input.slice(0, -2)) : path === input));
   if (missing.length) {
     throw new Error(`turbo.json nanocodex#build inputs omit WASM inputs; add them (for example $TURBO_ROOT$/<crate>/**): ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? ", ..." : ""}`);
@@ -228,7 +228,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   else if (command === "check") {
     // Exit 1 is an ordinary miss (rebuild). Resolution failures exit 2 so the
     // build stops instead of treating an unprovable input set as a miss.
-    try { await check(root, mode); console.log("WASM output cache verified"); }
+    // Resolve the input set once for both the Turbo coverage assertion and
+    // the fingerprint; a coverage failure is a resolution failure, not a miss.
+    try {
+      const files = await inputFiles(await realpath(root));
+      await assertTurboInputs(root, files);
+      await check(root, mode, files);
+      console.log("WASM output cache verified");
+    }
     catch (error) {
       if (!(error instanceof CacheMiss)) { console.error("WASM input fingerprint failed:", error); process.exit(2); }
       console.error(`WASM output cache miss: ${error.message}`);

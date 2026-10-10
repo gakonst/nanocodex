@@ -1,0 +1,46 @@
+[package]
+name = "nanocodex-decisions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ai", "agents", "openai", "classification", "decisions"]
+categories.workspace = true
+description = "Provider-neutral decision models, the OpenAI Decisions API, and an installable Nanocodex tool"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
+[features]
+default = ["openai", "tool"]
+# HTTP client for OpenAI's `POST /v1/decisions` endpoint.
+openai = ["dep:reqwest", "dep:rustls"]
+# Model-visible tool that forwards agent questions to any decision model.
+tool = ["dep:nanocodex-oai-tools"]
+
+[dependencies]
+async-trait.workspace = true
+nanocodex-oai-tools = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+nanocodex = { workspace = true, features = ["claude"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "agent"
+required-features = ["openai", "tool"]

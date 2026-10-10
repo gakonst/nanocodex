@@ -22,7 +22,7 @@ use nanocodex::{
     tools::mcp::McpHandle,
 };
 
-use crate::browser::{BrowserArgs, ConfiguredBrowser};
+use crate::browser::BrowserArgs;
 use crate::login::load_managed_mcp_credential;
 use crate::managed_memory::{ConfiguredManagedMemory, MEMORY_INSTRUCTIONS};
 use crate::mcp::{ConfiguredMcp, McpArgs};
@@ -60,7 +60,6 @@ pub(crate) struct ConfiguredAgent {
         Option<tokio::sync::mpsc::UnboundedReceiver<nanocodex_subagents::ScopedAgentUpdate>>,
     pub(crate) mpp_adapter: Option<MppAdapter>,
     pub(crate) mcp: Option<McpHandle>,
-    pub(crate) browser: Option<ConfiguredBrowser>,
     pub(crate) vm: Option<ConfiguredVm>,
     pub(crate) model: HarnessModel,
 }
@@ -832,8 +831,6 @@ impl AgentArgs {
             subagent_updates,
             mpp_adapter,
             mcp: mcp_handle,
-            // Browser interaction is supplied by CUA, including for the direct CLI.
-            browser: None,
             vm: configured_vm,
             model: model.into(),
         })

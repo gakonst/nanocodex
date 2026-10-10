@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { createTools } from "nanocodex/tools";
 import { createAttachment } from "nanocodex-tools/attachment";
 import { createNodeProcessTools } from "nanocodex-tools/node";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const owner = "00000000-0000-4000-8000-000000000011";

@@ -4,7 +4,7 @@ use std::{
     io::Write,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -104,6 +104,14 @@ impl Wire {
         connection: &'static str,
     ) -> Result<Self> {
         let (stream, _) = listener.accept().await?;
+        Self::upgrade(stream, evidence, connection).await
+    }
+
+    async fn upgrade(
+        stream: TcpStream,
+        evidence: Evidence,
+        connection: &'static str,
+    ) -> Result<Self> {
         let mut upgrade = json!({});
         let socket = accept_hdr_async(
             stream,
@@ -1196,18 +1204,74 @@ async fn regional_hand_upgrade_case(case: &str) -> Result<()> {
     .await?
 }
 
-async fn rejecting_endpoint(status: &'static str) -> Result<(AttachmentTarget, Arc<AtomicUsize>)> {
+/// One WebSocket upgrade attempt observed by a scripted public endpoint.
+#[derive(Clone)]
+struct Attempt {
+    at: Instant,
+    status: u16,
+    runtime_id: Option<String>,
+}
+
+/// Decides each upgrade attempt: a raw HTTP refusal, or None to accept it.
+type Script = Arc<dyn Fn(usize, Instant) -> Option<String> + Send + Sync>;
+
+struct ScriptedEndpoint {
+    target: AttachmentTarget,
+    attempts: Arc<Mutex<Vec<Attempt>>>,
+    accepted: tokio::sync::mpsc::UnboundedReceiver<Result<Wire>>,
+}
+
+impl ScriptedEndpoint {
+    async fn next_wire(&mut self, limit: Duration) -> Result<Wire> {
+        tokio::time::timeout(limit, self.accepted.recv())
+            .await
+            .wrap_err("no accepted attachment within the bound")?
+            .ok_or_else(|| eyre::eyre!("endpoint stopped"))?
+    }
+
+    fn attempts(&self) -> Vec<Attempt> {
+        self.attempts.lock().unwrap().clone()
+    }
+}
+
+// A real TCP listener speaking HTTP/1.1: refusals are genuine upgrade responses
+// with status, headers and body, exactly what the account proxy returns.
+async fn scripted_endpoint(
+    path: &str,
+    evidence: Evidence,
+    script: Script,
+) -> Result<ScriptedEndpoint> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let target = AttachmentTarget::new(
-        format!("ws://{}/tools", listener.local_addr()?),
+        format!("ws://{}{path}", listener.local_addr()?),
         "synthetic-bearer",
     )?;
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&attempts);
+    let attempts = Arc::new(Mutex::new(Vec::<Attempt>::new()));
+    let recorded = Arc::clone(&attempts);
+    let (accepted_tx, accepted) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
-            counted.fetch_add(1, Ordering::SeqCst);
+            let at = Instant::now();
+            let index = recorded.lock().unwrap().len();
+            let Some(response) = script(index, at) else {
+                let wire = Wire::upgrade(stream, evidence.clone(), "accepted").await;
+                if let Ok(wire) = &wire {
+                    let attempt = Attempt {
+                        at,
+                        status: 101,
+                        runtime_id: wire.upgrade["x-nanocodex-hand-runtime-id"]
+                            .as_str()
+                            .map(str::to_owned),
+                    };
+                    evidence.record("endpoint", "attempt", &attempt.json(&evidence));
+                    recorded.lock().unwrap().push(attempt);
+                }
+                if accepted_tx.send(wire).is_err() {
+                    break;
+                }
+                continue;
+            };
             let mut request = Vec::new();
             let mut buffer = [0_u8; 1024];
             while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -1216,49 +1280,404 @@ async fn rejecting_endpoint(status: &'static str) -> Result<(AttachmentTarget, A
                     Ok(read) => request.extend_from_slice(&buffer[..read]),
                 }
             }
-            let response =
-                format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            let head = String::from_utf8_lossy(&request).into_owned();
+            let attempt = Attempt {
+                at,
+                status: response
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|code| code.parse().ok())
+                    .unwrap_or_default(),
+                runtime_id: head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("x-nanocodex-hand-runtime-id")
+                        .then(|| value.trim().to_owned())
+                }),
+            };
+            evidence.record("endpoint", "attempt", &attempt.json(&evidence));
+            recorded.lock().unwrap().push(attempt);
             let _ = stream.write_all(response.as_bytes()).await;
         }
     });
-    Ok((target, attempts))
+    Ok(ScriptedEndpoint {
+        target,
+        attempts,
+        accepted,
+    })
 }
 
-// A revoked attachment (HTTP 410) is terminal, while a refused upgrade that
-// may recover (HTTP 503) keeps reconnecting with backoff.
+impl Attempt {
+    fn json(&self, evidence: &Evidence) -> Value {
+        json!({
+            "at_ms": millis(self.at.saturating_duration_since(evidence.started)),
+            "status": self.status,
+            "runtime_id": self.runtime_id,
+        })
+    }
+}
+
+fn http_refusal(status: &str, headers: &str, error: &str) -> String {
+    let body = json!({ "error": error }).to_string();
+    format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncache-control: no-store\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn millis(duration: Duration) -> f64 {
+    (duration.as_secs_f64() * 1_000_000.0).round() / 1000.0
+}
+
+fn gaps(attempts: &[Attempt]) -> Vec<Duration> {
+    attempts
+        .windows(2)
+        .map(|pair| pair[1].at.duration_since(pair[0].at))
+        .collect()
+}
+
+fn reattach_evidence(name: &str) -> Result<Evidence> {
+    let output =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../output/attachment-reattach");
+    std::fs::create_dir_all(&output)?;
+    let path = output.join(format!("{name}-{}.jsonl", now_ms()));
+    eprintln!("Attachment reattach evidence: {}", path.display());
+    Ok(Evidence {
+        file: Arc::new(Mutex::new(File::create(&path)?)),
+        started: Instant::now(),
+    })
+}
+
+// Production delay policy (this binary links the non-test library build): a
+// deploy that answers upgrades with HTTP 503 for several seconds must not grow
+// the reconnect gap exponentially. The same runtime reattaches within the fast
+// service cap, keeps its identity, and replays the receipt of a command that
+// finished offline without executing it twice.
 #[tokio::test]
-async fn revoked_attachment_stops_reconnecting_while_rejections_back_off() -> Result<()> {
+async fn transient_service_outage_reattaches_quickly_with_same_runtime_and_receipt() -> Result<()> {
+    const OUTAGE: Duration = Duration::from_secs(7);
+    const FAST_BOUND: Duration = Duration::from_millis(2_500);
+    let _runtime_lock = crate::TOOL_RUNTIME_TEST_LOCK.lock().await;
+    let evidence = reattach_evidence("transient-503-outage")?;
+    let workspace = tempfile::tempdir()?;
+    let outage = Arc::new(Mutex::new(None::<Instant>));
+    let scripted = Arc::clone(&outage);
+    let mut endpoint = scripted_endpoint(
+        "/v1/account/tool-host",
+        evidence.clone(),
+        Arc::new(move |_, at| {
+            let started = (*scripted.lock().unwrap())?;
+            (at.saturating_duration_since(started) < OUTAGE)
+                .then(|| http_refusal("503 Service Unavailable", "", "managed_service_unavailable"))
+        }),
+    )
+    .await?;
+    let (attachment, _events) = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(workspace.path()))
+        .build()?
+        .attach(endpoint.target.clone())
+        .metadata(AttachmentMetadata::machine(AttachmentMachine::new(
+            "synthetic-machine",
+            "Synthetic Hand",
+            workspace.path().display().to_string(),
+            ["shell"],
+        )?))
+        .start()?;
+    let mut first = endpoint.next_wire(Duration::from_secs(5)).await?;
+    let runtime_id = first.catalog["runtime_id"].clone();
+    let command = json!({
+        "type":"call", "session_id":"synthetic-session", "turn_id":"synthetic-turn:1",
+        "call_id":"deploy-shell", "model":"synthetic-model", "name":"exec_command",
+        "input":{"cmd":"printf 'effect\n' >> effects; touch started; while [ ! -f release ]; do sleep 0.02; done; printf survived-deploy; touch finished", "shell":"/bin/sh", "login":false, "yield_time_ms":30000},
+        "output_token_budget":1000, "output_byte_budget":131072, "deadline_at":now_ms()+120_000,
+    });
+    first.send(command).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !workspace.path().join("started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    // Deploy: the service drops the socket and refuses upgrades for OUTAGE.
+    let outage_started = Instant::now();
+    *outage.lock().unwrap() = Some(outage_started);
+    evidence.record("endpoint", "observation", &json!({"outage_started_ms": millis(outage_started.duration_since(evidence.started)), "outage_ms": millis(OUTAGE)}));
+    first.socket.close(None).await?;
+    drop(first);
+    std::fs::write(workspace.path().join("release"), "release")?;
+    let mut second = endpoint.next_wire(OUTAGE + Duration::from_secs(60)).await?;
+    let attempts = endpoint.attempts();
+    let outage_attempts: Vec<_> = attempts
+        .iter()
+        .filter(|attempt| attempt.at >= outage_started)
+        .cloned()
+        .collect();
+    let recovered = outage_attempts
+        .last()
+        .ok_or_else(|| eyre::eyre!("no reattach attempt"))?;
+    let latency = recovered
+        .at
+        .saturating_duration_since(outage_started + OUTAGE);
+    let refused = outage_attempts.iter().filter(|a| a.status == 503).count();
+    let gaps = gaps(&outage_attempts);
+    let min_gap = gaps.iter().min().copied().unwrap_or_default();
+    let max_gap = gaps.iter().max().copied().unwrap_or_default();
+    let receipt = second.recv(Duration::from_secs(10)).await?;
+    let effects = std::fs::read_to_string(workspace.path().join("effects"))?;
+    let summary = json!({
+        "scenario": "HTTP 503 deploy outage",
+        "outage_ms": millis(OUTAGE),
+        "refused_503_attempts": refused,
+        "first_attempt_after_close_ms": outage_attempts.first().map(|a| millis(a.at.duration_since(outage_started))),
+        "recovered_after_outage_start_ms": millis(recovered.at.duration_since(outage_started)),
+        "recovery_latency_after_service_ready_ms": millis(latency),
+        "attempt_gaps_ms": gaps.iter().copied().map(millis).collect::<Vec<_>>(),
+        "min_gap_ms": millis(min_gap),
+        "max_gap_ms": millis(max_gap),
+        "effect_count": effects.lines().count(),
+        "runtime_id_stable": attempts.iter().all(|a| a.runtime_id.as_deref() == runtime_id.as_str()),
+    });
+    evidence.record("endpoint", "summary", &summary);
+    eprintln!("transient 503 outage metrics: {summary}");
+    ensure!(
+        second.catalog["runtime_id"] == runtime_id,
+        "runtime identity changed across the outage"
+    );
+    ensure!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.runtime_id.as_deref() == runtime_id.as_str()),
+        "a refused upgrade carried another runtime identity"
+    );
+    ensure!(refused >= 3, "the outage was not exercised: {summary}");
+    ensure!(
+        min_gap >= Duration::from_millis(90),
+        "reconnect hot loop: {summary}"
+    );
+    ensure!(
+        max_gap <= FAST_BOUND && latency <= FAST_BOUND,
+        "transient 503 grew the reattach gap past the fast bound: {summary}"
+    );
+    ensure!(
+        receipt["call_id"] == "deploy-shell"
+            && successful_process(&receipt)?["output"] == "survived-deploy",
+        "offline receipt was not replayed: {receipt}"
+    );
+    ensure!(effects == "effect\n", "command executed more than once");
+    second
+        .send(json!({"type":"ack","call_id":"deploy-shell"}))
+        .await?;
+    let (drain, detached) = tokio::join!(second.drain(), attachment.detach());
+    drain?;
+    detached?;
+    Ok(())
+}
+
+// HTTP 429 and 503 Retry-After, as delta-seconds or an HTTP-date, are lower
+// bounds: the driver never reconnects sooner than the service asked, then
+// attaches normally. An absurd value parks the attempt without panicking and
+// detach still interrupts it immediately.
+#[tokio::test]
+async fn transient_refusals_honor_retry_after() -> Result<()> {
+    let evidence = reattach_evidence("retry-after")?;
+    let workspace = tempfile::tempdir()?;
+    let mut endpoint = scripted_endpoint(
+        "/tools",
+        evidence.clone(),
+        Arc::new(|index, _| match index {
+            0 => Some(http_refusal(
+                "429 Too Many Requests",
+                "retry-after: 1\r\n",
+                "rate_limited",
+            )),
+            1 => Some(http_refusal(
+                "503 Service Unavailable",
+                "retry-after: 2\r\n",
+                "tool_router_unavailable",
+            )),
+            2 => Some(http_refusal(
+                "503 Service Unavailable",
+                &format!(
+                    "retry-after: {}\r\n",
+                    httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(3))
+                ),
+                "managed_service_unavailable",
+            )),
+            _ => None,
+        }),
+    )
+    .await?;
+    let (attachment, _events) = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(workspace.path()))
+        .build()?
+        .attach(endpoint.target.clone())
+        .start()?;
+    let wire = endpoint.next_wire(Duration::from_secs(10)).await?;
+    let attempts = endpoint.attempts();
+    let gaps = gaps(&attempts);
+    let summary = json!({
+        "statuses": attempts.iter().map(|a| a.status).collect::<Vec<_>>(),
+        "attempt_gaps_ms": gaps.iter().copied().map(millis).collect::<Vec<_>>(),
+        "retry_after": ["1", "2", "HTTP-date now+3s (whole-second resolution)"],
+    });
+    evidence.record("endpoint", "summary", &summary);
+    eprintln!("Retry-After metrics: {summary}");
+    ensure!(
+        attempts.iter().map(|a| a.status).collect::<Vec<_>>() == [429, 503, 503, 101],
+        "unexpected attempts: {summary}"
+    );
+    ensure!(
+        gaps[0] >= Duration::from_millis(990) && gaps[0] <= Duration::from_millis(1_500),
+        "429 Retry-After was not honored: {summary}"
+    );
+    ensure!(
+        gaps[1] >= Duration::from_millis(1_990) && gaps[1] <= Duration::from_millis(2_500),
+        "503 Retry-After was not honored: {summary}"
+    );
+    // The date truncates now+3s to whole seconds, so the wait lies in (2s, 3s].
+    ensure!(
+        gaps[2] >= Duration::from_millis(1_990) && gaps[2] <= Duration::from_millis(3_500),
+        "503 HTTP-date Retry-After was not honored: {summary}"
+    );
+    // Detach only after the executor observed ready, so teardown drains.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while attachment.status() != AttachmentStatus::Ready {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    let mut wire = wire;
+    let (drain, detached) = tokio::join!(wire.drain(), attachment.detach());
+    drain?;
+    detached?;
+
+    let endpoint = scripted_endpoint(
+        "/tools",
+        evidence.clone(),
+        Arc::new(|_, _| {
+            Some(http_refusal(
+                "503 Service Unavailable",
+                &format!("retry-after: {}\r\n", u64::MAX),
+                "managed_service_unavailable",
+            ))
+        }),
+    )
+    .await?;
+    let (attachment, _events) = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(workspace.path()))
+        .build()?
+        .attach(endpoint.target.clone())
+        .start()?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while endpoint.attempts().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let parked = endpoint.attempts().len();
+    let detach_started = Instant::now();
+    let detached = tokio::time::timeout(Duration::from_secs(1), attachment.detach()).await;
+    let detach_ms = millis(detach_started.elapsed());
+    let summary =
+        json!({"retry_after":"u64::MAX", "attempts_after_700ms": parked, "detach_ms": detach_ms});
+    evidence.record("endpoint", "summary", &summary);
+    eprintln!("huge Retry-After metrics: {summary}");
+    ensure!(parked == 1, "huge Retry-After was not honored: {summary}");
+    detached.map_err(|_| eyre::eyre!("detach did not interrupt Retry-After: {summary}"))??;
+    Ok(())
+}
+
+// Credential and revocation refusals are terminal: one attempt. Other refusals,
+// including 404 and 409 (a superseded runtime, or a conflict that may clear),
+// keep the long exponential schedule rather than the fast 5xx cap: no hot loop
+// and no restart that would mint a new runtime and contend for authority.
+#[tokio::test]
+async fn terminal_refusals_stop_while_permanent_refusals_keep_long_backoff() -> Result<()> {
+    let evidence = reattach_evidence("terminal-and-permanent")?;
     let workspace = tempfile::tempdir()?;
     let tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(workspace.path()))
         .build()?;
+    for (status, error, terminal) in [
+        ("401 Unauthorized", "unauthorized", "authentication"),
+        ("403 Forbidden", "forbidden", "authentication"),
+        ("410 Gone", "attachment_revoked", "revoked"),
+    ] {
+        let refusal = http_refusal(status, "", error);
+        let endpoint = scripted_endpoint(
+            "/tools",
+            evidence.clone(),
+            Arc::new(move |_, _| Some(refusal.clone())),
+        )
+        .await?;
+        let connected = tokio::time::timeout(
+            Duration::from_secs(5),
+            tools.clone().attach(endpoint.target.clone()).connect(),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("HTTP {status} kept reconnecting instead of stopping"))?;
+        let error = connected.err();
+        let matched = match (&error, terminal) {
+            (Some(AttachmentError::Authentication(_)), "authentication") => true,
+            (Some(error @ AttachmentError::Fenced(_)), "revoked") => error.is_revoked(),
+            _ => false,
+        };
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let attempts = endpoint.attempts().len();
+        evidence.record("endpoint", "summary", &json!({"status":status, "terminal":terminal, "error":error.as_ref().map(ToString::to_string), "attempts_after_700ms":attempts}));
+        ensure!(matched, "HTTP {status} was not {terminal}: {error:?}");
+        ensure!(attempts == 1, "HTTP {status} reconnected {attempts} times");
+    }
 
-    let (target, attempts) = rejecting_endpoint("410 Gone").await?;
-    let connected = tokio::time::timeout(
-        Duration::from_secs(5),
-        tools.clone().attach(target).connect(),
-    )
-    .await?;
-    let error = connected.err();
-    ensure!(
-        matches!(error, Some(AttachmentError::Fenced(_))),
-        "HTTP 410 was not terminal: {error:?}"
-    );
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    ensure!(
-        attempts.load(Ordering::SeqCst) == 1,
-        "a revoked attachment reconnected"
-    );
-
-    let (target, attempts) = rejecting_endpoint("503 Service Unavailable").await?;
-    let (attachment, _events) = tools.attach(target).start()?;
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
-    let retried = attempts.load(Ordering::SeqCst);
-    ensure!(
-        retried >= 2 && attachment.status() != AttachmentStatus::Fenced,
-        "a retryable rejection was not retried: {retried}"
-    );
-    attachment.detach().await?;
+    let mut refused = Vec::new();
+    for (status, error) in [
+        ("404 Not Found", "not_found"),
+        ("409 Conflict", "hand_runtime_superseded"),
+    ] {
+        let refusal = http_refusal(status, "", error);
+        let endpoint = scripted_endpoint(
+            "/tools",
+            evidence.clone(),
+            Arc::new(move |_, _| Some(refusal.clone())),
+        )
+        .await?;
+        let (attachment, _events) = tools.clone().attach(endpoint.target.clone()).start()?;
+        refused.push((status, endpoint, attachment));
+    }
+    tokio::time::sleep(Duration::from_millis(6_600)).await;
+    for (status, endpoint, attachment) in refused {
+        let attempts = endpoint.attempts();
+        let gaps = gaps(&attempts);
+        let summary = json!({
+            "status": status,
+            "attempts_in_6600ms": attempts.len(),
+            "attempt_gaps_ms": gaps.iter().copied().map(millis).collect::<Vec<_>>(),
+            "runtime_ids": attempts.iter().map(|a| a.runtime_id.clone()).collect::<HashSet<_>>().len(),
+        });
+        evidence.record("endpoint", "summary", &summary);
+        eprintln!("long-backoff refusal metrics: {summary}");
+        ensure!(
+            attachment.status() != AttachmentStatus::Fenced,
+            "HTTP {status} fenced the attachment"
+        );
+        ensure!(
+            gaps.iter().all(|gap| *gap >= Duration::from_millis(90)),
+            "HTTP {status} hot loop: {summary}"
+        );
+        ensure!(
+            attempts.len() <= 7
+                && gaps
+                    .iter()
+                    .max()
+                    .is_some_and(|gap| *gap >= Duration::from_secs(3)),
+            "HTTP {status} lost its long backoff: {summary}"
+        );
+        attachment.detach().await?;
+    }
     Ok(())
 }

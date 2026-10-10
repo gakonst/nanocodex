@@ -187,11 +187,19 @@ impl ComputerConfig {
         Self::discover_for_platform(
             std::env::consts::OS,
             std::env::var_os("NANOCODEX_COMPUTER").filter(|value| !value.is_empty()),
+            provision::managed_provider_config,
         )
         .map(|config| config.confirmation_policies_from_env())
     }
 
-    fn discover_for_platform(platform: &str, explicit: Option<OsString>) -> Option<Self> {
+    /// `managed` reads the installed receipt; it is consulted only after an
+    /// explicit selection is absent and only on platforms with a verified
+    /// managed upstream.
+    fn discover_for_platform(
+        platform: &str,
+        explicit: Option<OsString>,
+        managed: impl FnOnce() -> Option<Self>,
+    ) -> Option<Self> {
         if let Some(path) = explicit {
             if path == "off" || path == "none" || path == "0" {
                 return None;
@@ -204,7 +212,7 @@ impl ComputerConfig {
         if platform == "windows" {
             return None;
         }
-        provision::managed_provider_config()
+        managed()
     }
 }
 
@@ -1087,19 +1095,62 @@ mod provider_contract_tests {
 mod windows_custom_provider_tests {
     use super::*;
 
+    fn managed_receipt() -> Option<ComputerConfig> {
+        Some(ComputerConfig::mcp("/managed/no-codex-provider"))
+    }
+
+    fn untouched_receipt() -> Option<ComputerConfig> {
+        panic!("managed receipt must not be read")
+    }
+
     #[test]
     fn windows_explicit_custom_provider_is_preserved_without_managed_fallback() {
-        let custom = OsString::from(r"C:\trusted\custom-no-cli-mcp.exe");
-        let config =
-            ComputerConfig::discover_for_platform("windows", Some(custom.clone())).unwrap();
+        let custom = OsString::from(r"C:	rusted\custom-no-cli-mcp.exe");
+        let config = ComputerConfig::discover_for_platform(
+            "windows",
+            Some(custom.clone()),
+            untouched_receipt,
+        )
+        .unwrap();
         assert_eq!(config.executable.as_os_str(), custom);
         assert!(config.args.is_empty());
         assert!(config.environment.is_empty());
-        assert!(ComputerConfig::discover_for_platform("windows", None).is_none());
-        for disabled in ["off", "none", "0"] {
-            assert!(
-                ComputerConfig::discover_for_platform("windows", Some(disabled.into())).is_none()
+        // Windows refuses managed discovery without reading any installed
+        // receipt, even when one would be valid on this host.
+        assert!(
+            ComputerConfig::discover_for_platform("windows", None, untouched_receipt).is_none()
+        );
+        for platform in ["windows", "macos", "linux"] {
+            for disabled in ["off", "none", "0"] {
+                assert!(
+                    ComputerConfig::discover_for_platform(
+                        platform,
+                        Some(disabled.into()),
+                        untouched_receipt
+                    )
+                    .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verified_platforms_fall_back_to_the_managed_receipt_only_without_explicit_selection() {
+        for platform in ["macos", "linux"] {
+            let managed = ComputerConfig::discover_for_platform(platform, None, managed_receipt)
+                .expect("managed provider");
+            assert_eq!(
+                managed.executable,
+                PathBuf::from("/managed/no-codex-provider")
             );
+            assert!(ComputerConfig::discover_for_platform(platform, None, || None).is_none());
+            let explicit = ComputerConfig::discover_for_platform(
+                platform,
+                Some("/trusted/custom".into()),
+                untouched_receipt,
+            )
+            .unwrap();
+            assert_eq!(explicit.executable, PathBuf::from("/trusted/custom"));
         }
     }
 }

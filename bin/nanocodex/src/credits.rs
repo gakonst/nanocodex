@@ -1,11 +1,15 @@
 use std::{path::PathBuf, process::Command, process::Stdio, time::Duration};
 
 use clap::{Args, Subcommand};
-use eyre::{Result, WrapErr, eyre};
+#[cfg(feature = "browser")]
+use eyre::WrapErr;
+use eyre::{Result, eyre};
+#[cfg(feature = "browser")]
 use nanocodex_browser::{Browser, BrowserAction, BrowserActionResult, BrowserFrame};
 use nanousd::{
     CreateOrderRequest, CreateOrderResponse, CreditsClient, NANOUSD_DECIMALS, Order, OrderStatus,
 };
+#[cfg(feature = "browser")]
 use serde::Deserialize;
 use tempo_alloy::accounts::TempoAccountsStore;
 use tokio::process::Command as AsyncCommand;
@@ -179,6 +183,7 @@ async fn buy(
             )
             .await?
             {
+                #[cfg(feature = "browser")]
                 LinkCheckout::Submitted => {
                     if !args.json {
                         println!("Submitted secure Stripe Checkout with Link.");
@@ -226,14 +231,17 @@ fn open_checkout(checkout_url: &str, json: bool) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkCheckout {
     Unsupported,
+    #[cfg(feature = "browser")]
     Submitted,
 }
 
+#[cfg(feature = "browser")]
 #[derive(Debug, Deserialize)]
 struct LinkAuthStatus {
     authenticated: bool,
 }
 
+#[cfg(feature = "browser")]
 #[derive(Debug, Deserialize)]
 struct LinkSpendRequest {
     id: String,
@@ -241,6 +249,7 @@ struct LinkSpendRequest {
     link_pay_token: Option<String>,
 }
 
+#[cfg(feature = "browser")]
 struct LinkCheckoutFrame {
     frame_id: String,
     merchant_account_id: String,
@@ -261,6 +270,24 @@ async fn link_cli_available() -> bool {
     }
 }
 
+/// Link Checkout automation drives Stripe Checkout in the nanocodex-browser
+/// automation crate, which only builds with the `browser` feature.
+#[cfg(not(feature = "browser"))]
+async fn pay_checkout_with_link(
+    _checkout_url: &str,
+    _amount_cents: u64,
+    _timeout: Duration,
+    progress: bool,
+) -> Result<LinkCheckout> {
+    if progress {
+        eprintln!(
+            "Link Checkout automation is not included in this build (it requires the `browser` feature); opening Stripe Checkout in your browser."
+        );
+    }
+    Ok(LinkCheckout::Unsupported)
+}
+
+#[cfg(feature = "browser")]
 async fn pay_checkout_with_link(
     checkout_url: &str,
     amount_cents: u64,
@@ -408,6 +435,7 @@ async fn pay_checkout_with_link(
     Ok(LinkCheckout::Submitted)
 }
 
+#[cfg(feature = "browser")]
 async fn find_link_checkout_frame(browser: &Browser) -> Result<Option<LinkCheckoutFrame>> {
     const REVEAL: &str = r#"(() => {
         const root = document.querySelector('.AiAgentPaymentSteering');
@@ -447,6 +475,7 @@ async fn find_link_checkout_frame(browser: &Browser) -> Result<Option<LinkChecko
     Ok(None)
 }
 
+#[cfg(feature = "browser")]
 async fn inject_link_pay_token(browser: &Browser, frame_id: &str, token: &str) -> Result<()> {
     let token = serde_json::to_string(token)?;
     let expression = format!(
@@ -471,6 +500,7 @@ async fn inject_link_pay_token(browser: &Browser, frame_id: &str, token: &str) -
     }
 }
 
+#[cfg(feature = "browser")]
 async fn wait_for_link_card(browser: &Browser) -> Result<()> {
     const CARD_INPUT_COUNT: &str = r#"document.querySelectorAll(
         'input[autocomplete="cc-number"], input[name="cardnumber"], input[name="cardNumber"], input[data-elements-stable-field-name="cardNumber"]'
@@ -491,6 +521,7 @@ async fn wait_for_link_card(browser: &Browser) -> Result<()> {
     ))
 }
 
+#[cfg(feature = "browser")]
 async fn submit_link_checkout(browser: &Browser) -> Result<()> {
     const SUBMIT: &str = r#"(() => {
         const visible = (element) => {
@@ -521,6 +552,7 @@ async fn submit_link_checkout(browser: &Browser) -> Result<()> {
     ))
 }
 
+#[cfg(feature = "browser")]
 async fn wait_for_checkout_navigation(browser: &Browser, timeout: Duration) {
     let started = tokio::time::Instant::now();
     while started.elapsed() < timeout {
@@ -534,6 +566,7 @@ async fn wait_for_checkout_navigation(browser: &Browser, timeout: Duration) {
     }
 }
 
+#[cfg(feature = "browser")]
 async fn count_across_frames(browser: &Browser, expression: &str) -> Result<u64> {
     let mut count = 0_u64;
     for frame in browser_frames(browser).await? {
@@ -544,6 +577,7 @@ async fn count_across_frames(browser: &Browser, expression: &str) -> Result<u64>
     Ok(count)
 }
 
+#[cfg(feature = "browser")]
 async fn browser_frames(browser: &Browser) -> Result<Vec<BrowserFrame>> {
     match browser.execute(BrowserAction::ListFrames).await? {
         BrowserActionResult::Frames { frames, .. } => Ok(frames),
@@ -551,6 +585,7 @@ async fn browser_frames(browser: &Browser) -> Result<Vec<BrowserFrame>> {
     }
 }
 
+#[cfg(feature = "browser")]
 async fn evaluate_frame(
     browser: &Browser,
     frame_id: &str,
@@ -568,10 +603,12 @@ async fn evaluate_frame(
     }
 }
 
+#[cfg(feature = "browser")]
 async fn run_link_cli<T: for<'de> Deserialize<'de>>(args: &[&str], timeout: Duration) -> Result<T> {
     run_link_cli_owned(args.iter().map(|arg| (*arg).to_owned()).collect(), timeout).await
 }
 
+#[cfg(feature = "browser")]
 async fn run_link_cli_owned<T: for<'de> Deserialize<'de>>(
     args: Vec<String>,
     timeout: Duration,
@@ -603,6 +640,7 @@ async fn run_link_cli_owned<T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(&output.stdout).wrap_err("link-cli returned invalid JSON")
 }
 
+#[cfg(feature = "browser")]
 fn format_cents(cents: u64) -> String {
     format!("{}.{:02}", cents / 100, cents % 100)
 }

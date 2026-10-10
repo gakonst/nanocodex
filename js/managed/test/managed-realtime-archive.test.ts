@@ -9,7 +9,9 @@ for (const failWrite of [false, true]) {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       NANOCODEX_HISTORY: R2Bucket;
     };
-    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (session, state) => {
+      // Since 9d8b63102 a fresh session creates its schema on its first request.
+      await session.fetch(new Request("https://session.internal/sites"));
       const receipt: ManagedRealtimeReceipt = {
         voice_session_id: crypto.randomUUID(), operation_id: crypto.randomUUID(),
         kind: "start", request_hash: "a".repeat(64), state: "completed",

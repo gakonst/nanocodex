@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Production OAuth resource generation, account login, hosted authorization,
 // and atomic code exchange run in workerd with real SQLite Durable Objects.

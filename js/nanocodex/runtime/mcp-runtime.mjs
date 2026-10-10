@@ -8,7 +8,6 @@ import { mcpPaymentFactory, mcpPaymentWrap } from "./mcp-payment.mjs";
 
 const RETIRED = Symbol("retired MCP server");
 const DEFAULT_SEARCH_LIMIT = 8;
-const MAX_SEARCH_LIMIT = 32;
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60_000;
 const SEARCH_DESCRIPTION_PREFIX = "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.";
@@ -211,7 +210,7 @@ export async function createMcpRuntime(configuration, options = {}) {
       .search(query, { combineWith: "OR", prefix: true })
       .map(({ id }) => byName.get(id))
       .filter((entry) => entry && availableServers.has(entry.server.name))
-      .slice(0, Math.min(limit, MAX_SEARCH_LIMIT));
+      .slice(0, limit);
     const result = {
       tools: selected.map((entry) => ({
         name: entry.canonicalName,

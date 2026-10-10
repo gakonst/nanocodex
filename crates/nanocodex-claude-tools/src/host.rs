@@ -82,7 +82,7 @@ impl<'a> HostContext<'a> {
 pub enum ImageSource {
     /// Base64 image bytes; the caller validates supported image MIME types.
     Base64 { media_type: String, data: String },
-    /// Public HTTPS image authorized by the host.
+    /// Remote image URL, which the Claude driver replaces with a note to the model.
     Url { url: String },
 }
 /// Native result blocks. Unsupported media remains explicit, never silently lost.

@@ -2882,6 +2882,7 @@ pub(crate) async fn load_managed_credential(
 }
 
 /// Loads a live CLI grant authorized to sync cookies for one exact origin.
+#[cfg(feature = "browser")]
 pub(crate) async fn load_browser_cookie_sync_credential(
     codex_home: &Path,
     origin: &str,

@@ -36,6 +36,45 @@ running observation is never presented as a live executable cell. A terminal
 recovery retains its recorded success and cell.running=false. Terminate on a
 missing cell performs the same evidence read and does not imply termination.
 
+## Claude durable continuation
+
+Claude journals one cursor per admitted operation. After any continuation
+(owner loss, object reconstruction or runtime reopen) the round in flight is
+the recovered index, and its Code Mode calls are classified as follows:
+
+- A settled tool receipt replays unchanged.
+- An unreceipted exec from a replayed model response is refused with
+  "Code Mode admission was lost during recovery". Its guest source may already
+  have dispatched effects, and the journal cannot distinguish begun from
+  never-begun cells.
+- An unreceipted wait from a replayed response runs. wait never evaluates
+  source or admits effects: it observes a cell that is still live in this
+  runtime, or reconciles a missing cell from the observation journal above
+  (CODE_CELL_RECOVERED_EVIDENCE). Its result becomes a durable tool receipt.
+- A model response generated fresh after the continuation starts a new round.
+  The model receipt is committed before any of its tools dispatch, so none of
+  its calls can have run; exec and wait both execute normally.
+
+When a continuation happens without replacing the runtime, the recovered wait
+can find the cell still live. An earlier observer that has not yet released
+the cell makes the wait fail with "already has an active observer"; output an
+interrupted observer consumed is retained only in the journal's latest
+observation. Neither case repeats an effect. terminate=true on such a wait
+aborts the live cell as requested.
+
+The public HTTP journey covers both owner-loss boundaries with workerd SIGKILL:
+
+```sh
+cd js/managed
+node --test test/managed-curl-claude-yield-recovery.test.mjs
+```
+
+It asserts a replayed wait returns recovered evidence (completed YA receipt,
+pending YB) while its unreceipted sibling exec stays refused, that a fresh
+exec after an in-flight model request is lost runs once, and that no synthetic
+effect is dispatched twice. It is part of npm run test:durability:curl, which
+CI runs; evidence is written under output/managed-curl-recovery/claude-yield-*.
+
 ## Retention and compatibility
 
 Only the latest observation per cell is retained. Full envelopes are limited to

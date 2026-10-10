@@ -180,7 +180,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
             "changed instructions must receive a payload-sensitive ID"
         );
         assert_eq!(
-            replay["input"][1]["content"][0]["text"],
+            crate::model::instructions::caller_instructions(&replay),
             "instructions from the resumed rollout"
         );
         let replay_text = replay.to_string();
@@ -484,7 +484,7 @@ async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<
         assert!(resumed.body.get("previous_response_id").is_none());
         let replay = resumed.body.to_string();
         assert_eq!(
-            resumed.body["input"][1]["content"][0]["text"],
+            crate::model::instructions::caller_instructions(&resumed.body),
             "instructions from the new deployment"
         );
         assert_eq!(

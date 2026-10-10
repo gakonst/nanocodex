@@ -23,9 +23,7 @@ const HAND_IDENTITY_FILE: &str = "hand-identity";
 pub(crate) const UNIFIED_CLI_MARKER: &[u8] = b"NANOCODEX_UNIFIED_CLI_V1";
 
 fn is_unified_cli(contents: &[u8]) -> bool {
-    contents
-        .windows(UNIFIED_CLI_MARKER.len())
-        .any(|window| window == UNIFIED_CLI_MARKER)
+    crate::launcher::contains_marker(contents, UNIFIED_CLI_MARKER)
 }
 
 #[cfg(windows)]
@@ -145,6 +143,11 @@ impl VersionStore {
             bail!("NANOCODEX_DIR cannot be empty");
         }
         Ok(Self { root })
+    }
+
+    #[cfg(unix)]
+    pub(super) fn at_root(root: PathBuf) -> Self {
+        Self { root }
     }
 
     #[cfg(test)]
@@ -676,6 +679,7 @@ impl VersionStore {
             self.activate_symlink(key)?;
             self.install_launcher()?;
             self.sync_nanocodex2_launcher(key)?;
+            self.sync_hand_aliases(key)?;
             self.remove_retired_computer_launcher()?;
         }
 
@@ -692,6 +696,43 @@ impl VersionStore {
         }
 
         Ok(())
+    }
+
+    /// Apply this version's entrypoint rules after an older updater activated
+    /// it. Pre-unified updaters link `bin/nanocodex2` to `../current/nanocodex2`
+    /// (in a unified version, the Hand daemon) and create no `nc`, `ncl`,
+    /// `nanocodex-hand` or `nc-hand`; this version's own activation never
+    /// links that name to the Hand. Only the running, active CLI repairs its
+    /// own installation, once: afterwards the trigger no longer matches, so a
+    /// normal start costs one readlink. Hand files, `current` and service
+    /// records are untouched. Returns whether the entrypoints were repaired.
+    #[cfg(unix)]
+    pub(super) fn repair_legacy_activation(&self) -> Result<bool> {
+        let entrypoint = self.root.join("bin").join(NANOCODEX2_BINARY_NAME);
+        let legacy = Path::new("../current").join(NANOCODEX2_BINARY_NAME);
+        let stale = || fs::read_link(&entrypoint).is_ok_and(|target| target == legacy);
+        if !stale() {
+            return Ok(false);
+        }
+        let Some(key) = self.active()? else {
+            return Ok(false);
+        };
+        let running = std::env::current_exe()?.canonicalize()?;
+        if self.binary_path(&key).canonicalize().ok() != Some(running) {
+            return Ok(false);
+        }
+        // A concurrent update owns the entrypoints; a later start repairs them.
+        let Ok(_lock) = self.update_lock() else {
+            return Ok(false);
+        };
+        if !stale() || self.active()?.as_deref() != Some(key.as_str()) {
+            return Ok(false);
+        }
+        self.install_launcher()?;
+        self.sync_hand_aliases(&key)?;
+        // Last: this clears the trigger, so an earlier failure retries next start.
+        self.sync_nanocodex2_launcher(&key)?;
+        Ok(true)
     }
 
     pub(super) fn active(&self) -> Result<Option<String>> {
@@ -727,8 +768,40 @@ impl VersionStore {
 
     pub(super) fn promote_running_manager(&self) -> Result<()> {
         let contents = fs::read(std::env::current_exe()?)?;
-        atomic_write(&self.updater_path(), &contents, true)?;
-        self.write_updater_checksum(&contents)
+        self.publish_updater(&contents)
+    }
+
+    /// Publish `contents` as the updater. A repeated update that selects the
+    /// same manager keeps the existing file (its inode, mtime and receipt)
+    /// instead of rewriting the whole executable with identical bytes.
+    fn publish_updater(&self, contents: &[u8]) -> Result<()> {
+        let checksum = format!("{}\n", hex::encode(Sha256::digest(contents)));
+        let path = self.updater_path();
+        let executable = |metadata: &fs::Metadata| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 == 0o111
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = metadata;
+                true
+            }
+        };
+        let unchanged = fs::read_to_string(self.updater_checksum_path())
+            .is_ok_and(|receipt| receipt == checksum)
+            && fs::symlink_metadata(&path).is_ok_and(|metadata| {
+                metadata.is_file()
+                    && metadata.len() == contents.len() as u64
+                    && executable(&metadata)
+            })
+            && fs::read(&path).is_ok_and(|existing| existing == contents);
+        if unchanged {
+            return Ok(());
+        }
+        atomic_write(&path, contents, true)?;
+        atomic_write(&self.updater_checksum_path(), checksum.as_bytes(), false)
     }
 
     pub(super) fn promote_manager(&self, key: &str) -> Result<()> {
@@ -740,8 +813,7 @@ impl VersionStore {
         {
             let contents = fs::read(self.binary_path(key))
                 .wrap_err_with(|| format!("failed to read Nanocodex version {key}"))?;
-            atomic_write(&self.updater_path(), &contents, true)?;
-            self.write_updater_checksum(&contents)?;
+            self.publish_updater(&contents)?;
         }
 
         Ok(())
@@ -957,6 +1029,64 @@ exec "$install_root/current/nanocodex" "$@"
                 atomic_symlink(&path, &Path::new("../current").join(executable))?;
             } else {
                 self.remove_own_current_link(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Link `nanocodex-hand`/`nc-hand` to the selected Hand when it serves the
+    /// `hand` command under those names. macOS runs the signed bundle Hand so
+    /// its privacy grants apply. Otherwise remove only our own links: an older
+    /// Hand (or a CLI-only version) would run the wrong command under them.
+    #[cfg(unix)]
+    fn sync_hand_aliases(&self, key: &str) -> Result<()> {
+        use crate::hand_executable::{HAND_COMMAND_ALIASES, HAND_COMMAND_ALIASES_MARKER};
+        const APP_HAND: &str = "Nanocodex.app/Contents/MacOS/nanocodex2";
+        let selected = self.version_dir(key);
+        let serves_aliases = |contents: &[u8]| {
+            crate::launcher::contains_marker(contents, HAND_COMMAND_ALIASES_MARKER)
+        };
+        // Read each Hand once: its checksum and capability come from one copy.
+        let checksummed_hand = || -> Result<Option<Vec<u8>>> {
+            let expected = match fs::read_to_string(selected.join(NANOCODEX2_CHECKSUM_FILE)) {
+                Ok(expected) => expected.trim().to_ascii_lowercase(),
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error).wrap_err("failed to read the Hand checksum"),
+            };
+            match fs::read(selected.join(NANOCODEX2_BINARY_NAME)) {
+                Ok(contents) if hex::encode(Sha256::digest(&contents)) == expected => {
+                    Ok(Some(contents))
+                }
+                Ok(_) => Ok(None),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error).wrap_err("failed to read the selected Hand"),
+            }
+        };
+        let hand = if cfg!(target_os = "macos")
+            && fs::read(selected.join(APP_HAND)).is_ok_and(|contents| serves_aliases(&contents))
+        {
+            Some(APP_HAND)
+        } else if checksummed_hand()?.is_some_and(|contents| serves_aliases(&contents)) {
+            Some(NANOCODEX2_BINARY_NAME)
+        } else {
+            None
+        };
+        for alias in HAND_COMMAND_ALIASES {
+            let path = self.root.join("bin").join(alias);
+            match hand {
+                Some(hand) => atomic_symlink(&path, &Path::new("../current").join(hand))?,
+                None => {
+                    let ours = fs::read_link(&path).is_ok_and(|target| {
+                        [NANOCODEX2_BINARY_NAME, APP_HAND].iter().any(|hand| {
+                            target == Path::new("../current").join(hand)
+                                || target == self.root.join("current").join(hand)
+                        })
+                    });
+                    if ours {
+                        fs::remove_file(&path)
+                            .wrap_err_with(|| format!("failed to remove {}", path.display()))?;
+                    }
+                }
             }
         }
         Ok(())
@@ -1514,6 +1644,31 @@ mod tests {
             .unwrap(),
             b"hand"
         );
+        // A Hand without the alias capability gets no Hand command links.
+        for alias in crate::hand_executable::HAND_COMMAND_ALIASES {
+            assert!(fs::symlink_metadata(bin.join(alias)).is_err(), "{alias}");
+        }
+        let hand = [
+            b"hand ".as_slice(),
+            crate::hand_executable::HAND_COMMAND_ALIASES_MARKER,
+        ]
+        .concat();
+        store
+            .install_bundle("aliased", &cli, &hand, None, None)
+            .unwrap();
+        store.activate("aliased").unwrap();
+        for alias in crate::hand_executable::HAND_COMMAND_ALIASES {
+            assert_eq!(
+                fs::read_link(bin.join(alias)).unwrap(),
+                Path::new("../current").join(NANOCODEX2_BINARY_NAME),
+                "{alias}"
+            );
+            assert_eq!(fs::read(bin.join(alias)).unwrap(), hand, "{alias}");
+        }
+        store.activate("unified").unwrap();
+        for alias in crate::hand_executable::HAND_COMMAND_ALIASES {
+            assert!(fs::symlink_metadata(bin.join(alias)).is_err(), "{alias}");
+        }
 
         let old = crate::launcher::NATIVE_LAUNCHER_MARKER;
         store.install_bundle("older", old, old, None, None).unwrap();

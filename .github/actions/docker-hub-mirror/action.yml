@@ -1,0 +1,21 @@
+name: Docker Hub mirror
+description: >-
+  Resolve Docker Hub images for the runner's Docker daemon (plain docker build,
+  Wrangler container builds) through mirror.gcr.io first, reducing failures
+  from anonymous Docker Hub pull limits on shared runner IPs. When the mirror
+  lacks an image or is unavailable the daemon falls back to Docker Hub, where
+  those limits still apply. Linux runners only.
+runs:
+  using: composite
+  steps:
+    - name: Configure the Docker daemon registry mirror
+      shell: bash
+      run: |
+        if [[ "$RUNNER_OS" != Linux ]]; then exit 0; fi
+        config=/etc/docker/daemon.json
+        current='{}'
+        if sudo test -s "$config"; then current="$(sudo cat "$config")"; fi
+        jq '."registry-mirrors" = ((."registry-mirrors" // []) + ["https://mirror.gcr.io"] | unique)' <<<"$current" \
+          | sudo tee "$config" >/dev/null
+        sudo systemctl restart docker
+        docker info --format 'Docker registry mirrors: {{json .RegistryConfig.Mirrors}}'

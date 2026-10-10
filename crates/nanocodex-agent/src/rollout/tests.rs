@@ -349,6 +349,7 @@ fn moved_rollout_payload_preserves_tool_transcript_and_compacted_history() {
             call_id: "call-1".to_owned(),
             name: "search".to_owned(),
             arguments: "{\"query\":\"rust\"}".to_owned(),
+            parent_call_id: None,
         }]
     );
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
@@ -541,6 +542,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
             call_id: "custom-1".to_owned(),
             name: "exec".to_owned(),
             arguments: "text(true);".to_owned(),
+            parent_call_id: None,
         })
     );
     assert_eq!(
@@ -554,6 +556,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
             call_id: "function-1".to_owned(),
             name: "wait".to_owned(),
             arguments: "{\"cell_id\":\"1\"}".to_owned(),
+            parent_call_id: None,
         })
     );
     assert_eq!(
@@ -570,6 +573,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
             call_id: "mcp-1".to_owned(),
             name: "node_repl.js".to_owned(),
             arguments: "{\"code\":\"return true\"}".to_owned(),
+            parent_call_id: None,
         })
     );
     let web_search = visible_rollout_event(&serde_json::json!({
@@ -583,6 +587,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
         call_id,
         name,
         arguments,
+        ..
     } = web_search
     else {
         panic!("web search must reconstruct as tool activity");

@@ -56,7 +56,6 @@ pub(crate) struct LocalBackend {
     /// Visible history of a resumed session, replayed once on connect.
     pub(crate) transcript: Vec<nanocodex::agent::session::TranscriptItem>,
     mpp_adapter: Option<crate::mpp::MppAdapter>,
-    browser: Option<crate::browser::ConfiguredBrowser>,
     vm: Option<crate::vm::ConfiguredVm>,
     child_agents: Option<Arc<ChildAgents>>,
 }
@@ -81,13 +80,11 @@ impl LocalBackend {
             subagent_updates,
             mpp_adapter,
             mcp,
-            browser,
             vm,
             model,
         } = agent;
         let mut capabilities = Capabilities::LOCAL;
         capabilities.voice_realtime = realtime.is_some();
-        capabilities.claude_host = matches!(model.family(), nanocodex::HarnessFamily::Claude);
         let backend = Self {
             capabilities,
             launch,
@@ -104,7 +101,6 @@ impl LocalBackend {
             },
             transcript: Vec::new(),
             mpp_adapter,
-            browser,
             vm,
             child_agents,
         };
@@ -127,16 +123,12 @@ impl LocalBackend {
         self.capabilities
     }
 
-    /// Releases subagents, browser, VM and MPP resources (legacy shutdown_runtime).
+    /// Releases subagents, VM and MPP resources (legacy shutdown_runtime).
     pub(crate) async fn shutdown(self) -> Result<()> {
         if let Some(child_agents) = self.child_agents {
             child_agents.shutdown().await;
         }
         drop(self.handle);
-        let browser = match self.browser {
-            Some(browser) => browser.shutdown().await,
-            None => Ok(()),
-        };
         let vm = match self.vm {
             Some(vm) => vm.shutdown().await,
             None => Ok(()),
@@ -145,7 +137,6 @@ impl LocalBackend {
             Some(adapter) => adapter.shutdown().await,
             None => Ok(()),
         };
-        browser?;
         vm?;
         mpp
     }

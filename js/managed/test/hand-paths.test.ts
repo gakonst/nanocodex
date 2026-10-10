@@ -6,7 +6,9 @@ import type { DurableAgentSession } from "../src/index";
 it("projects VM screen labels only for the owning account and exact allocation identity", async () => {
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   const stub = sessions.getByName(crypto.randomUUID());
-  await runInDurableObject(stub, async (_, state) => {
+  await runInDurableObject(stub, async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
       authorization_epoch,public_origin,runtime_profile,accepted_turns,last_active)
       VALUES(1,?,'owner','org','team',1,'https://test.example','managed',0,?)`, crypto.randomUUID(), Date.now());

@@ -1,7 +1,7 @@
 import { applyD1Migrations, env, runInDurableObject } from "cloudflare:test";
 import { beforeAll, expect, it } from "vitest";
 import type { DurableAgentSession } from "../src/index";
-import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { DEFAULT_OPENAI_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 
 beforeAll(async () => {
@@ -11,6 +11,8 @@ beforeAll(async () => {
 
 // Exercise tool discovery, Code Mode, retained turn authority, and D1 through three
 // real managed sessions; deterministic provider replies keep this reproducible.
+// The fixture speaks the OpenAI Responses socket; the Claude default (398726862)
+// would require a private Messages binding, so pin the OpenAI default settings.
 it("imports and researches a meeting, recalls missing notes, and records the user’s notes across conversations", async () => {
   const { crmRequest } = await import("../src/crm");
   const db = (env as unknown as { NANOCODEX_CRM: D1Database }).NANOCODEX_CRM;
@@ -72,7 +74,7 @@ it("imports and researches a meeting, recalls missing notes, and records the use
         return session.fetch(new Request(`https://session.internal${path}`, { method: "POST", headers, body: JSON.stringify(body) }));
       };
       expect((await call("/create", { session_id: id, owner_id: principal.userId, organization_id: principal.organizationId,
-        team_id: principal.teamId, authorization_epoch: 1, public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS,
+        team_id: principal.teamId, authorization_epoch: 1, public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS,
         configuration: {} })).status).toBe(200);
       try {
         expect((await call("/turns", { id: turnId, input: ["Sync my calendar and research the people I met.", "Which meetings are still missing my notes?", "Add to Jamie’s meeting: we discussed database benchmarks; I will send our results."][journey] })).status).toBe(202);

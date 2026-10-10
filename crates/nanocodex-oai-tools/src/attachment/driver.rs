@@ -41,10 +41,21 @@ const HEARTBEAT_TIMEOUT_REASON: &str = "attachment heartbeat timed out";
 /// Fenced reason when the endpoint reports the attachment permanently gone (HTTP 410).
 pub(crate) const ATTACHMENT_REVOKED_REASON: &str =
     "attachment endpoint permanently revoked this attachment";
+/// Other HTTP refusals (404, 409 superseded/conflict, 429 and other 4xx) back
+/// off furthest.
 #[cfg(not(test))]
 const MAX_REJECTED_BACKOFF: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const MAX_REJECTED_BACKOFF: Duration = Duration::from_millis(500);
+/// Transport loss or a failed connect: the endpoint may be unreachable.
+const MAX_TRANSPORT_BACKOFF: Duration = Duration::from_secs(5);
+/// HTTP 5xx proves a reachable service that temporarily cannot admit the
+/// attachment (deploys, isolate restarts, backend exceptions mapped to 503).
+/// Reattach quickly while such an outage is young so a deploy window does not
+/// grow into a long exponential gap.
+const MAX_SERVICE_BACKOFF: Duration = Duration::from_secs(2);
+/// A continuous service outage older than this falls back to the transport cap.
+const FAST_SERVICE_WINDOW: Duration = Duration::from_secs(30);
 
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
@@ -74,6 +85,8 @@ pub(crate) async fn run(
     let mut backoff = Duration::from_millis(100);
     let mut attempt = 0_u64;
     let mut previous_delay = Duration::ZERO;
+    // Start of the current run of consecutive transient service refusals.
+    let mut service_outage: Option<Instant> = None;
     let terminal = loop {
         attempt = attempt.saturating_add(1);
         let connection_id = uuid::Uuid::new_v4().to_string();
@@ -154,26 +167,52 @@ pub(crate) async fn run(
                 break Err(AttachmentError::Fenced(ATTACHMENT_REVOKED_REASON.into()));
             }
             other => {
-                // An HTTP rejection proves the endpoint is reachable but refusing
-                // this attachment; back off further than for transport loss.
-                let rejected = matches!(
-                    &other,
-                    Ok(Err(tokio_tungstenite::tungstenite::Error::Http(_)))
-                );
-                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.connect_failed", reason_code = if rejected { "http_rejected" } else if other.is_err() { "connect_timeout" } else { "connect_failure" }, reconnect_delay_ms = backoff.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
+                let (failure, http_status) = match &other {
+                    Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+                        let code = response.status().as_u16();
+                        let retry_after = retry_after(response.headers());
+                        let failure = if (500..=599).contains(&code) {
+                            Failure::Service { retry_after }
+                        } else {
+                            Failure::Rejected { retry_after }
+                        };
+                        (failure, Some(code))
+                    }
+                    _ => (Failure::Transport, None),
+                };
+                let outage_ms = if matches!(failure, Failure::Service { .. }) {
+                    let started = *service_outage.get_or_insert_with(Instant::now);
+                    Some(started.elapsed().as_millis() as u64)
+                } else {
+                    service_outage = None;
+                    None
+                };
+                let delay = failure.delay(&mut backoff, service_outage);
+                let reason_code = match failure {
+                    Failure::Service { .. } => "service_unavailable",
+                    Failure::Rejected { .. } => "http_rejected",
+                    Failure::Transport if other.is_err() => "connect_timeout",
+                    Failure::Transport => "connect_failure",
+                };
+                let retry_after_ms = match failure {
+                    Failure::Service {
+                        retry_after: Some(after),
+                    }
+                    | Failure::Rejected {
+                        retry_after: Some(after),
+                    } => Some(after.as_millis() as u64),
+                    _ => None,
+                };
+                connection_span.in_scope(|| tracing::warn!(target: "nanocodex_oai_tools::attachment", stage = "attachment.socket.connect_failed", reason_code, http_status, retry_after_ms, service_outage_ms = outage_ms, reconnect_delay_ms = delay.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
                 let _ = status.send(AttachmentStatus::Disconnected);
-                previous_delay = backoff;
-                if wait_backoff(&mut commands, backoff).await {
+                previous_delay = delay;
+                if wait_backoff(&mut commands, delay).await {
                     break Ok(());
                 }
-                backoff = (backoff * 2).min(if rejected {
-                    MAX_REJECTED_BACKOFF
-                } else {
-                    Duration::from_secs(5)
-                });
                 continue;
             }
         };
+        service_outage = None;
         let connected_at = Instant::now();
         let end = connection(
             socket,
@@ -198,6 +237,15 @@ pub(crate) async fn run(
         {
             backoff = Duration::from_millis(100);
         }
+        // A socket lost after upgrade is transport loss. Its cap applies even
+        // when earlier refusals grew the shared exponent past it.
+        let delay = matches!(
+            end,
+            ConnectionEnd::Failed(_)
+                | ConnectionEnd::Disconnected
+                | ConnectionEnd::HeartbeatTimeout
+        )
+        .then(|| Failure::Transport.delay(&mut backoff, None));
         connection_span.in_scope(|| {
             if let ConnectionEnd::Failed(error) | ConnectionEnd::DetachFailed(error) = &end {
                 tracing::debug!(target: "nanocodex_oai_tools::attachment", %error, "attachment transport ended");
@@ -205,7 +253,7 @@ pub(crate) async fn run(
             tracing::info!(target: "nanocodex_oai_tools::attachment",
             stage = "attachment.socket.closed", reason_code = end.reason_code(),
             pending_calls = active.iter().filter(|call| !call.task.is_finished()).count(),
-            reconnect_delay_ms = backoff.as_millis() as u64, "attachment connection ended")
+            reconnect_delay_ms = delay.map(|delay| delay.as_millis() as u64), "attachment connection ended")
         });
         match end {
             ConnectionEnd::Detached => break Ok(()),
@@ -224,11 +272,11 @@ pub(crate) async fn run(
             | ConnectionEnd::Disconnected
             | ConnectionEnd::HeartbeatTimeout => {
                 let _ = status.send(AttachmentStatus::Disconnected);
-                previous_delay = backoff;
-                if wait_backoff(&mut commands, backoff).await {
+                let delay = delay.unwrap_or(MAX_TRANSPORT_BACKOFF);
+                previous_delay = delay;
+                if wait_backoff(&mut commands, delay).await {
                     break Ok(());
                 }
-                backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         }
     };
@@ -306,6 +354,67 @@ fn safe_uuid(value: &str) -> Option<String> {
         .ok()
         .filter(|id| id.get_version_num() == 4 && id.get_variant() == uuid::Variant::RFC4122)
         .map(|id| id.to_string())
+}
+
+/// How a reconnect attempt failed, which selects its reconnect schedule.
+#[derive(Clone, Copy)]
+enum Failure {
+    /// Transport loss, refused TCP, DNS, TLS or a connect timeout.
+    Transport,
+    /// HTTP 5xx from a reachable service that may admit us shortly.
+    Service { retry_after: Option<Duration> },
+    /// Other HTTP refusals (including 409 and 429), unlikely to clear soon.
+    Rejected { retry_after: Option<Duration> },
+}
+
+impl Failure {
+    /// Returns this attempt's wait and advances the shared exponent. Each class
+    /// caps the exponent independently, so a long permanent-refusal exponent
+    /// never stretches a transient or transport reconnect.
+    fn delay(self, backoff: &mut Duration, service_outage: Option<Instant>) -> Duration {
+        let cap = match self {
+            Self::Transport => MAX_TRANSPORT_BACKOFF,
+            Self::Service { .. }
+                if service_outage
+                    .is_some_and(|started| started.elapsed() < FAST_SERVICE_WINDOW) =>
+            {
+                MAX_SERVICE_BACKOFF
+            }
+            Self::Service { .. } => MAX_TRANSPORT_BACKOFF,
+            Self::Rejected { .. } => MAX_REJECTED_BACKOFF,
+        };
+        let scheduled = (*backoff).min(cap);
+        *backoff = (scheduled * 2).min(cap);
+        match self {
+            // Retry-After is the service's lower bound; never retry sooner. The
+            // wait stays interruptible by detach.
+            Self::Service {
+                retry_after: Some(after),
+            }
+            | Self::Rejected {
+                retry_after: Some(after),
+            } => scheduled.max(after),
+            _ => scheduled,
+        }
+    }
+}
+
+/// Retry-After as delta-seconds or an HTTP-date (RFC 9110 section 10.2.3). A
+/// date in the past means no extra wait; malformed values use the schedule.
+fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
+    let value = headers
+        .get(http::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = httpdate::parse_http_date(value).ok()?;
+    Some(
+        at.duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 async fn wait_backoff(commands: &mut mpsc::Receiver<Command>, delay: Duration) -> bool {

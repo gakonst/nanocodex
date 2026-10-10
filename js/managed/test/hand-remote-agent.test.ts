@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { AccountHostedTools, AccountHostedToolsProvider } from "../src/account-hosted-tools";
 import { screenAction, screenResult } from "../src/hand-remote-agent";
@@ -111,7 +111,7 @@ describe("agent screen protocol", () => {
     allowed = true;
     const replacement = await host(machine.id);
     await provider.refresh();
-    expect(await cua.handler({ workdir, action: "click", x: 0.5, y: 0.5 }, context))
+    expect(await cua.handler({ workdir, action: "click", x: 0.5, y: 0.5 }, { ...context, callId: "screen-stale-click" }))
       .toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
     const freshContext = { ...context, parentCallId: "replacement-cell", callId: "replacement-discover" };
     expect(await cua.handler({ workdir }, freshContext)).toHaveProperty("definitions");
@@ -196,7 +196,7 @@ describe("agent screen protocol", () => {
       { action: "recording", operation: "frame", id, sha256, length: 375_001 },
       { action: "recording", operation: "frame", id, sha256, offset: -1 },
       { action: "recording", operation: "export", id, path: "/private" },
-    ]) expect(await cua.handler({ workdir: "/recording-hand", ...input }, context))
+    ]) expect(await cua.handler({ workdir: "/recording-hand", ...input }, { ...context, callId: "recording-invalid-" + JSON.stringify(input) }))
       .toMatchObject({ success: false, structuredResult: { status: "invalid" } });
     const unauthorized = await connected.stub.fetch("https://account-tools.internal/invoke", { method: "POST", body: JSON.stringify({
       owner_id: other, name: connected.tool.definition.name, route_token: connected.tool.route_token,
@@ -213,7 +213,7 @@ describe("agent screen protocol", () => {
     expect((await cancelled).name).toBe("AbortError");
     // Oversized native results close the offending host and settle its request as unknown.
     const requested = next(connected.socket);
-    const pending = cua.handler({ workdir: "/recording-hand", action: "recording", operation: "status", id }, context);
+    const pending = cua.handler({ workdir: "/recording-hand", action: "recording", operation: "status", id }, { ...context, callId: "recording-oversized" });
     const request = await requested;
     connected.socket.send(JSON.stringify({ type: "agent_result", request_id: request.request_id, status: "ok", recording: { status: "ok", data_base64: "A".repeat(740_000) } }));
     expect(await pending).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
@@ -239,9 +239,9 @@ describe("agent screen protocol", () => {
   });
   it("advertises an immutable account tool, returns images, and fences the result to its host", async () => {
     const first = await host("agent-primary"), second = await host("agent-other");
-    const invoke = (entry: any, ownerID = owner) => first.stub.fetch("https://account-tools.internal/invoke", {
+    const invoke = (entry: any, ownerID = owner, callId = "screen-observe", input: unknown = { action: "observe" }) => first.stub.fetch("https://account-tools.internal/invoke", {
       method: "POST", body: JSON.stringify({ owner_id: ownerID, name: entry.definition.name, route_token: entry.route_token,
-        session_id: "11111111-1111-4111-8111-111111111199", call_id: "screen-observe", input: { action: "observe" } }),
+        session_id: "11111111-1111-4111-8111-111111111199", call_id: callId, input }),
     });
     expect((await invoke(first.tool, other)).status).toBe(404);
     const requested = next(first.socket), pending = invoke(first.tool);
@@ -255,8 +255,17 @@ describe("agent screen protocol", () => {
     expect(result.output[1]).toMatchObject({ type: "input_image", image_url: "data:image/jpeg;base64,/9j/2Q==" });
     expect(result.value).toMatchObject({ status: "ok", image_url: "data:image/jpeg;base64,/9j/2Q==", detail: "original" });
     expect(result.structured_result).toEqual(result.value);
+    let resent = false;
+    first.socket.addEventListener("message", event => { if (JSON.parse(String(event.data)).type === "agent_call") resent = true; });
+    // The same admitted identity replays its durable receipt and is never sent again;
+    // a conflicting reuse of that call ID (other input) never receives it.
+    expect(await (await invoke(first.tool)).json()).toEqual(result);
+    const conflict = await invoke(first.tool, owner, "screen-observe", { action: "click", x: 0.5, y: 0.5 });
+    expect([conflict.status, await conflict.json()]).toEqual([409, { error: "duplicate_call", admission: "retained" }]);
     const replacement = await host("agent-primary");
-    expect((await invoke(first.tool)).status).toBe(409);
+    expect((await invoke(first.tool, owner, "screen-after-replacement")).status).toBe(409);
+    expect(await (await invoke(first.tool)).json()).toEqual(result);
+    expect(resent).toBe(false);
     replacement.socket.close(); second.socket.close();
   });
   it("forwards provider context through the host boundary into text and both structured outputs", async () => {
@@ -283,6 +292,180 @@ describe("agent screen protocol", () => {
     expect(result.output.map(item => item.type)).toEqual(["input_text", "input_image"]);
     expect(screenResult({ status: "ok", jpeg: "/9j/2Q==", observation: { ...observation, schemaVersion: 2 } as any }, target).value).not.toHaveProperty("observation");
     expect(screenResult({ status: "busy", observation }, target).value).not.toHaveProperty("observation");
+  });
+  it("validates a late host result like a live one after the account object is reconstructed, without resending input", async () => {
+    // One surface admits one action at a time, so each pending call has its own Hand.
+    const hosts = [await host("agent-late"), await host("agent-late-recording", true)];
+    const session = "11111111-1111-4111-8111-111111111197";
+    const invocation = (tool: any, callId: string, input: unknown) => JSON.stringify({ owner_id: owner, name: tool.definition.name,
+      route_token: tool.route_token, session_id: session, call_id: callId, input });
+    let resent = 0;
+    const calls: { connected: (typeof hosts)[number]; body: (callId?: string, input?: unknown) => string; requestId: string; response: Promise<Response> }[] = [];
+    for (const [connected, callId, input] of [[hosts[0]!, "late-observe", { action: "observe" }],
+      [hosts[1]!, "late-recording", { action: "recording", operation: "sources" }]] as const) {
+      const requested = next(connected.socket);
+      const body = (otherCallId: string = callId, otherInput: unknown = input) => invocation(connected.tool, otherCallId, otherInput);
+      const response = connected.stub.fetch("https://account-tools.internal/invoke", { method: "POST", body: body() });
+      calls.push({ connected, body, requestId: (await requested).request_id, response });
+      connected.socket.addEventListener("message", event => { if (JSON.parse(String(event.data)).type === "agent_call") resent++; });
+    }
+    // The original instance still holds both pending calls in memory. A new
+    // AccountHostedTools over the same SQLite storage and hibernated host socket
+    // models its loss: results reach it only through production webSocketMessage.
+    const settled = await runInDurableObject(hosts[0]!.stub, async (_instance, state) => {
+      const reconstructed = new AccountHostedTools(state, env as any);
+      const late = (call: (typeof calls)[number], result: Record<string, unknown>) => {
+        const socket = state.getWebSockets().find(peer => (peer.deserializeAttachment() as { id?: string } | null)?.id === call.connected.state.connection_id)!;
+        return reconstructed.webSocketMessage(socket, JSON.stringify({ type: "agent_result", request_id: call.requestId, ...result }));
+      };
+      const replay = async (body: string) => {
+        const response = await reconstructed.fetch(new Request("https://account-tools.internal/invoke", { method: "POST", body }));
+        return [response.status, await response.json()] as const;
+      };
+      const [observe, recording] = calls;
+      // Each malformed late result breaks a rule the live pending call enforces;
+      // none settles its identity or fences the host.
+      for (const malformed of [
+        { status: "ok" }, // ok observe without its JPEG
+        { status: "ok", recording: { status: "ok" } }, // recording response for an observe call
+      ]) await late(observe!, malformed);
+      for (const malformed of [
+        { status: "ok" }, // ok recording call without its recording
+        { status: "ok", recording: { status: "error" } }, // ok result with a failed recording
+        { status: "ok", recording: { status: "ok" }, observation }, // recording with an observation
+        { status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1, recording: { status: "ok" } }, // recording with an image
+      ]) await late(recording!, malformed);
+      const retained = [409, { error: "duplicate_call", admission: "retained" }];
+      expect(await replay(observe!.body())).toEqual(retained);
+      expect(await replay(recording!.body())).toEqual(retained);
+      // Valid late results for the same connection and generation settle the exact identities.
+      await late(observe!, { status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1 });
+      await late(recording!, { status: "ok", recording: { status: "ok", sources: [] } });
+      const settledObserve = await replay(observe!.body()), settledRecording = await replay(recording!.body());
+      expect(settledObserve).toMatchObject([200, { success: true, value: { status: "ok", image_url: "data:image/jpeg;base64,/9j/2Q==" } }]);
+      expect(settledRecording).toMatchObject([200, { success: true, value: { status: "ok", recording: { status: "ok", sources: [] } } }]);
+      // A conflicting reuse of the call ID never receives the retained receipt.
+      expect(await replay(observe!.body(undefined, { action: "click", x: 0.5, y: 0.5 }))).toEqual(retained);
+      return [settledObserve[1], settledRecording[1]];
+    });
+    for (const { socket } of hosts) expect(socket.readyState).toBe(WebSocket.OPEN);
+    // Releasing the original pending calls cannot overwrite the settled receipts.
+    for (const call of calls) {
+      const cancel = await call.connected.stub.fetch("https://account-tools.internal/cancel-invocation", { method: "POST", body: call.body() });
+      expect(await cancel.json()).toEqual({ cancel: "terminal" });
+      await call.response;
+      const replayed = await call.connected.stub.fetch("https://account-tools.internal/invoke", { method: "POST", body: call.body() });
+      expect(await replayed.json()).toEqual(settled[calls.indexOf(call)]);
+    }
+    expect(resent).toBe(0);
+    for (const { socket } of hosts) socket.close();
+  });
+  it("keeps a screen identity with no ledger row unknown and fenced, never claiming it unsent or sending it", async () => {
+    // A current screen route whose identity has no ledger row is what a
+    // pre-ledger publisher (or a lost /invoke) leaves behind: it may have acted.
+    const connected = await host("agent-legacy");
+    const session = "11111111-1111-4111-8111-111111111196";
+    const input = { action: "click", x: 0.5, y: 0.5 };
+    const body = (callId: string) => JSON.stringify({ owner_id: owner, name: connected.tool.definition.name,
+      route_token: connected.tool.route_token, session_id: session, call_id: callId, input });
+    let frames = 0;
+    connected.socket.addEventListener("message", event => { if (JSON.parse(String(event.data)).type === "agent_call") frames++; });
+    const paths: string[] = [];
+    let lose = true;
+    // The provider's first /invoke is lost before it reaches the account object.
+    const lossy = { getByName: (name: string) => {
+      const stub = namespace().getByName(name);
+      return new Proxy(stub, { get: (target, key) => key !== "fetch" ? Reflect.get(target, key)
+        : async (url: string, init?: RequestInit) => {
+          const path = new URL(url).pathname; paths.push(path);
+          if (path === "/invoke" && lose) { lose = false; throw new Error("Network connection lost."); }
+          return target.fetch(url, init);
+        } });
+    } } as unknown as DurableObjectNamespace<AccountHostedTools>;
+    const provider = new AccountHostedToolsProvider(lossy, owner, () => true);
+    await provider.refresh();
+    const runtime = createNamespaceExecutionRuntime(() => provider.screenMachines(), () => undefined, undefined,
+      (id, context) => provider.screenTool(id, context));
+    const cua = runtime.tools[CUA_JS_NAME]!;
+    const context = { sessionId: session, callId: "legacy-click", parentCallId: "legacy-cell", model: "fixture", signal: new AbortController().signal };
+    const lost: any = await cua.handler({ workdir: "/agent-legacy", ...input }, context);
+    expect(lost).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    expect(lost.structuredResult.reason).not.toBe("receipt_missing");
+    expect(lost.structuredResult.admitted).not.toBe(false);
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    const post = async (path: string, callId: string) => {
+      const response = await connected.stub.fetch("https://account-tools.internal/" + path, { method: "POST", body: body(callId) });
+      return [response.status, await response.json()];
+    };
+    // Its receipt stays unknown rather than none, and the identity is fenced: a
+    // later same-identity invoke is rejected before any frame is sent.
+    expect(await post("invoke-receipt", "legacy-click")).toEqual([409, { error: "receipt_unresolved", admission: "unknown" }]);
+    expect(await post("invoke", "legacy-click")).toEqual([409, { error: "call_fenced", admission: "none" }]);
+    expect(await cua.handler({ workdir: "/agent-legacy", ...input }, context))
+      .toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    // Cancelling an identity with no row is never reported as cancelled before
+    // start, and fences any late send of it.
+    expect(await post("cancel-invocation", "legacy-cancel")).toEqual([200, { cancel: "not_delivered" }]);
+    expect(await post("invoke", "legacy-cancel")).toEqual([409, { error: "call_fenced", admission: "none" }]);
+    expect(await post("invoke-receipt", "legacy-cancel")).toEqual([409, { error: "receipt_unresolved", admission: "unknown" }]);
+    expect(frames).toBe(0);
+    connected.socket.close();
+  });
+  it("keeps owned and shared screen cancellation unknown when the account request was lost without a receipt", async () => {
+    const connected = await host("agent-legacy-shared-cancel");
+    const share = await connected.stub.createHandShare(owner, "agent-legacy-shared-cancel");
+    if (typeof share.token !== "string") throw new Error("Screen share was not created");
+    const recipient = namespace().getByName(other);
+    const redeemed = await recipient.redeemHandShare(other, owner, share.token);
+    if (typeof redeemed.machine_id !== "string") throw new Error("Screen share was not redeemed");
+    let frames = 0;
+    connected.socket.addEventListener("message", event => { if (JSON.parse(String(event.data)).type === "agent_call") frames++; });
+    try {
+      for (const [principal, machine] of [[owner, "agent-legacy-shared-cancel"], [other, redeemed.machine_id]] as const) {
+        const abort = new AbortController();
+        const calls: string[] = [];
+        const cancellations: unknown[] = [];
+        let original = "";
+        const lossy = { getByName: (name: string) => {
+          const stub = namespace().getByName(name);
+          return new Proxy(stub, { get: (target, key) => key !== "fetch" ? Reflect.get(target, key)
+            : async (url: string, init?: RequestInit) => {
+              const path = new URL(url).pathname; calls.push(path);
+              if (path === "/invoke") {
+                original = String(init?.body);
+                // Explicit cancel races with loss of the original request. No
+                // receipt exists, so cancellation must not claim it never ran.
+                abort.abort();
+                throw new Error("Network connection lost.");
+              }
+              const response = await target.fetch(url, init);
+              if (path === "/cancel-invocation") cancellations.push(await response.clone().json());
+              return response;
+            } });
+        } } as unknown as DurableObjectNamespace<AccountHostedTools>;
+        const provider = new AccountHostedToolsProvider(lossy, principal, () => true);
+        await provider.refresh();
+        const tool = provider.screenTool(machine)!;
+        expect(tool).toBeDefined();
+        const result = await tool.handler({ action: "click", x: 0.5, y: 0.5 }, {
+          sessionId: "11111111-1111-4111-8111-111111111197", callId: "lost-cancel-" + principal,
+          model: "fixture", signal: abort.signal,
+        });
+        expect(result).toMatchObject({ success: false,
+          structuredResult: { status: "ambiguous", reason: "cancelled_after_dispatch", cancel: "not_delivered" } });
+        expect(cancellations).toEqual([{ cancel: "not_delivered" }]);
+        expect(calls.filter(path => path === "/invoke")).toHaveLength(1);
+        expect(calls.filter(path => path === "/cancel-invocation")).toHaveLength(1);
+        // The owner received the stored screen route and fenced this exact
+        // identity. A delayed original request cannot send input on either path.
+        const later = await namespace().getByName(principal).fetch("https://account-tools.internal/invoke", {
+          method: "POST", body: original,
+        });
+        expect(later.status).toBe(409);
+        expect(await later.json()).toEqual({ error: "call_fenced", admission: "none" });
+      }
+      expect(frames).toBe(0);
+    } finally { connected.socket.close(); }
   });
   it("reports unknown outcomes when the host disconnects without replaying input", async () => {
     const connected = await host("agent-disconnect");

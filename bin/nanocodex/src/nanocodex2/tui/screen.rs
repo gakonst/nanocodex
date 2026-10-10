@@ -687,7 +687,7 @@ async fn decode_track(
             (u32::from(area.width) * u32::from(font.width)).clamp(16, 4096),
             (u32::from(area.height) * u32::from(font.height)).clamp(16, 4096),
         );
-        let mut child = spawn_decoder_scaled(&decoder_candidates(), Some(pixels))?;
+        let mut child = spawn_decoder_scaled(&decoder_candidates(), Some(pixels)).await?;
         let mut stdin = child
             .stdin
             .take()
@@ -793,7 +793,11 @@ fn media_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
-fn decoder_command(program: &Path, pixels: Option<(u32, u32)>) -> tokio::process::Command {
+fn decoder_command(
+    program: &Path,
+    pixels: Option<(u32, u32)>,
+    fps_mode: &str,
+) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(program);
     command.args([
         "-hide_banner",
@@ -820,7 +824,7 @@ fn decoder_command(program: &Path, pixels: Option<(u32, u32)>) -> tokio::process
             "image2pipe",
             "-vcodec",
             "ppm",
-            "-fps_mode",
+            fps_mode,
             "passthrough",
             "-enc_time_base",
             "1:90000",
@@ -836,15 +840,19 @@ fn decoder_command(program: &Path, pixels: Option<(u32, u32)>) -> tokio::process
 }
 
 #[cfg(test)]
-fn spawn_decoder(candidates: &[PathBuf]) -> Result<tokio::process::Child> {
-    spawn_decoder_scaled(candidates, None)
+async fn spawn_decoder(candidates: &[PathBuf]) -> Result<tokio::process::Child> {
+    spawn_decoder_scaled(candidates, None).await
 }
-fn spawn_decoder_scaled(
+/// Runs in the track decoding task, never on the terminal render path.
+async fn spawn_decoder_scaled(
     candidates: &[PathBuf],
     pixels: Option<(u32, u32)>,
 ) -> Result<tokio::process::Child> {
     for program in candidates {
-        match decoder_command(program, pixels).spawn() {
+        let fps_mode =
+            nanocodex_bin_shared::ffmpeg::fps_mode_option(&std::process::Command::new(program))
+                .await;
+        match decoder_command(program, pixels, fps_mode).spawn() {
             Ok(child) => return Ok(child),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -988,7 +996,9 @@ mod tests {
         let decoder = directory.path().join("ffmpeg");
         std::fs::write(&decoder, "#!/bin/sh\nprintf 'P6\\n1 1\\n255\\nRGB'\n").unwrap();
         std::fs::set_permissions(&decoder, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut child = spawn_decoder(&[directory.path().join("missing"), decoder]).unwrap();
+        let mut child = spawn_decoder(&[directory.path().join("missing"), decoder])
+            .await
+            .unwrap();
         let mut output = BufReader::new(child.stdout.take().unwrap());
         assert_eq!(
             read_ppm(&mut output).await.unwrap().to_rgb8().into_raw(),
@@ -1002,6 +1012,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing");
         let error = spawn_decoder(std::slice::from_ref(&missing))
+            .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("FFmpeg was not found"));
@@ -1009,6 +1020,7 @@ mod tests {
         let denied = directory.path().join("not-executable");
         std::fs::write(&denied, "not executable").unwrap();
         let error = spawn_decoder(&[denied.clone(), missing])
+            .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("Could not start video decoder"));

@@ -13,8 +13,8 @@ const heavyFamilies = ["hands", "windows", "vm", "voice", "python", "rust_extra"
 // Workspace packages whose build a job exercises. A change to any package in
 // their dependency closure (normal, build, or dev) selects the job.
 const jobRoots = {
-  hands: ["nanocodex-bin"],
-  windows: ["nanocodex-bin"],
+  hands: ["nanocodex-bin", "nanocodex-hand-daemon"],
+  windows: ["nanocodex-bin", "nanocodex-hand-daemon"],
   vm: ["nanocodex-vm"],
   voice: ["nanocodex-voice-native"],
   python: ["nanocodex-python"],
@@ -230,12 +230,13 @@ const gate = {
   "windows-hand": o => o.windows,
   clippy: o => o.rust,
   "rust-extra": o => o.rust_extra,
-  "vm-guest": o => o.vm,
+  "vm-guest": o => o.vm || (o.tests && o.hands),
   policy: o => o.policy,
   "wasm-build": o => o.wasm,
   "js-preview": o => o.preview,
   "wasm-quality": o => o.wasm_rust,
   bindings: o => o.bindings,
+  managed: o => o.tests && o.bindings,
   python: o => o.python,
   apps: o => o.apps,
   codeql: o => o.codeql,
@@ -276,7 +277,7 @@ export function main(env = process.env) {
   // The reusable publisher only runs in the upstream repository. Reflect that
   // restriction in the required-job gate instead of accepting unexpected skips.
   if (env.GITHUB_REPOSITORY && env.GITHUB_REPOSITORY !== "gakonst/nanocodex") result.jobs.preview = false;
-  // Owner switch for the paused test steps; independent of path selection.
+  // Owner switch for the behavioral test steps; independent of path selection.
   const tests = env.NANOCODEX_CI_TESTS === "on";
   const outputs = [...Object.entries(result.jobs), ["tests", tests], ["packages", result.packages], ["heavy", result.heavy]]
     .map(([key, value]) => `${key}=${value}`).join("\n") + "\n";

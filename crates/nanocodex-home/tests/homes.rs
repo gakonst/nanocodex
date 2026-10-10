@@ -313,18 +313,10 @@ fn project_instructions_cover_both_conventions_root_to_leaf() {
             .any(|d| d.path == repo.join("CLAUDE.md") && d.message.contains("same file"))
     );
 
-    let read = project.read_instructions(32 * 1024);
+    let read = project.read_instructions();
     assert_eq!(
         read.combined().as_deref(),
         Some("root agents\n\nroot local\n\nroot dot-claude\n\nsub override\n\nsub claude")
-    );
-    // The byte budget is shared across files, root first.
-    let read = project.read_instructions("root agents".len());
-    assert_eq!(read.combined().as_deref(), Some("root agents"));
-    assert!(
-        read.diagnostics
-            .iter()
-            .any(|d| d.message.contains("budget exhausted"))
     );
 }
 

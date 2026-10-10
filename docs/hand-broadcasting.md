@@ -120,10 +120,10 @@ proxy and trusts its test CA only in the publisher subprocess.
 Compile before starting the receiver (its admission timeout is bounded):
 
 ```sh
-cargo test -p nanocodex-bin --lib screen_broadcast
+cargo test -p nanocodex-hand-daemon --lib screen_broadcast
 python3 scripts/test-hand-rtmp.py --output target/rtmp-validation/rust \
   --min-duration 7 --min-fps 55 --require-audio -- \
-  cargo test -p nanocodex-bin --lib \
+  cargo test -p nanocodex-hand-daemon --lib \
   screen_broadcast::tests::local_rtmp_sink -- --ignored --nocapture
 
 swift test --package-path apple/NanocodexRemote

@@ -90,8 +90,9 @@ describe("live API key authorization beside the key", () => {
       await key.fetch(new Request("https://key/record", { method: "DELETE" }));
       expect(await authenticate(request(), edge)).toBeUndefined();
       expect(rpc).toHaveBeenCalledTimes(2);
-      expect(rpc).toHaveBeenNthCalledWith(1, true);
-      expect(rpc).toHaveBeenNthCalledWith(2, false);
+      // Second argument: include the account snapshot, only for /v1/me (2370e6a88).
+      expect(rpc).toHaveBeenNthCalledWith(1, true, false);
+      expect(rpc).toHaveBeenNthCalledWith(2, false, false);
       expect(fetch).not.toHaveBeenCalled();
     });
   });

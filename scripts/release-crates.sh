@@ -13,6 +13,7 @@ crates=(
   "nanocodex-voice-protocol:crates/nanocodex-voice-protocol"
   "nanocodex-computer:crates/experimental/nanocodex-computer"
   "nanocodex-oai-tools:crates/nanocodex-oai-tools"
+  "nanocodex-decisions:crates/nanocodex-decisions"
   "nanocodex-voice-ffi:crates/nanocodex-voice-ffi"
   "nanocodex-agent:crates/nanocodex-agent"
   "nanocodex-claude-tools:crates/nanocodex-claude-tools"

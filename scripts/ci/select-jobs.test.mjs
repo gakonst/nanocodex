@@ -38,6 +38,7 @@ function workspace(t) {
   crate("crates/vm", "nanocodex-vm", { "nanocodex-oai-api": "../oai-api", "nanocodex-oai-tools": "../nanocodex-oai-tools" });
   crate("crates/phone", "nanocodex-phone");
   crate("bin/nanocodex", "nanocodex-bin", { "nanocodex-vm": "../../crates/vm" });
+  crate("bin/hand", "nanocodex-hand-daemon");
   write("README.md");
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
   git("init", "-q");
@@ -46,7 +47,7 @@ function workspace(t) {
   const commit = () => { git("add", "-A"); git("commit", "-qm", "fixture"); return git("rev-parse", "HEAD"); };
   const initial = commit();
   const run = (args, env) => spawnSync(process.execPath, [script, ...args], {
-    cwd, encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: "", GITHUB_REPOSITORY: "gakonst/nanocodex", ...env },
+    cwd, encoding: "utf8", env: { ...process.env, NANOCODEX_CI_TESTS: "", GITHUB_STEP_SUMMARY: "", GITHUB_REPOSITORY: "gakonst/nanocodex", ...env },
   });
   // Runs the selector as ci.yml does and parses its GITHUB_OUTPUT lines.
   const select = (eventName, event, env = {}) => {
@@ -169,7 +170,7 @@ test("ci success accepts reduced matrices and rejects failures, cancellations, a
   const jobs = {
     test: [], "shared-hands": ["hands"], "voice-native": ["voice"], "windows-hand": ["windows"], clippy: ["rust"],
     "rust-extra": ["rust_extra"], "vm-guest": ["vm"], policy: ["policy"], "wasm-build": ["wasm"], "js-preview": ["preview"],
-    "wasm-quality": ["wasm_rust"], bindings: ["bindings"], python: ["python"], apps: ["apps"], codeql: ["codeql"],
+    "wasm-quality": ["wasm_rust"], bindings: ["bindings"], managed: [], python: ["python"], apps: ["apps"], codeql: ["codeql"],
   };
   const needs = selected => ({
     changes: { result: "success", outputs: outputs(selected) },
@@ -185,6 +186,11 @@ test("ci success accepts reduced matrices and rejects failures, cancellations, a
   }
   assert.equal(passes({ ...needs(["policy"]), "windows-hand": { result: "success" } }), false, "unselected job ran");
   assert.equal(passes({ ...needs(families), test: { result: "success" } }), false, "paused tests ran");
+  const on = selected => ({ ...needs(selected), changes: { result: "success", outputs: { ...outputs(selected), tests: "true" } } });
+  assert.equal(passes(on(["hands"])), false, "Hand changes with tests on require the Docker Hand job");
+  assert.ok(passes({ ...on(["hands"]), "vm-guest": { result: "success" } }), "Hand changes with tests on run vm-guest");
+  assert.ok(passes({ ...on(families), test: { result: "success" }, managed: { result: "success" } }), "tests on run the workspace and managed test jobs");
+  assert.equal(passes({ ...on(families), test: { result: "success" } }), false, "tests on require the managed shards");
   assert.equal(passes({ ...needs(families), changes: { result: "success", outputs: {} } }), false, "missing selection");
   assert.equal(passes({ ...needs(families), "new-job": { result: "success" } }), false, "unmapped job");
 });
@@ -213,4 +219,13 @@ test("draft service changes retain their HTTP and browser consumers while genera
     assert.equal(selected.raw.tests, "false", path);
     assert.equal(selected.raw.heavy, "false", path);
   }
+});
+
+test("a Hand daemon change selects the Linux/macOS and Windows Hand jobs", t => {
+  const w = workspace(t);
+  const before = w.git("rev-parse", "HEAD");
+  w.write("bin/hand/src/lib.rs", "// Hand daemon edit\n");
+  const hand = w.select("push", { before, after: w.commit() });
+  assert.deepEqual(hand.jobs, only("hands", "windows", "rust", "rust_extra", "policy"));
+  assert.equal(hand.raw.packages, "nanocodex-hand-daemon");
 });

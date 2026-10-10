@@ -803,3 +803,28 @@ test("SDK inventory removal during tools/list prevents late publication", { time
   assert.equal(mcp.resolve("mcp__account__lookup"), undefined);
   assert.deepEqual(mcp.search({ query: "inventory" }).output.tools, []);
 });
+
+test("tool_search honors explicit limits above the former cap of 32", async () => {
+  const mcp = await createMcpRuntime({
+    many: {
+      description: "Many record tools.",
+      client: {
+        async listTools() {
+          return {
+            tools: Array.from({ length: 48 }, (_, index) => ({
+              name: `lookup_${index}`,
+              description: `Look up account record ${index}.`,
+              inputSchema: { type: "object" },
+            })),
+          };
+        },
+        async callTool() {
+          return { content: [{ type: "text", text: "found" }] };
+        },
+      },
+    },
+  });
+  await mcp.settled();
+  assert.equal(mcp.search({ query: "account record", limit: 40 }).output.tools.length, 40);
+  assert.equal(mcp.search({ query: "account record" }).output.tools.length, 8);
+});

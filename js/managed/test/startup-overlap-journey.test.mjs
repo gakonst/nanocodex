@@ -10,6 +10,7 @@ import { Miniflare } from "miniflare";
 import WebSocket from "ws";
 import { createTools } from "nanocodex/tools";
 import { createAttachment } from "nanocodex-tools/attachment";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Actual account HTTP proxy/authentication, Managed Session, SQLite, R2,
 // Just Bash, SDK and WASM. Only the external account metadata/model/HTTP target

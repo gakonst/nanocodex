@@ -68,16 +68,56 @@ jobs:
       - name: Install macOS init linker
         if: runner.os == 'macOS' && matrix.component == 'cli'
         run: brew install lld
+      # Only the CLI builds are on the release critical path. Cold voice builds
+      # (418s Linux, 256s macOS) still finish well before a warm CLI (~540s),
+      # so their ~1GB target archives only added churn to the repository's
+      # 10GB Actions cache. This trims ~2GB per run; it does not by itself keep
+      # daily nightly caches warm.
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        if: matrix.component == 'cli'
         with:
           key: nightly-${{ matrix.component }}-${{ matrix.target }}
-          # Voice helpers have their own Cargo target directories.
           workspaces: ${{ matrix.workspaces }}
-          cache-on-failure: true
+          # A failed job (e.g. before compiling) must not store a near-empty target
+          # under the exact key: rust-cache then restores it as "full match" and
+          # skips saving ("Cache up-to-date"), keeping that key cold indefinitely.
+          # sccache still keeps progress from a failed run: it uploads each
+          # compiled object under its own content key as soon as it is built.
+          cache-on-failure: false
+          # Only master publications seed target archives (~4.6GB for Linux, macOS
+          # and Windows together). PR-artifact and branch dispatches still restore
+          # master's entry and keep using sccache, but no longer write
+          # branch-scoped copies that nothing else can read.
+          save-if: ${{ inputs.pr == '' && github.ref == 'refs/heads/master' }}
+      # rust-cache restores third-party dependencies but always rebuilds
+      # workspace crates. sccache reuses unchanged workspace libraries across
+      # runs; binaries and changed crates still compile from source.
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+        if: matrix.component == 'cli'
+        with:
+          version: v0.16.0
+      - name: Reuse unchanged workspace crates
+        if: matrix.component == 'cli'
+        shell: bash
+        env:
+          # PR-artifact builds of a pull-request head dispatched from master
+          # only read master's cache; scheduled nightlies (and branch dispatches,
+          # whose cache scope is private to that branch) write.
+          CACHE_MODE: ${{ (inputs.pr == '' || github.ref != 'refs/heads/master') && 'READ_WRITE' || 'READ_ONLY' }}
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=$CACHE_MODE"
+            # A cache-service outage falls back to compiling locally.
+            echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+          } >> "$GITHUB_ENV"
       - name: Enforce ring-only Rustls provider
         if: matrix.component == 'cli'
         shell: bash
         run: ./scripts/check-rustls-provider.sh
+      - uses: ./.github/actions/docker-hub-mirror
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
       - name: Prepare embedded Linux Wayland helpers
         if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
         shell: bash
@@ -93,10 +133,27 @@ jobs:
           # libkrun's build script does not track installed Rust targets. Drop
           # cached init blobs that may have used its dynamic-link fallback.
           cargo clean --package krun-init-blob --profile nightly --target ${{ matrix.target }}
+          # Release-stage Hand identity: computed from the Hand package closure
+          # before compiling, verified against the Hand's Cargo dep-info after.
+          features=nanocodex-bin/tempo
+          payload=()
+          if [[ -n "${NANOCODEX_LINUX_SCREEN_BUNDLE:-}" ]]; then
+            # Distributable Linux Hands embed the helper payload named above.
+            features+=",nanocodex-hand-daemon/embedded-screen-helpers"
+            payload=(--payload "linux-screen-helpers=$NANOCODEX_LINUX_SCREEN_BUNDLE")
+          fi
+          NANOCODEX_HAND_IDENTITY="$(scripts/release/hand-source-identity.py compute \
+            --target ${{ matrix.target }} --profile nightly --features "$features" \
+            ${payload[@]+"${payload[@]}"} --report "$RUNNER_TEMP/hand-identity-inputs.json")"
+          export NANOCODEX_HAND_IDENTITY
+          echo "Hand source identity: $NANOCODEX_HAND_IDENTITY" >> "$GITHUB_STEP_SUMMARY"
           VERGEN_GIT_SHA="$BUILD_SHA" \
             cargo build --locked --profile nightly --timings \
-              --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
+              --package nanocodex-bin --package nanocodex-hand-daemon --features "$features" \
               --target ${{ matrix.target }}
+          scripts/release/hand-source-identity.py verify \
+            --report "$RUNNER_TEMP/hand-identity-inputs.json" \
+            --dep-info "target/${{ matrix.target }}/nightly/nanocodex-hand.d"
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.component == 'cli'
         shell: bash
@@ -163,6 +220,36 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
+      # The shipped updater installs this exact pair (and, from minimal real
+      # source checkouts, rebuilt pairs) under an isolated synthetic account.
+      - name: Exercise the public macOS updater journeys with the built pair
+        if: runner.os == 'macOS' && matrix.component == 'cli'
+        shell: bash
+        run: |
+          node bin/nanocodex/tests/update_local_e2e.mjs \
+            "target/${{ matrix.target }}/nightly/nanocodex" \
+            "target/${{ matrix.target }}/nightly/nanocodex-hand" \
+            "${{ runner.temp }}/update-local-e2e" --source
+      - name: Retain updater journey evidence
+        if: always() && runner.os == 'macOS' && matrix.component == 'cli'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-update-journeys-${{ matrix.target }}
+          path: ${{ runner.temp }}/update-local-e2e
+          if-no-files-found: ignore
+          retention-days: 7
+      # The identity report and the exact Linux helper payload (~2.5MB) let a
+      # later run diff an unexpectedly changed Hand identity member by member.
+      - name: Retain Hand identity evidence
+        if: always() && matrix.component == 'cli'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-hand-identity-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/hand-identity-inputs.json
+            ${{ runner.temp }}/linux-screen-helpers.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Retain Cargo build timings
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -172,6 +259,12 @@ jobs:
             target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
+      - name: Report compiler cache reuse
+        if: always() && matrix.component == 'cli' && env.RUSTC_WRAPPER == 'sccache'
+        shell: bash
+        run: |
+          sccache --show-stats | tee sccache-stats.txt
+          { echo '### sccache (${{ matrix.target }})'; grep -E '^(Compile requests|Cache hits|Cache misses|Non-cacheable)' sccache-stats.txt | grep -v ' by ' | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY"
 
   bundle:
     name: bundle ${{ matrix.target }}
@@ -211,7 +304,12 @@ jobs:
             # Artifact downloads do not preserve executable permissions.
             chmod +x "$binary"
             if [[ -z "$PR_NUMBER" ]]; then
+              # Publication ships executables compressed; publish restores the
+              # raw compatibility file from these verified bytes, so the
+              # artifact carries each executable once.
               gzip -n -9 -c "$binary" > "$binary.gz"
+              gzip -dc "$binary.gz" | cmp - "$binary"
+              rm "$binary"
             fi
           done
           test -s "nanocodex-voice-$TARGET.tar.gz"
@@ -234,6 +332,8 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
+          # PR artifacts stay raw executables; publication bundles are already gzip.
+          compression-level: ${{ inputs.pr && 6 || 0 }}
 
   build-windows-hand:
     if: github.repository == 'gakonst/nanocodex'
@@ -245,6 +345,11 @@ jobs:
     env:
       WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
       WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+      # MSVC stamps the link time into every PE image. The workspace proc-macro
+      # DLL is rebuilt each run, so its bytes, and therefore the sccache key of
+      # every crate using it (nanocodex-oai-tools: 66-289s), changed on every
+      # run. /Brepro makes linked images reproducible.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -Clink-arg=/Brepro
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -263,13 +368,42 @@ jobs:
           key: nightly-windows-hand
           workspaces: |
             . -> target
-          cache-on-failure: true
+          # A failed job (e.g. before compiling) must not store a near-empty target
+          # under the exact key: rust-cache then restores it as "full match" and
+          # skips saving ("Cache up-to-date"), keeping that key cold indefinitely.
+          # sccache still keeps progress from a failed run: it uploads each
+          # compiled object under its own content key as soon as it is built.
+          cache-on-failure: false
+          # Only master publications seed target archives (~4.6GB for Linux, macOS
+          # and Windows together). PR-artifact and branch dispatches still restore
+          # master's entry and keep using sccache, but no longer write
+          # branch-scoped copies that nothing else can read.
+          save-if: ${{ inputs.pr == '' && github.ref == 'refs/heads/master' }}
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+        with:
+          version: v0.16.0
+      - name: Reuse unchanged workspace crates
+        shell: pwsh
+        env:
+          # Same write policy as the Linux and macOS CLI builds.
+          CACHE_MODE: ${{ (inputs.pr == '' || github.ref != 'refs/heads/master') && 'READ_WRITE' || 'READ_ONLY' }}
+        run: |
+          @(
+            "RUSTC_WRAPPER=sccache",
+            "SCCACHE_GHA_ENABLED=true",
+            "SCCACHE_GHA_RW_MODE=$env:CACHE_MODE",
+            "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build Windows Hand payload
         shell: pwsh
         env:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
+          # Both executables report the exact commit they were built from.
+          VERGEN_GIT_SHA: ${{ env.BUILD_SHA }}
         run: |
-          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
+          # Target rustflags (/Brepro) are silently ignored when either is set.
+          if ($env:RUSTFLAGS -or $env:CARGO_ENCODED_RUSTFLAGS) { throw "RUSTFLAGS would drop /Brepro" }
+          cargo build --locked --profile nightly --timings --package nanocodex-bin --package nanocodex-hand-daemon --features nanocodex-bin/tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
@@ -319,6 +453,14 @@ jobs:
             target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
+      - name: Report compiler cache reuse
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        shell: bash
+        run: |
+          sccache --show-stats | tee sccache-stats.txt
+          { echo '### sccache (x86_64-pc-windows-msvc)'; grep -E '^(Compile requests|Cache hits|Cache misses|Non-cacheable)' sccache-stats.txt | grep -v ' by ' | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY"
+          # /Brepro check: identical sources must link an identical proc-macro DLL.
+          { echo '### Workspace proc-macro DLLs'; sha256sum target/nightly/deps/nanocodex_oai_tools_macros-*.dll | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY" || true
 
   build-vm-guest:
     if: >-
@@ -338,9 +480,8 @@ jobs:
         with:
           toolchain: stable
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
+      # No target cache: the cold guest build takes ~100s, far off the
+      # critical path, while its 849MB archive evicted critical-path caches.
       - run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Build nightly VM guest
         shell: bash
@@ -420,9 +561,12 @@ jobs:
   publish:
     if: >-
       github.repository == 'gakonst/nanocodex' &&
+      github.ref == 'refs/heads/master' &&
       (github.event_name != 'workflow_dispatch' || inputs.pr == '')
     name: publish immutable and rolling nightlies
-    needs: [bundle, build-windows-hand, build-vm-guest]
+    # Publication waits for the read-only Hand reuse test and comparison, so a
+    # broken reuse path fails before any release is created or modified.
+    needs: [bundle, build-windows-hand, build-vm-guest, hand-reuse-check]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -436,6 +580,22 @@ jobs:
           pattern: nanocodex-*
           path: dist
           merge-multiple: true
+      - name: Restore raw executables
+        shell: bash
+        run: |
+          cd dist
+          shopt -s nullglob
+          # Bundles carry CLI and Hand executables only as NAME.gz. gzip checks
+          # each stream's CRC and length; an artifact that also carries NAME
+          # must match exactly. Hand reuse refreshes a restored raw file.
+          for compressed in nanocodex-*.gz nanocodex2-*.gz; do
+            case "$compressed" in *.tar.gz) continue ;; esac
+            if [[ -e "${compressed%.gz}" ]]; then
+              gzip -dc "$compressed" | cmp - "${compressed%.gz}"
+            else
+              gzip -dc "$compressed" > "${compressed%.gz}"
+            fi
+          done
       - name: Republish an unchanged Hand
         env:
           GH_TOKEN: ${{ github.token }}
@@ -454,7 +614,18 @@ jobs:
           cd dist
           # Hand reuse keys exist only for CLIs that report a Hand Identity.
           shopt -s nullglob
-          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe nanocodex2-*.identity > SHA256SUMS
+          # The immutable release attaches executables only compressed. Also
+          # list each one's raw digest so installers and updaters can verify
+          # decompressed (or already running) bytes against this release.
+          raw=()
+          for compressed in nanocodex-*.gz nanocodex2-*.gz; do
+            case "$compressed" in *.tar.gz) continue ;; esac
+            # Fail closed unless the raw file is exactly these bytes, decompressed.
+            gzip -dc "$compressed" | cmp - "${compressed%.gz}"
+            raw+=("${compressed%.gz}")
+          done
+          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe nanocodex2-*.identity \
+            "${raw[@]}" > SHA256SUMS
       - name: Publish immutable and rolling releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -481,13 +652,24 @@ jobs:
             rm -rf dist
             mkdir dist
             gh release download "$immutable_tag" --repo "$GITHUB_REPOSITORY" --dir dist
-            (cd dist && sha256sum --check --strict SHA256SUMS)
+            # Its manifest may also list the raw digest of an executable that is
+            # attached only as NAME.gz. Verify every attached asset, decompress,
+            # then verify those raw digests, so every line is still checked.
+            manifest_parts=$(mktemp -d)
+            awk -v attached="$manifest_parts/attached" -v raw="$manifest_parts/raw" '
+              { name = $2; sub(/^\*/, "", name); listed[name] = 1; line[NR] = $0; asset[NR] = name }
+              END { for (i = 1; i <= NR; i++) print line[i] > (((asset[i] ".gz") in listed) ? raw : attached) }
+            ' dist/SHA256SUMS
+            (cd dist && sha256sum --check --strict "$manifest_parts/attached")
             for compressed in dist/nanocodex-*.gz dist/nanocodex2-*.gz; do
               case "$compressed" in
                 *.tar.gz) ;;
                 *) gzip -dc "$compressed" > "${compressed%.gz}" ;;
               esac
             done
+            if [[ -s "$manifest_parts/raw" ]]; then
+              (cd dist && sha256sum --check --strict "$manifest_parts/raw")
+            fi
           else
             if [[ -z "$immutable_draft" ]]; then
               gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \

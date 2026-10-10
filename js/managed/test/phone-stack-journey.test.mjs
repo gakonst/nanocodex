@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = join(root, "../../output/phone-stack", `${Date.now()}-${process.pid}`);

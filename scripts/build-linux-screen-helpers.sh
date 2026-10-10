@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Native: requires Python 3, git, curl, xz, cc, pkg-config, readelf, Meson, Ninja,
+# Native: requires Python 3, git, curl, xz, cc, pkg-config, readelf, objcopy, Meson, Ninja,
 # libwayland-dev/libwayland-bin, libxkbcommon-dev, libpixman-1-dev, libpng-dev.
 # Container mode is for release runners, not an implicit host package installer.
 set -euo pipefail
@@ -8,7 +8,7 @@ if [[ "${1:-}" == --auto ]]; then
   output=${2:?usage: build-linux-screen-helpers.sh --auto OUTPUT.tar.gz WORK_DIR}
   work=${3:?usage: build-linux-screen-helpers.sh --auto OUTPUT.tar.gz WORK_DIR}
   missing=()
-  for tool in python3 git curl xz cc pkg-config readelf meson ninja dpkg-query; do
+  for tool in python3 git curl xz cc pkg-config readelf objcopy meson ninja dpkg-query; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   if command -v pkg-config >/dev/null 2>&1; then

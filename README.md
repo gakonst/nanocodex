@@ -116,13 +116,32 @@ Or install the native CLI/TUI on Apple Silicon macOS or x86-64 glibc Linux:
 
 ```sh
 curl -fsSL https://nanocodex.paradigm.xyz | bash
-nanocodex
+~/.nanocodex/bin/nanocodex
 ```
+
+The installer adds `~/.nanocodex/bin` (or `$NANOCODEX_DIR/bin` when
+`NANOCODEX_DIR` selects another installation directory) to your shell profile, but it
+cannot change the PATH of the shell that ran it. Open a new terminal to run plain
+`nanocodex`. The default is the latest stable release. Use
+`curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --nightly` for the newest
+nightly build, which then follows nightly updates, or set
+`NANOCODEX_RELEASE_TAG` to an exact `vMAJOR.MINOR.PATCH` or `nightly-<commit>`
+tag. `--help` and mistyped options are answered before anything downloads.
+
+The script parses completely before it runs, so a cut-off download cannot run
+part of it. It retries interrupted or failed GitHub requests, and on Linux a
+second installation into the same directory waits for the first. Rerunning the
+same command resumes a failed installation. The selected release's own tagged
+installer downloads its checksum manifest and bootstrap. Retries for those
+downloads, and the Rosetta, musl and glibc checks, apply only to releases whose
+tagged installer includes them.
 
 Nanocodex installs two native binaries by role: the `nanocodex` CLI and the
 `nanocodex-hand` daemon (installed under its service name `nanocodex2`). The CLI
 is exposed as `nanocodex`, `nc`, and `ncl` under `~/.nanocodex/bin`; the name
-selects the command tree. Both trees open the same terminal UI over a different
+selects the command tree. The Hand is exposed there as `nanocodex-hand` and
+`nc-hand`, which are the `hand` command: `nc-hand` serves this computer like
+`nanocodex hand`, and `nc-hand status` is `nanocodex hand status`. Both trees open the same terminal UI over a different
 backend. `nanocodex`, `nc`, and `nanocodex2` run the managed agent (bare = the
 TUI on a durable managed agent; `run`, `login`, `status`, `logout`, and `auth` are the managed
 account commands). `ncl`, or `nanocodex --local`, runs the local agent: bare =
@@ -224,7 +243,7 @@ process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
 the [release switcher documentation](bin/nanocodex/src/update.rs).
 
-For local checkout development, build with `cargo build -p nanocodex-bin --bins`
+For local checkout development, build with `cargo build`
 and run `./target/debug/nanocodex`. See [local macOS development](docs/architecture/hands.md#local-macos-development)
 for signing and restarting the existing Hand directly from `target/debug` or
 `target/release`.
@@ -1008,6 +1027,7 @@ while their pinned native/proxy dependencies are unavailable from crates.io.
 | [`nanocodex-oai-api`](crates/nanocodex-oai-api/README.md) | Stable, published | OpenAI auth, typed Responses and Realtime boundaries, persistent transports, managed context, retry, pricing, and Tower client. |
 | [`nanocodex-oai-tools`](crates/nanocodex-oai-tools/README.md) | Supported, publishable | OpenAI tool contracts, standard tools, shell/process lifecycle, Code Mode, deferred search, MCP, and remote dispatch. |
 | [`nanocodex-claude-tools`](crates/nanocodex-claude-tools/README.md) | Supported, publishable | Independent Claude-native file, notebook, task, Bash, web and host/MCP adapters; caller-owned permissions and effects. |
+| [`nanocodex-decisions`](crates/nanocodex-decisions/README.md) | Supported, publishable | Provider-neutral decision model interface, the OpenAI Decisions API client, and an installable `decide` tool. |
 | [`nanocodex-subagents`](crates/nanocodex-subagents/README.md) | Supported, 0.6 registry release, optional | Task-tree lifecycle and the seven canonical child-agent tools above the core. |
 | [`nanocodex-observability`](crates/nanocodex-observability/README.md) | Stable, published, optional | Full-fidelity tracing and application-owned OpenTelemetry initialization. |
 | [`nanocodex` for JavaScript](js/nanocodex/README.md) | Published headless core binding; narrow source companions | Node/browser hosts around the Rust/WASM agent, plus React hooks, Vite integration, and optional terminal presentation under [`js/`](js/README.md). Agent lifecycle remains headless and caller-owned. |
@@ -1058,6 +1078,7 @@ crates/
 ├── nanocodex-oai-api/          OpenAI protocol, context, transport, Tower
 ├── nanocodex-oai-tools/        OpenAI tools, Code Mode, MCP, process runtime
 ├── nanocodex-claude-tools/     independent Claude-native capability adapters
+├── nanocodex-decisions/        decision model interface, OpenAI Decisions, decide tool
 ├── nanocodex-claude/           Anthropic Messages protocol and agent backend
 ├── nanocodex-agent/            owned agent lifecycle
 ├── nanocodex-subagents/        optional task-tree extension

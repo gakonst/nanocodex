@@ -1,7 +1,8 @@
 //! Build an explicitly selected upstream revision before installing it.
 //!
-//! Current revisions build the `nanocodex` CLI and the `nanocodex-hand` daemon
-//! from package nanocodex-bin; the Hand is installed under its service file name
+//! Current revisions build the `nanocodex` CLI (package nanocodex-bin) and the
+//! `nanocodex-hand` daemon (package nanocodex-hand-daemon, or nanocodex-bin in
+//! earlier split revisions); the Hand is installed under its service file name
 //! `nanocodex2`. Historical revisions build their `nanocodex2-bin` pair, and the
 //! brief single-binary revisions install their one binary under both names.
 
@@ -17,6 +18,9 @@ use tokio::process::Command;
 use super::{REPOSITORY, local};
 
 const SOURCE_URL: &str = "https://github.com/gakonst/nanocodex.git";
+/// Release-stage Hand identity tool of revisions that compute the identity
+/// before compiling instead of from a build script.
+const HAND_SOURCE_IDENTITY: &str = "scripts/release/hand-source-identity.py";
 
 #[derive(Clone, Copy)]
 pub(super) enum Selection<'a> {
@@ -58,8 +62,9 @@ pub(super) struct Build {
 /// How the fetched revision packages its CLI and Hand.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Layout {
-    /// nanocodex-bin's `nanocodex` CLI plus its `nanocodex-hand` daemon.
-    Split,
+    /// The `nanocodex` CLI plus the `nanocodex-hand` daemon, which is either its own
+    /// nanocodex-hand-daemon package or (earlier revisions) a nanocodex-bin target.
+    Split { hand_package: bool },
     /// Historical `nanocodex2-bin` package beside nanocodex-bin.
     Pair,
     /// One `nanocodex` binary serving as both CLI and Hand.
@@ -169,12 +174,11 @@ pub(super) async fn build(
     // until both the build and shipped-payload verification have completed.
     let helpers = tempfile::tempdir().wrap_err("failed to create helper build directory")?;
     let layout = layout(root).await?;
-    let screen_bundle =
-        prepare_screen_bundle(root, helpers.path(), &sha, layout == Layout::Pair).await?;
+    let screen_bundle = prepare_screen_bundle(root, helpers.path(), &sha, layout).await?;
     // Resolve shared dependency features once and use the optimized profile
     // without release LTO, matching the nightly build's faster feedback.
     let what = match layout {
-        Layout::Split => "nanocodex and nanocodex-hand",
+        Layout::Split { .. } => "nanocodex and nanocodex-hand",
         Layout::Pair => "nanocodex and nanocodex2",
         Layout::Single => "nanocodex",
     };
@@ -198,7 +202,17 @@ pub(super) async fn build(
             "nanocodex",
         ]);
     match layout {
-        Layout::Split => {
+        Layout::Split { hand_package: true } => {
+            command.args([
+                "--package",
+                "nanocodex-hand-daemon",
+                "--bin",
+                "nanocodex-hand",
+            ]);
+        }
+        Layout::Split {
+            hand_package: false,
+        } => {
             command.args(["--bin", "nanocodex-hand"]);
         }
         Layout::Pair => {
@@ -206,10 +220,41 @@ pub(super) async fn build(
         }
         Layout::Single => {}
     }
-    command.args(["--features", "nanocodex-bin/tempo"]);
+    let mut features = vec![String::from("nanocodex-bin/tempo")];
     if let Some(bundle) = &screen_bundle {
         command.env("NANOCODEX_LINUX_SCREEN_BUNDLE", bundle);
+        // Newer revisions embed the payload through a feature; older ones
+        // read the variable from their build script.
+        let (manifest, package) = if layout == (Layout::Split { hand_package: true }) {
+            ("bin/nanocodex/hand/Cargo.toml", "nanocodex-hand-daemon")
+        } else {
+            ("bin/nanocodex/Cargo.toml", "nanocodex-bin")
+        };
+        let manifest = tokio::fs::read_to_string(root.join(manifest))
+            .await
+            .unwrap_or_default();
+        if manifest.contains("\nembedded-screen-helpers = ") {
+            features.push(format!("{package}/embedded-screen-helpers"));
+        }
     }
+    for feature in &features {
+        command.args(["--features", feature]);
+    }
+    // Only the identity computed below from these exact sources may stamp the
+    // pair; an inherited value must never label a different Hand.
+    command.env_remove("NANOCODEX_HAND_IDENTITY");
+    let identity_report = helpers.path().join("hand-identity-inputs.json");
+    let source_identity = if layout != Layout::Single && root.join(HAND_SOURCE_IDENTITY).is_file() {
+        let identity =
+            compute_hand_identity(root, &features, screen_bundle.as_deref(), &identity_report)
+                .await?;
+        command.env("NANOCODEX_HAND_IDENTITY", &identity);
+        Some(identity)
+    } else {
+        // Older revisions without the tool keep their own fallback (a build
+        // script identity, or the source revision).
+        None
+    };
     let status = command
         .status()
         .await
@@ -220,7 +265,7 @@ pub(super) async fn build(
     let extension = if cfg!(windows) { ".exe" } else { "" };
     let cli_path = target.join("nightly").join(format!("nanocodex{extension}"));
     let hand_path = match layout {
-        Layout::Split => target
+        Layout::Split { .. } => target
             .join("nightly")
             .join(format!("nanocodex-hand{extension}")),
         Layout::Pair => target
@@ -240,12 +285,29 @@ pub(super) async fn build(
             bail!("failed to sign the locally compiled Hand: {status}");
         }
     }
+    if source_identity.is_some() {
+        verify_hand_identity(
+            root,
+            &target,
+            &identity_report,
+            &target.join("nightly").join("nanocodex-hand.d"),
+        )
+        .await?;
+    }
     let hand_identity = if layout == Layout::Single {
         local::verify_single(&cli_path).await?;
         None
     } else {
         local::verify_pair(&cli_path, &hand_path).await?
     };
+    if let Some(expected) = &source_identity
+        && hand_identity.as_ref() != Some(expected)
+    {
+        bail!(
+            "compiled Hand reports identity {} instead of the computed source identity {expected}; nothing was installed",
+            hand_identity.as_deref().unwrap_or("none")
+        );
+    }
     if let Some(bundle) = screen_bundle {
         let status = Command::new("python3")
             .arg(root.join("scripts/tests/linux-screen-helpers-bundle.py"))
@@ -277,6 +339,95 @@ pub(super) async fn build(
     })
 }
 
+/// Compute the fetched revision's Hand identity for exactly this build: host
+/// target, nightly profile, the features passed to Cargo and the embedded
+/// native payload. An unchanged Hand keeps its identity across CLI-only
+/// revisions, so the store keeps the installed Hand.
+async fn compute_hand_identity(
+    root: &Path,
+    features: &[String],
+    screen_bundle: Option<&Path>,
+    report: &Path,
+) -> Result<String> {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| String::from("rustc"));
+    let output = Command::new(&rustc)
+        .current_dir(root)
+        .arg("-vV")
+        .output()
+        .await
+        .wrap_err("failed to start rustc while computing the Hand identity")?;
+    let version = String::from_utf8(successful(output, "query the Rust host target")?)
+        .wrap_err("rustc returned an invalid version report")?;
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| eyre!("rustc -vV did not report a host target"))?
+        .to_owned();
+    let mut command = Command::new("python3");
+    command
+        .current_dir(root)
+        .env_remove("NANOCODEX_HAND_IDENTITY")
+        .arg(root.join(HAND_SOURCE_IDENTITY))
+        .args([
+            "compute",
+            "--target",
+            &host,
+            "--profile",
+            "nightly",
+            "--features",
+        ])
+        .arg(features.join(" "))
+        .arg("--report")
+        .arg(report);
+    if let Some(bundle) = screen_bundle {
+        command
+            .arg("--payload")
+            .arg(format!("linux-screen-helpers={}", bundle.display()));
+    }
+    let output = command
+        .output()
+        .await
+        .wrap_err("python3 is required to compute the Hand source identity")?;
+    let identity = String::from_utf8(successful(output, "compute the Hand source identity")?)
+        .wrap_err("the Hand identity tool returned invalid output")?
+        .trim()
+        .to_owned();
+    if identity.len() != 64 || !identity.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("the Hand identity tool returned an invalid identity: {identity:?}");
+    }
+    eprintln!("computed Hand source identity {identity}");
+    Ok(identity)
+}
+
+/// Fail before activation unless the identity covers every input Cargo
+/// recorded for the compiled Hand.
+async fn verify_hand_identity(
+    root: &Path,
+    target: &Path,
+    report: &Path,
+    dep_info: &Path,
+) -> Result<()> {
+    let output = Command::new("python3")
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", target)
+        .arg(root.join(HAND_SOURCE_IDENTITY))
+        .arg("verify")
+        .arg("--report")
+        .arg(report)
+        .arg("--dep-info")
+        .arg(dep_info)
+        .output()
+        .await
+        .wrap_err("python3 is required to verify the Hand source identity")?;
+    successful(
+        output,
+        "verify the Hand source identity; nothing was installed",
+    )?;
+    Ok(())
+}
+
 async fn layout(root: &Path) -> Result<Layout> {
     if has_legacy_hand_package(root)? {
         return Ok(Layout::Pair);
@@ -290,19 +441,30 @@ async fn layout(root: &Path) -> Result<Layout> {
     let metadata: serde_json::Value =
         serde_json::from_slice(&successful(output, "inspect the fetched Cargo workspace")?)
             .wrap_err("cargo returned invalid workspace metadata")?;
-    let split = metadata["packages"]
+    let hand_package = metadata["packages"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|package| package["name"] == "nanocodex-bin")
-        .flat_map(|package| package["targets"].as_array().into_iter().flatten())
-        .any(|target| {
-            target["name"] == "nanocodex-hand"
-                && target["kind"]
-                    .as_array()
-                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
-        });
-    Ok(if split { Layout::Split } else { Layout::Single })
+        .filter(|package| {
+            package["name"] == "nanocodex-bin" || package["name"] == "nanocodex-hand-daemon"
+        })
+        .find(|package| {
+            package["targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|target| {
+                    target["name"] == "nanocodex-hand"
+                        && target["kind"]
+                            .as_array()
+                            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+                })
+        })
+        .map(|package| package["name"] == "nanocodex-hand-daemon");
+    Ok(match hand_package {
+        Some(hand_package) => Layout::Split { hand_package },
+        None => Layout::Single,
+    })
 }
 
 /// Historical revisions declare a separate `nanocodex2-bin` workspace package;
@@ -322,7 +484,7 @@ async fn prepare_screen_bundle(
     root: &Path,
     work: &Path,
     sha: &str,
-    legacy_pair: bool,
+    layout: Layout,
 ) -> Result<Option<PathBuf>> {
     if !cfg!(target_os = "linux") {
         return Ok(None);
@@ -332,26 +494,50 @@ async fn prepare_screen_bundle(
             "self-contained Linux source updates require x86_64; this architecture has no supported Wayland helper payload"
         );
     }
-    // The unified package's build script embeds the helpers; historical pairs
-    // embedded them from the separate nanocodex2 package build script.
-    let embedding_build_script = if legacy_pair {
-        "bin/nanocodex/nanocodex2/build.rs"
-    } else {
-        "bin/nanocodex/build.rs"
+    // The Hand package embeds the helpers through its embedded-screen-helpers
+    // feature. Earlier split revisions embedded them from nanocodex-bin (by
+    // feature or build script), and historical pairs from the separate
+    // nanocodex2 package build script.
+    let (embedding_manifest, embedding_source) = match layout {
+        Layout::Split { hand_package: true } => (
+            "bin/nanocodex/hand/Cargo.toml",
+            "bin/nanocodex/hand/src/screen_helpers.rs",
+        ),
+        Layout::Pair => (
+            "bin/nanocodex/nanocodex2/build.rs",
+            "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        ),
+        Layout::Split {
+            hand_package: false,
+        }
+        | Layout::Single => (
+            "bin/nanocodex/build.rs",
+            "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        ),
     };
     for file in [
         "scripts/build-linux-screen-helpers.sh",
         "scripts/build-linux-screen-helpers.py",
         "scripts/build-linux-screen-helpers.Dockerfile",
         "scripts/tests/linux-screen-helpers-bundle.py",
-        embedding_build_script,
-        "bin/nanocodex/src/nanocodex2/screen_helpers.rs",
+        embedding_manifest,
+        embedding_source,
     ] {
         if !root.join(file).is_file() {
             bail!(
                 "source revision {sha} predates the self-contained Linux screen-helper packaging contract (missing {file}); refusing to install a Hand without helpers. Use an explicitly selected historical release only if its legacy host-provisioned screen dependencies are acceptable"
             );
         }
+    }
+    if layout == (Layout::Split { hand_package: true })
+        && !tokio::fs::read_to_string(root.join(embedding_manifest))
+            .await
+            .unwrap_or_default()
+            .contains("\nembedded-screen-helpers = ")
+    {
+        bail!(
+            "source revision {sha} has no nanocodex-hand-daemon embedded-screen-helpers feature; refusing to install a Hand without helpers"
+        );
     }
     let bundle = work.join("linux-screen-helpers.tar.gz");
     eprintln!("preparing embedded Linux Waymote/Grim helpers from source revision {sha}...");

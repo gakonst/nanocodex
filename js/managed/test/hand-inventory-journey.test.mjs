@@ -7,6 +7,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import WebSocket from "ws";
 import { Actions, connectActions, Transport } from "../../nanocodex/cloud/index.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const repo = fileURLToPath(new URL("../../../", import.meta.url));

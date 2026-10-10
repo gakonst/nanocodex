@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import WebSocket from "ws";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Reproduce: pnpm --filter nanocodex-managed-service run test:admin-threads
 // Only identity enrollment and the external model are fixtures. Public HTTP,

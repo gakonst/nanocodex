@@ -460,7 +460,7 @@ Runtime performs no downloads, package installation or sudo.
 
 ### Local macOS development
 
-1. Build the CLI and Hand with `cargo build -p nanocodex-bin --bins`.
+1. Build the CLI and Hand with `cargo build`.
    Run the CLI at `./target/debug/nanocodex` directly. For release builds add
    `--release` and substitute `target/release` in the commands below.
 2. Select a real signing certificate explicitly and sign each rebuilt Hand:

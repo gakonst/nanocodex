@@ -35,6 +35,8 @@ it("admits the persisted event body once after busy backpressure", async () => {
       }
       return Response.json({connectors:{},mcp_connections:[]});
     }}}});
+    // A fresh Session creates its schema on its first real request (9d8b63102).
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES(1,?,?,'org','team',1,'https://calendar.example','managed',?)`,agentId,owner,now);
     state.storage.sql.exec(`INSERT INTO managed_turns(id,request_hash,input_json,authorization_json,state,accepted_cursor,created_at,accepted_at,updated_at,retry_at)

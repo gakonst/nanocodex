@@ -7,7 +7,7 @@ pub(super) fn install(mut tools: ClaudeTools, handle: McpHandle) -> ClaudeTools 
     let search = handle.clone();
     tools = tools.tool_with_context(definition("ToolSearch",
         "Find available MCP tools by purpose or select:name1,name2. Returns exact schemas; discovered tools are available on the next request.",
-        json!({"query":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":32,"default":5}}), &["query"]), move |input, _| {
+        json!({"query":{"type":"string"},"max_results":{"type":"integer","minimum":1,"default":5}}), &["query"]), move |input, _| {
         let handle = search.clone();
         async move {
             let input: Search = decode(input)?;

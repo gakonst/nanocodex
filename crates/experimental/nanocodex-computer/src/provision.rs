@@ -69,9 +69,11 @@ mod managed_dependency_tests {
         receipt["dependency_contract"] = super::NO_CODEX_DEPENDENCY_CONTRACT.into();
         assert!(super::no_codex_managed_receipt(&receipt, "macos"));
         assert!(!super::no_codex_managed_receipt(&receipt, "linux"));
+        assert!(!super::no_codex_managed_receipt(&receipt, "windows"));
         receipt["dependency_contract"] = "nanocodex-native-no-codex-v1".into();
         assert!(super::no_codex_managed_receipt(&receipt, "linux"));
         assert!(!super::no_codex_managed_receipt(&receipt, "macos"));
+        assert!(!super::no_codex_managed_receipt(&receipt, "windows"));
         receipt["environment"]["CODEX_CLI_PATH"] = "/legacy/codex".into();
         assert!(!super::no_codex_managed_receipt(&receipt, "linux"));
         receipt["dependency_contract"] = super::NO_CODEX_DEPENDENCY_CONTRACT.into();

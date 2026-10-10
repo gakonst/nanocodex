@@ -11,7 +11,7 @@ import type { VaultFieldResolution } from "./browser-vault-injection";
 import { routeNativeInputDiscovery } from "./native-input-discovery";
 import { receiveManagedPreview, type PreviewBridgeEnv } from "./preview-bridge.ts";
 import { cleanupGmailInbox } from "./gmail-firehose-cleanup";
-import { observeClaudeRelease } from "./claude-lifecycle.mjs";
+import { engineMemoryBytes, observeClaudeRelease } from "./claude-lifecycle.mjs";
 import { mcpPayment } from "nanocodex/tempo";
 import { Claude } from 'nanocodex/worker';
 import { createManagedClaudeTools } from './claude-tools';
@@ -229,10 +229,12 @@ import {
 } from "./connector-status";
 import {
   DurableEventLog,
+  MAX_HISTORY_PAGE_BYTES,
   MAX_HISTORY_PAGE_SIZE,
   parseCursor,
   type DurableEvent,
   type DurableEventTail,
+  type HistoryBounds,
 } from "./durable-events";
 import { persistEventStreamFailure } from "./event-stream-failure";
 import { watchManagedAgentFamilyEvents } from "./agent-event-watcher";
@@ -1714,13 +1716,22 @@ function isConnectorConnectionSelection(
   ));
 }
 
+/** Isolate-wide WASM linear memory; absent before the engine initializes. */
+function memoryDimensions(): { wasm_memory_bytes?: number } {
+  try {
+    const bytes = engineMemoryBytes();
+    return bytes === undefined ? {} : { wasm_memory_bytes: bytes };
+  } catch { return {}; }
+}
+
 function isUniqueStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
     && new Set(value).size === value.length;
 }
 
 const SAFE_OBSERVATION_FIELDS = new Set([
-  "request_id", "turn_id", "failure_phase", "replay_mode", "replayed", "next_attempt", "max_attempts",
+  "request_id", "turn_id", "failed_turn_id", "interrupted_turns", "retry_source", "reopen_agent",
+  "interrupted", "blocked", "turns", "wasm_memory_bytes", "failure_phase", "replay_mode", "replayed", "next_attempt", "max_attempts",
   "connection_generation", "runtime_generation", "model_call_index", "status_code", "retry_delay_ms", "duration_ms",
   "time_to_first_event_ms", "time_to_first_output_ms", "response_id",
   "opens_new_socket", "server_requested_delay",
@@ -4271,6 +4282,9 @@ export class DurableAgentSession extends DurableComputerObject {
   readonly #turns = new Map<string, Turn>();
   readonly #deliveredCancellationTurnIds = new Set<string>();
   readonly #reopenInterruptedTurnIds = new Set<string>();
+  // Runtime constructions by this object instance. 1 means the first runtime
+  // after the object (re)started; larger values are in-process rebuilds.
+  #agentConstructionCount = 0;
   readonly #eventTurnQueue: string[] = [];
   #eventTurnId?: string;
   readonly #pendingTurnIds = new Set<string>();
@@ -5924,9 +5938,25 @@ export class DurableAgentSession extends DurableComputerObject {
       if (!Number.isSafeInteger(limit) || limit > MAX_HISTORY_PAGE_SIZE) {
         return json({ error: "invalid_history_page" }, { status: 400 });
       }
+      // Opt-in byte bounds for model-facing readers: max_bytes replaces the
+      // page budget and events above max_event_bytes arrive as unhydrated
+      // truncated stand-ins that keep their cursors.
+      const bound = (name: string, minimum: number, maximum: number): number | undefined | null => {
+        const raw = url.searchParams.get(name);
+        if (raw === null) return undefined;
+        const value = /^[1-9][0-9]{0,9}$/.test(raw) ? Number(raw) : Number.NaN;
+        return value >= minimum && value <= maximum ? value : null;
+      };
+      const maxBytes = bound("max_bytes", 1_024, MAX_HISTORY_PAGE_BYTES);
+      const maxEventBytes = bound("max_event_bytes", 256, 64 * 1024 * 1024);
+      if (maxBytes === null || maxEventBytes === null)
+        return json({ error: "invalid_history_page" }, { status: 400 });
+      const bounds: HistoryBounds | undefined = maxBytes === undefined && maxEventBytes === undefined ? undefined
+        : { ...(maxBytes === undefined ? {} : { maxBytes }), ...(maxEventBytes === undefined ? {} : { maxEventBytes }) };
+      const boundsTag = bounds === undefined ? "" : `-bytes-${maxBytes ?? "default"}-${maxEventBytes ?? "any"}`;
       // Cursor and archive ownership are small indexed reads. Revalidation
       // must happen before loading, decoding, or serializing event payloads.
-      const historyTag = () => `W/"history-v2-${this.#sessionId()}-${after === undefined ? `before-${before ?? "latest"}` : `after-${after}`}-${limit}-${this.#eventArchive.latestCursor(this.#eventLog)}-${this.#eventArchive.archivedThrough()}"`;
+      const historyTag = () => `W/"history-v2-${this.#sessionId()}-${after === undefined ? `before-${before ?? "latest"}` : `after-${after}`}-${limit}${boundsTag}-${this.#eventArchive.latestCursor(this.#eventLog)}-${this.#eventArchive.archivedThrough()}"`;
       const etag = historyTag();
       const cacheHeaders = {
         "cache-control": "private, no-cache",
@@ -5940,8 +5970,8 @@ export class DurableAgentSession extends DurableComputerObject {
       let page;
       try {
         page = after === undefined
-          ? await this.#eventArchive.history(this.#eventLog, before, limit)
-          : await this.#eventArchive.historyAfter(this.#eventLog, after, limit);
+          ? await this.#eventArchive.history(this.#eventLog, before, limit, bounds)
+          : await this.#eventArchive.historyAfter(this.#eventLog, after, limit, bounds);
       } catch (error) {
         return json({
           error: "event_archive_unavailable",
@@ -6289,6 +6319,10 @@ export class DurableAgentSession extends DurableComputerObject {
         await this.#scheduleCleanupRetry();
       }
       return;
+    }
+    // A periodic sample precedes any isolate memory reset of owned work.
+    if (this.#agent && this.#turns.size > 0) {
+      this.#observe("managed.memory", { state: "alarm", turns: this.#turns.size, ...memoryDimensions() });
     }
     if (presentationPending(this.ctx.storage)) await this.#sidebarPresentation().flush();
     if (this.#operations.nextAlarm() !== undefined) await this.#operations.drain();
@@ -9255,6 +9289,14 @@ export class DurableAgentSession extends DurableComputerObject {
       return;
     }
     const admission = this.#admissionTasks.get(id);
+    if (admission && row.state === "cancelling" && row.dispatch_input_chunks === null) {
+      // Admission can wait behind a running turn (e.g. its startup context
+      // commits only between turns). Nothing was submitted to the Agent until
+      // the dispatch input is frozen, so no operation can run: settle now. The
+      // pending admission observes the terminal row and exits before freezing.
+      this.#commitManagedTurnTerminal(id, { type: "turn_cancelled", id });
+      return;
+    }
     if (admission) await admission;
     row = this.#managedTurn(id);
     if (!row || isTerminalState(row.state)) return;
@@ -11708,6 +11750,9 @@ export class DurableAgentSession extends DurableComputerObject {
       throw error;
     }
     this.#logCapacity("agent_constructed", {
+      object_agent_construction: ++this.#agentConstructionCount,
+      object_age_ms: Math.max(0, Date.now() - this.#constructorEnteredAtMs),
+      ...memoryDimensions(),
       account_mcp_refresh_ms: accountMcpRefreshMs,
       discovery_join_ms: roundMilliseconds(discoveryJoinMs),
       credential_binding_ms: roundMilliseconds(credentialBindingMs),
@@ -13088,10 +13133,28 @@ A direct subagent completed after the previous turn ended. Continue the current 
       this.#disposeManagedTurn(id, turn);
       if (!this.#deleting) {
         if (reopenAgent) await this.#reopenAgent(id);
+        this.#wakeBlockedSuccessors(id);
         this.#scheduleRecovery();
         await this.#scheduleNextAlarm();
       }
     }
+  }
+
+  /**
+   * Successors dispatched while this turn ran were rejected by Rust as
+   * blocked by its unfinished operation and parked on retry backoff (up to a
+   * minute). Once it is terminal they can begin, so retry them now.
+   */
+  #wakeBlockedSuccessors(id: string): void {
+    const row = this.#managedTurn(id);
+    if (!row || !isTerminalState(row.state)) return;
+    this.ctx.storage.sql.exec(
+      `UPDATE managed_turns SET retry_at = NULL, updated_at = ?
+       WHERE state IN ('accepted', 'cancelling') AND retry_at IS NOT NULL
+         AND instr(error, ?) > 0`,
+      Date.now(),
+      "is blocked by unfinished operation `" + id + "`",
+    );
   }
 
   #disposeManagedTurn(id: string, turn: Turn): void {
@@ -13110,6 +13173,12 @@ A direct subagent completed after the previous turn ended. Continue the current 
     if (resolution.kind === "retry" && resolution.blockedBy !== undefined) {
       this.#reconcilePendingOperation(resolution.blockedBy);
     }
+    // Retries are otherwise visible only in the durable event log; keep the
+    // reason next to runtime construction and reopen logs.
+    // Retry messages can carry tool or upstream text; log only classified flags.
+    if (resolution.kind === "retry") this.#observe("managed.turn_retry", { turn_id: id, retry_source: source,
+      reopen_agent: resolution.reopenAgent, interrupted: resolution.interrupted === true,
+      blocked: resolution.blockedBy !== undefined, ...memoryDimensions() }, "warn");
     const row = this.#managedTurn(id);
     return this.#commitManagedMessage(id, managedControlTransitionForResolution(
       id,
@@ -13981,6 +14050,9 @@ A direct subagent completed after the previous turn ended. Continue the current 
   }
 
   async #reopenAgent(failedId: string): Promise<void> {
+    // Retiring the runtime interrupts every sibling turn and live Code Mode cell.
+    this.#observe("managed.agent_reopen", { failed_turn_id: failedId, interrupted_turns: Math.max(0, this.#turns.size - 1),
+      ...memoryDimensions() }, "warn");
     for (const siblingId of this.#turns.keys()) {
       if (siblingId !== failedId) this.#reopenInterruptedTurnIds.add(siblingId);
     }
@@ -14826,7 +14898,7 @@ function assertModelAcceptsInput(model: string, input: PromptInput): void {
       throw new ManagedRequestError(400, "unsupported_claude_input", "Claude does not accept audio input");
     }
     if (claude && item.type === "image" && item.file_id !== undefined) {
-      throw new ManagedRequestError(400, "unsupported_claude_input", "Claude images require an HTTPS or data image_url; OpenAI file IDs are unsupported");
+      throw new ManagedRequestError(400, "unsupported_claude_input", "Claude images require a data image_url; OpenAI file IDs are unsupported");
     }
   }
 }

@@ -3,15 +3,15 @@
 
 //! Scrollable rendering of the persisted agent session.
 
-mod diff;
 mod empty;
-mod highlight;
-pub(crate) mod image;
-mod markdown;
-pub(crate) mod math;
 mod message;
-mod review;
 mod tool;
+
+// Pure markdown, code, diff, image and math rendering lives in its own crate so
+// its compiled output stays cached across CLI and session edits.
+use crate::nanocodex2::tui::theme::ThemeExt as _;
+use nanocodex_tui_render::{diff, highlight, markdown, review};
+pub(crate) use nanocodex_tui_render::{image, math};
 
 use super::{
     node::{Component, ComponentUpdate, RenderRequest},
@@ -1611,7 +1611,7 @@ impl LayoutCache {
                     code_display_result: None,
                 }),
             };
-            let mut counts = [0_usize; 4];
+            let mut counts = [0_usize; 5];
             let mut computer_calls = Vec::new();
             let mut calls = Vec::new();
             let mut wrapper_error = None;
@@ -1670,6 +1670,7 @@ impl LayoutCache {
                     ToolState::Succeeded => 1,
                     ToolState::Failed => 2,
                     ToolState::Yielded => 3,
+                    ToolState::Unknown => 4,
                 }] += 1;
                 duration = duration.saturating_add(live.or(call.duration_ns).unwrap_or(0));
             }
@@ -1682,6 +1683,7 @@ impl LayoutCache {
                     ToolState::Succeeded => 1,
                     ToolState::Failed => 2,
                     ToolState::Yielded => 3,
+                    ToolState::Unknown => 4,
                 }] = 1;
             }
             let EntryKind::Tool(call) = &mut summary.kind else {
@@ -1699,6 +1701,8 @@ impl LayoutCache {
                 crate::nanocodex2::tui::transcript::ToolState::Running
             } else if counts[2] > 0 || wrapper_failed {
                 crate::nanocodex2::tui::transcript::ToolState::Failed
+            } else if counts[4] > 0 {
+                crate::nanocodex2::tui::transcript::ToolState::Unknown
             } else if counts[3] > 0 || wrapper_waiting {
                 crate::nanocodex2::tui::transcript::ToolState::Yielded
             } else {

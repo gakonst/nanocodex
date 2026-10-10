@@ -3,7 +3,6 @@ use std::{path::Path, sync::Arc};
 use nanocodex_home::{AgentHome, Convention, Diagnostic, Level, ProjectHome};
 use tracing::warn;
 
-const MAX_PROJECT_INSTRUCTIONS_BYTES: usize = 32 * 1024;
 const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
 
 /// User-level instructions from the configured homes: the Codex home's
@@ -56,13 +55,12 @@ pub(super) fn combine_instructions(
     }
 }
 
-/// Project instructions root-to-leaf within the shared budget: per directory
+/// Project instructions root-to-leaf, each loaded whole: per directory
 /// `AGENTS.override.md` or `AGENTS.md`, then the Claude conventions
 /// `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/CLAUDE.md`, each distinct
 /// document once.
 fn load_project_instructions(workspace: &Path) -> Option<String> {
-    let instructions =
-        ProjectHome::discover(workspace).read_instructions(MAX_PROJECT_INSTRUCTIONS_BYTES);
+    let instructions = ProjectHome::discover(workspace).read_instructions();
     report(&instructions.diagnostics);
     instructions.combined()
 }
@@ -210,14 +208,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_project_docs_do_not_consume_the_shared_budget() {
+    fn whitespace_project_docs_are_skipped() {
         let repo = tempdir().unwrap();
         fs::create_dir(repo.path().join(".git")).unwrap();
-        fs::write(
-            repo.path().join("AGENTS.md"),
-            " ".repeat(MAX_PROJECT_INSTRUCTIONS_BYTES),
-        )
-        .unwrap();
+        fs::write(repo.path().join("AGENTS.md"), " ".repeat(32 * 1024)).unwrap();
         let workspace = repo.path().join("crate");
         fs::create_dir(&workspace).unwrap();
         fs::write(workspace.join("AGENTS.md"), "use the crate instructions").unwrap();
@@ -225,6 +219,22 @@ mod tests {
         assert_eq!(
             load_instructions(&workspace, None),
             Some("use the crate instructions".to_owned())
+        );
+    }
+
+    #[test]
+    fn project_docs_beyond_the_former_32_kib_budget_are_loaded_whole() {
+        let repo = tempdir().unwrap();
+        fs::create_dir(repo.path().join(".git")).unwrap();
+        let root = format!("root {}", "r".repeat(64 * 1024));
+        fs::write(repo.path().join("AGENTS.md"), &root).unwrap();
+        let workspace = repo.path().join("crate");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("AGENTS.md"), "crate tail").unwrap();
+
+        assert_eq!(
+            load_instructions(&workspace, None),
+            Some(format!("{root}\n\ncrate tail"))
         );
     }
 

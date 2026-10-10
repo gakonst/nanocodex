@@ -15,8 +15,10 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 WAYMOTE_URL = 'https://github.com/rockorager/waymote.git'
@@ -51,12 +53,54 @@ def capture(cmd):
     return subprocess.check_output(list(map(str, cmd)), text=True)
 
 
+# Upstream forges (notably gitlab.freedesktop.org) intermittently answer 5xx.
+# Only transport is retried: every fetched source is still verified against its
+# pinned commit or SHA256, and a mismatch fails immediately without a retry.
+FETCH_ATTEMPTS = 5
+
+
+def with_network_retries(description, operation):
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return operation()
+        except (subprocess.CalledProcessError, OSError) as error:
+            if attempt == FETCH_ATTEMPTS:
+                raise
+            delay = 5 * 2 ** (attempt - 1)
+            print(f'{description} failed (attempt {attempt}/{FETCH_ATTEMPTS}: {error}); retrying in {delay}s',
+                  file=sys.stderr, flush=True)
+            time.sleep(delay)
+
+
+# Zig verifies every build.zig.zon package against its pinned .hash, so a hash
+# mismatch, 404 or manifest error is final; only these transport failures retry.
+TRANSIENT_ZIG_FETCH = re.compile(r"bad HTTP response code: '(408|429|5[0-9][0-9])|unable to connect to server|"
+                                 r"HTTP request failed|ConnectionRefused|ConnectionResetByPeer|ConnectionTimedOut|"
+                                 r"NetworkUnreachable|NameServerFailure|HttpConnectionClosing")
+
+
+def fetch_zig_packages(zig, project, env):
+    """Fetch the pinned package tree before compiling, so a compile error is never retried."""
+    def fetch():
+        cmd = [str(zig), 'build', '--fetch']
+        print('+', shlex.join(cmd), flush=True)
+        result = subprocess.run(cmd, cwd=project, env=env, text=True, stderr=subprocess.PIPE)
+        sys.stderr.write(result.stderr)
+        if result.returncode == 0:
+            return
+        if TRANSIENT_ZIG_FETCH.search(result.stderr):
+            raise subprocess.CalledProcessError(result.returncode, cmd)
+        raise RuntimeError(f'{project.name}: Zig package fetch failed (not a transport error)')
+    with_network_retries(f'{project.name}: fetching pinned Zig packages', fetch)
+
+
 def checkout(root, name, url, revision, tag=None):
     dest = root / name
     if not dest.exists():
         run(['git', 'init', dest])
         run(['git', '-C', dest, 'remote', 'add', 'origin', url])
-        run(['git', '-C', dest, 'fetch', '--depth=1', 'origin', tag or revision])
+        with_network_retries(f'{name}: fetching {tag or revision} from {url}',
+                             lambda: run(['git', '-C', dest, 'fetch', '--depth=1', 'origin', tag or revision]))
         run(['git', '-C', dest, 'checkout', '--detach', 'FETCH_HEAD'])
     actual = capture(['git', '-C', dest, 'rev-parse', 'HEAD']).strip()
     if actual != revision:
@@ -72,7 +116,12 @@ def zig_compiler(root, provided, architecture):
         if not binary.exists():
             archive = root / 'zig.tar.xz'
             if not archive.exists():
-                urllib.request.urlretrieve(f'https://ziglang.org/download/{ZIG_VERSION}/zig-{architecture}-linux-{ZIG_VERSION}.tar.xz', archive)
+                url = f'https://ziglang.org/download/{ZIG_VERSION}/zig-{architecture}-linux-{ZIG_VERSION}.tar.xz'
+                partial = archive.with_suffix('.partial')
+                # Publish the archive only after a complete download; a short
+                # read raises and is retried instead of leaving a torn file.
+                with_network_retries(f'downloading {url}', lambda: urllib.request.urlretrieve(url, partial))
+                partial.rename(archive)
             if hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHITECTURES[architecture]['zig_sha256']:
                 raise RuntimeError('Zig archive SHA256 mismatch')
             with tarfile.open(archive) as tar:
@@ -199,6 +248,7 @@ def main():
         raise RuntimeError('Pinned Waymote build shape changed')
     patched = original.replace(needle, needle + '\n    b.step("screen-helper", "Build only streamd").dependOn(&b.addInstallArtifact(streamd, .{}).step);')
     (waymote / 'build.zig').write_text(patched)
+    fetch_zig_packages(zig, waymote, env)
     run([zig, 'build', 'screen-helper', '-j2', '-Dcpu=baseline', '-Doptimize=ReleaseFast'], cwd=waymote, env=env)
     grim = checkout(root, 'grim', GRIM_URL, GRIM_REV, GRIM_TAG)
     protocols = checkout(root, 'protocols', PROTOCOLS_URL, PROTOCOLS_REV, 'refs/tags/1.49')
@@ -223,18 +273,25 @@ def main():
     for name in ['bin', 'lib', 'licenses']:
         (bundle / name).mkdir(parents=True, exist_ok=True)
     shutil.copyfile(waymote / 'zig-out/bin/waymote-streamd', bundle / 'bin/waymote-streamd')
+    # Zig names generated-source directories after build-cache hashes that differ
+    # between otherwise identical builds, and its DWARF line table records those
+    # paths. Ship code and symbols without DWARF so identical sources produce an
+    # identical payload, and therefore an identical Hand identity.
+    run(['objcopy', '--strip-debug', bundle / 'bin/waymote-streamd'])
     shutil.copyfile(build / 'grim', bundle / 'bin/grim')
     for binary in (bundle / 'bin').iterdir():
         binary.chmod(0o755)
     libraries = package_runtime(bundle, sysroot, architecture)
     for name, source, license_name in [('waymote', waymote, 'LICENSE'), ('grim', grim, 'LICENSE'), ('wayland-protocols', protocols, 'COPYING')]:
         shutil.copyfile(source / license_name, bundle / 'licenses' / f'{name}.txt')
-    upstream = {'waymote':{'url':WAYMOTE_URL, 'revision':WAYMOTE_REV, 'build_patch':'streamd-only install step; no runtime source modifications'},
+    upstream = {'waymote':{'url':WAYMOTE_URL, 'revision':WAYMOTE_REV, 'build_patch':'streamd-only install step; no runtime source modifications',
+                            'post_link':'objcopy --strip-debug (DWARF holds build-cache paths)'},
                 'grim':{'url':GRIM_URL, 'tag':GRIM_TAG, 'revision':GRIM_REV},
                 'wayland_protocols':{'url':PROTOCOLS_URL, 'revision':PROTOCOLS_REV},
                 'zig':{'version':ZIG_VERSION, 'archive_sha256':target['zig_sha256']}, 'cpu':architecture + ' baseline',
                 'runtime_libraries':libraries,
                 'build_tools':{'meson':capture(shlex.split(args.meson) + ['--version']).strip(),
+                               'objcopy':capture(['objcopy', '--version']).splitlines()[0],
                                'ninja':capture([args.ninja, '--version']).strip(),
                                'cc':capture(['cc', '--version']).splitlines()[0]},
                 'ffmpeg':'not included; Hand system FFmpeg bridge'}

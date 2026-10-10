@@ -26,12 +26,14 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 const TIMEOUT: Duration = Duration::from_secs(20);
 const DRAFT: &str = "unfinished local draft";
 
-// Slash suggestions work through the shipped TUI, then external clients prompt
-// without an execution policy, run commands, and follow filtered state while
-// the user's own draft survives.
+// The unified TUI's private control socket, driven by a second client: its
+// action menu and composer draft are observable state, external prompts run
+// without an execution policy, and filtered subscribers skip raw provider
+// events while the user's own draft survives. The legacy TUI's external
+// "command" channel and slash-completion state were removed with it in
+// 02acb18e6; the unified TUI reports commands=false (#946).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn external_client_prompts_runs_commands_and_filters_events_without_touching_the_draft()
--> Result<()> {
+async fn external_client_prompts_and_filters_events_without_touching_the_draft() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(serve_responses(listener));
@@ -84,63 +86,33 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     let mut observer = Client::connect(&registration).await?;
     let hello = client.hello.clone();
     let snapshot = &hello["snapshot"];
-    assert_eq!(snapshot["capabilities"]["commands"], true);
+    assert_eq!(snapshot["capabilities"]["commands"], false);
     assert_eq!(snapshot["capabilities"]["event_filter"], true);
+    assert_eq!(snapshot["capabilities"]["state_notifications"], true);
 
+    // "/" opens the action menu without typing into the composer; Esc closes it.
     keyboard.write_all(b"/")?;
     keyboard.flush()?;
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        let state = client.request("state.get", json!({})).await?;
-        if state["state"]["composer"]["text"] == "/" {
-            assert_eq!(state["state"]["menu"], "slash");
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "slash suggestions never opened in the TUI"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    keyboard.write_all(b"\x1b[B\t")?;
+    client
+        .state_until("the action menu never opened", |state| {
+            state["menu"] == "actions" && state["composer"]["text"] == ""
+        })
+        .await?;
+    keyboard.write_all(b"\x1b")?;
     keyboard.flush()?;
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        let state = client.request("state.get", json!({})).await?;
-        if state["state"]["composer"]["text"] == "/thinking " {
-            assert!(state["state"]["menu"].is_null());
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "arrow and Tab did not complete the selected slash command"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    keyboard.write_all(b"\x15")?;
-    keyboard.flush()?;
-    let deadline = Instant::now() + TIMEOUT;
-    while !client.request("state.get", json!({})).await?["state"]["composer"]["text"]
-        .as_str()
-        .is_some_and(str::is_empty)
-    {
-        assert!(
-            Instant::now() < deadline,
-            "completed slash command could not be cleared"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    client
+        .state_until("Esc did not close the action menu", |state| {
+            state["menu"].is_null()
+        })
+        .await?;
 
     keyboard.write_all(DRAFT.as_bytes())?;
     keyboard.flush()?;
-    let deadline = Instant::now() + TIMEOUT;
-    while client.request("state.get", json!({})).await?["state"]["composer"]["text"] != DRAFT {
-        assert!(
-            Instant::now() < deadline,
-            "typed draft never reached the TUI state"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    client
+        .state_until("typed draft never reached the TUI state", |state| {
+            state["composer"]["text"] == DRAFT
+        })
+        .await?;
 
     let filter = json!(["api.event", "model.*"]);
     let subscribed = client
@@ -155,72 +127,17 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
         .await?;
 
     let models = client.request("models.list", json!({})).await?;
-    assert!(
+    let offered = |id: &str| {
         models["models"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|model| model["id"] == "claude-sonnet-5-5")
-    );
-    // Failed selection must not send queued or later input to the old provider.
-    // Reselecting the old model recovers without touching the local draft.
-    let before_selection = client.request("state.get", json!({})).await?;
-    let selection_target = |extra: Value| {
-        let mut params = json!({"expected_instance_id":registration["instance_id"],
-            "expected_session_id":before_selection["active_session_id"],"expected_active_generation":before_selection["active_generation"]});
-        params
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        params
+            .any(|model| model["id"] == id)
     };
-    let failed = client
-        .request(
-            "settings.set",
-            selection_target(json!({"expected_settings_revision":before_selection["state"]["settings_revision"],"settings":{"model":"claude-sonnet-5-5"}})),
-        )
-        .await?;
-    assert_eq!(failed["status"], "rejected", "{failed}");
     assert!(
-        failed["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("auth login"),
-        "{failed}"
+        offered("gpt-6-astra") && offered("claude-sonnet-5-5"),
+        "{models}"
     );
-    let rejected = client
-        .request(
-            "prompt",
-            selection_target(json!({"input":{"text":"must not fall back to Codex"}})),
-        )
-        .await?;
-    assert_eq!(rejected["code"], "model_selection_required", "{rejected}");
-    let recovery_deadline = Instant::now() + TIMEOUT;
-    let recovery_state = loop {
-        let state = client.request("state.get", json!({})).await?;
-        if state["state"]["execution"] == "idle"
-            && state["state"]["settings"]["model_mutable"] == true
-        {
-            break state;
-        }
-        assert!(
-            Instant::now() < recovery_deadline,
-            "rejected prompt did not settle: {state}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    let recovered = client
-        .request(
-            "settings.set",
-            selection_target(json!({"expected_settings_revision":recovery_state["state"]["settings_revision"],"settings":{"model":"gpt-6.1-sol"}})),
-        )
-        .await?;
-    assert_eq!(recovered["status"], "accepted", "{recovered}");
-    assert_eq!(
-        client.request("state.get", json!({})).await?["state"]["composer"]["text"],
-        DRAFT
-    );
-
     let state = client.request("state.get", json!({})).await?;
     let target = |extra: Value| {
         let mut params = json!({"expected_instance_id":registration["instance_id"],
@@ -231,35 +148,39 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
             .extend(extra.as_object().unwrap().clone());
         params
     };
-    let fast = !state["state"]["settings"]["fast_mode"]
-        .as_bool()
-        .unwrap_or(false);
-    let toggle = if fast { "/fast on" } else { "/fast off" };
-    let receipt = client
-        .request("command", target(json!({"input":{"text":toggle}})))
+    let original_model = state["state"]["settings"]["model"].clone();
+    // A model from the other harness family is refused outright, leaving the
+    // local session's settings and the user's draft untouched.
+    let foreign = client
+        .request(
+            "settings.set",
+            target(json!({"expected_settings_revision":state["state"]["settings_revision"],"settings":{"model":"claude-sonnet-5-5"}})),
+        )
         .await?;
-    assert_eq!(receipt["status"], "accepted", "{receipt}");
-    let changed = client
-        .notification(|event| {
-            event["type"] == "state.changed"
-                && event["data"]["state"]["settings"]["fast_mode"] == fast
+    assert_eq!(foreign["status"], "rejected", "{foreign}");
+    assert!(
+        foreign["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("another harness family"),
+        "{foreign}"
+    );
+    let unchanged = client.request("state.get", json!({})).await?;
+    assert_eq!(unchanged["state"]["settings"]["model"], original_model);
+    assert_eq!(unchanged["state"]["composer"]["text"], DRAFT);
+    // Before the first turn a same-family model can still be selected.
+    let selected = client
+        .request(
+            "settings.set",
+            target(json!({"expected_settings_revision":unchanged["state"]["settings_revision"],"settings":{"model":"gpt-6-astra"}})),
+        )
+        .await?;
+    assert_eq!(selected["status"], "accepted", "{selected}");
+    client
+        .state_until("the selected model never reached the TUI state", |state| {
+            state["settings"]["model"] == "gpt-6-astra"
         })
         .await?;
-    assert_eq!(changed["data"]["composer_empty"], false);
-    assert!(changed["data"]["state"].get("composer").is_none());
-    assert!(
-        !changed.to_string().contains(DRAFT),
-        "notifications must not replay the draft"
-    );
-    for (text, code) in [
-        ("plain text", "not_a_command"),
-        ("/model", "interactive_command"),
-    ] {
-        let receipt = client
-            .request("command", target(json!({"input":{"text":text}})))
-            .await?;
-        assert_eq!(receipt["code"], code, "{text}: {receipt}");
-    }
 
     let receipt = client
         .request(
@@ -274,19 +195,23 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
         .to_owned();
     client
         .notification(|event| {
-            event["data"]["type"] == "assistant.message"
-                && event["data"]["payload"]["text"] == "EXTERNAL_REPLY"
-                && event["data"]["payload"]["turn_id"] == turn.as_str()
+            event["type"] == "managed.event"
+                && event["data"]["turn_id"] == turn.as_str()
+                && event["data"]["event"]["type"] == "assistant.message"
+                && event["data"]["event"]["payload"]["text"] == "EXTERNAL_REPLY"
         })
         .await?;
     client
-        .notification(|event| event["data"]["type"] == "run.completed")
+        .notification(|event| {
+            event["type"] == "managed.event" && event["data"]["event"]["type"] == "run.completed"
+        })
         .await?;
     let kinds = |client: &Client| {
         client
             .events
             .iter()
-            .filter_map(|event| event["data"]["type"].as_str().map(str::to_owned))
+            .filter(|event| event["type"] == "managed.event")
+            .filter_map(|event| event["data"]["event"]["type"].as_str().map(str::to_owned))
             .collect::<Vec<_>>()
     };
     assert!(
@@ -297,9 +222,25 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
         kinds(&client)
     );
     observer
-        .notification(|event| event["data"]["type"] == "run.completed")
+        .notification(|event| {
+            event["type"] == "managed.event" && event["data"]["event"]["type"] == "run.completed"
+        })
         .await?;
     assert!(kinds(&observer).iter().any(|kind| kind == "api.event"));
+    assert!(
+        kinds(&observer)
+            .iter()
+            .any(|kind| kind.starts_with("model."))
+    );
+    assert!(
+        client
+            .events
+            .iter()
+            .filter(|event| event["type"] == "state.changed")
+            .all(|event| event["data"]["state"].get("composer").is_none()
+                && !event.to_string().contains(DRAFT)),
+        "state notifications must not replay the draft"
+    );
     assert_eq!(
         client.request("state.get", json!({})).await?["state"]["composer"]["text"],
         DRAFT
@@ -308,7 +249,7 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
     let locked = client
         .request(
             "settings.set",
-            target(json!({"expected_settings_revision":locked_state["state"]["settings_revision"],"settings":{"model":"claude-sonnet-5-5"}})),
+            target(json!({"expected_settings_revision":locked_state["state"]["settings_revision"],"settings":{"model":"gpt-6.1-sol"}})),
         )
         .await?;
     assert_eq!(locked["status"], "rejected", "{locked}");
@@ -316,7 +257,7 @@ async fn external_client_prompts_runs_commands_and_filters_events_without_touchi
         locked["message"]
             .as_str()
             .unwrap_or("")
-            .contains("thread has started"),
+            .contains("before the first turn is accepted"),
         "{locked}"
     );
     let continued = client
@@ -401,6 +342,20 @@ impl Client {
                 return Ok(frame["result"].clone());
             }
             self.events.push(frame);
+        }
+    }
+
+    async fn state_until(&mut self, failure: &str, ready: impl Fn(&Value) -> bool) -> Result<()> {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let state = self.request("state.get", json!({})).await?;
+            if ready(&state["state"]) {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(eyre!("{failure}: {state}"));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 

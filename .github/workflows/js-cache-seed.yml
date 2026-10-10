@@ -1,0 +1,60 @@
+name: JS cache seed
+
+# CI on pull requests only restores JavaScript dependency caches. This job
+# saves them once in master scope, which every PR and merge-queue run can read,
+# instead of each PR storing its own identical ~0.54 GB copy.
+on:
+  push:
+    branches: [master]
+    paths:
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - examples/privy/package-lock.json
+      - examples/better-auth/package-lock.json
+      - .github/actions/js-dependency-cache/**
+      - .github/workflows/js-cache-seed.yml
+  # Re-seeds after eviction; finds existing entries without downloading them.
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: js-cache-seed
+  # A running seed finishes; only pending runs are superseded.
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    name: Seed master JavaScript dependency caches
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - id: cache
+        uses: ./.github/actions/js-dependency-cache
+        with:
+          save: true
+          npm-examples: true
+      # The same installs as CI's bindings job, from an empty store. A failed
+      # install fails the job, so nothing is saved.
+      - name: Install from the registry
+        if: steps.cache.outputs.seeded != 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          npm ci --prefer-offline --no-audit --no-fund --prefix examples/privy
+          npm ci --prefer-offline --no-audit --no-fund --prefix examples/better-auth
+      - name: Report seeded caches
+        if: steps.cache.outputs.seeded == 'true'
+        run: echo "::notice title=JS cache seed::Master already has the current pnpm and npm-examples entries."

@@ -65,9 +65,13 @@ export class DiagnosticJournal {
         Date.now(), safe.thread_id ?? null, safe.lease_id ?? null, safe.connection_id ?? null, JSON.stringify(safe),
       ).one();
       if (row.seq % 64 !== 0) return;
-      const pruned = this.storage.sql.exec<{ seq: number }>(
-        "DELETE FROM diagnostic_events WHERE seq <= ? OR created_at < ? RETURNING seq", row.seq - MAX_RECORDS, Date.now() - RETENTION_MS,
-      ).toArray();
+      // Two indexed range deletes; an OR across seq and created_at scans every row.
+      const pruned = [
+        ...this.storage.sql.exec<{ seq: number }>(
+          "DELETE FROM diagnostic_events WHERE seq <= ? RETURNING seq", row.seq - MAX_RECORDS).toArray(),
+        ...this.storage.sql.exec<{ seq: number }>(
+          "DELETE FROM diagnostic_events WHERE created_at < ? RETURNING seq", Date.now() - RETENTION_MS).toArray(),
+      ];
       if (pruned.length) this.storage.sql.exec(
         "UPDATE diagnostic_retention SET pruned_through = MAX(pruned_through, ?) WHERE singleton=1", Math.max(...pruned.map(row => row.seq)),
       );
@@ -122,6 +126,7 @@ export class DiagnosticJournal {
       DROP INDEX IF EXISTS diagnostic_events_connection;
       CREATE INDEX IF NOT EXISTS diagnostic_events_lease_present ON diagnostic_events(lease_id,seq) WHERE lease_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS diagnostic_events_connection_present ON diagnostic_events(connection_id,seq) WHERE connection_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS diagnostic_events_created_at ON diagnostic_events(created_at);
       CREATE TABLE IF NOT EXISTS diagnostic_retention(singleton INTEGER PRIMARY KEY CHECK(singleton=1),pruned_through INTEGER NOT NULL,write_failed INTEGER NOT NULL DEFAULT 0);
       INSERT OR IGNORE INTO diagnostic_retention(singleton,pruned_through) VALUES(1,0);`);
     const columns = this.storage.sql.exec<{ name: string }>("PRAGMA table_info(diagnostic_retention)").toArray();

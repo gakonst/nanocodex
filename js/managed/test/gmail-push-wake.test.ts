@@ -25,8 +25,11 @@ afterEach(async () => {
 });
 const input = (agentId: string) => ({ userId: "gmail-fixture-owner", agentId,
   eventId: "gmail:connection:history:123", input: "A new message arrived. Summarize it." });
-function initialize(state: DurableObjectState, agentId: string, session: DurableAgentSession, ownerId = "gmail-fixture-owner") {
+async function initialize(state: DurableObjectState, agentId: string, session: DurableAgentSession, ownerId = "gmail-fixture-owner") {
   fixtureAgents.add(agentId);
+  // A fresh Session creates its schema on its first real request (9d8b63102);
+  // this ownerless request is refused but initializes storage before seeding.
+  await session.fetch(new Request("https://session.internal/sites"));
   // Gate mandatory credential-subject startup, not optional account discovery.
   // Provider dependencies are synthetic; Gmail processing must never execute a chat turn.
   const current = (session as unknown as {env:Env}).env;
@@ -58,7 +61,7 @@ describe("private quiet Gmail processing", () => {
     expect((await entrypoint.fetch(request(`${url}?extra=true`))).status).toBe(400);
     expect((await entrypoint.fetch(request(url, {...input(agentId), extra: true}))).status).toBe(400);
     expect((await entrypoint.fetch(request())).status).toBe(403);
-    await runInDurableObject(sessions().getByName(agentId), async (session, state) => initialize(state, agentId, session));
+    await runInDurableObject(sessions().getByName(agentId), async (session, state) => await initialize(state, agentId, session));
     const accepted = await entrypoint.fetch(request());
     expect(accepted.status).toBe(200);
     expect(await accepted.json()).toEqual({status:"accepted"});
@@ -74,7 +77,7 @@ describe("private quiet Gmail processing", () => {
     const agentId = crypto.randomUUID();
     await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
       await expect(session.gmailPushWake(input(agentId))).rejects.toThrow("gmail_push_owner_forbidden");
-      initialize(state, agentId, session);
+      await initialize(state, agentId, session);
       for (const patch of [{userId:"foreign"}, {agentId:crypto.randomUUID()}]) {
         await expect(session.gmailPushWake({...input(agentId), ...patch})).rejects.toThrow("gmail_push_owner_forbidden");
       }
@@ -88,7 +91,7 @@ describe("private quiet Gmail processing", () => {
   it("processes quietly while a chat turn is busy and keeps its receipt when idle", async () => {
     const agentId = crypto.randomUUID();
     await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
-      initialize(state, agentId, session);
+      await initialize(state, agentId, session);
       state.storage.sql.exec(`INSERT INTO managed_turns(id,request_hash,input_json,authorization_json,state,
         accepted_cursor,created_at,accepted_at,updated_at,retry_at)
         VALUES('busy','hash','"busy"','{"capabilities":[]}','accepted',1,?,?,?,?)`,
@@ -108,7 +111,7 @@ describe("private quiet Gmail processing", () => {
     const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(JSON.stringify([wake.userId,wake.agentId,wake.eventId]))));
     const id = "gmail:" + Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2,"0")).join("");
     await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
-      initialize(state, agentId, session);
+      await initialize(state, agentId, session);
       state.storage.sql.exec(`INSERT INTO managed_turns(id,request_key,request_hash,input_json,authorization_json,state,
         accepted_cursor,created_at,accepted_at,updated_at)
         VALUES(?,?,'legacy-hash',?,'{"capabilities":[]}','completed',1,?,?,?)`,
@@ -124,7 +127,7 @@ describe("private quiet Gmail processing", () => {
   it("processes a concurrent event once, replays its receipt and rejects changed input", async () => {
     const agentId = crypto.randomUUID();
     await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
-      initialize(state, agentId, session);
+      await initialize(state, agentId, session);
       const results = await Promise.all([session.gmailPushWake(input(agentId)),session.gmailPushWake(input(agentId))]);
       expect(results.map(r=>r.status).sort()).toEqual(["accepted","duplicate"]);
       expect(results).toEqual([{status:"accepted"},{status:"duplicate"}]);
@@ -140,7 +143,7 @@ describe("private quiet Gmail processing", () => {
 it("advances opted-in CRM mail in bounded retries without chat events", async () => {
   const agentId = crypto.randomUUID(); const connectionId = "C".repeat(43);
   await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
-    initialize(state, agentId, session);
+    await initialize(state, agentId, session);
     let reads = 0;
     const current = (session as unknown as {env:Env}).env;
     Object.defineProperty(session,"env",{value:{...current,NANOCODEX:{fetch:async(value:RequestInfo | URL,init?:RequestInit)=>{
@@ -171,7 +174,7 @@ it("advances opted-in CRM mail in bounded retries without chat events", async ()
 it("keeps failed CRM wakes retryable without blocking unrelated quiet notifications", async () => {
   const agentId = crypto.randomUUID();
   await runInDurableObject(sessions().getByName(agentId), async (session,state) => {
-    initialize(state,agentId,session);
+    await initialize(state, agentId,session);
     const current = (session as unknown as {env:Env}).env;
     Object.defineProperty(session,"env",{value:{...current,NANOCODEX_CRM:undefined}});
     await expect(session.gmailPushWake({...input(agentId),input:JSON.stringify({crm:true})})).rejects.toThrow("gmail_push_crm_unavailable");
@@ -188,7 +191,7 @@ it("proposes a single TODO for concurrent reply notifications and stays quiet fo
   const agentId = crypto.randomUUID(), userId = crypto.randomUUID();
   await ensureAccount(env as unknown as Env, userId, true);
   await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
-    initialize(state, agentId, session, userId);
+    await initialize(state, agentId, session, userId);
     const current = (session as unknown as {env:Env}).env;
     let classifications = 0;
     let choice = "reply_requested";
@@ -207,7 +210,7 @@ it("proposes a single TODO for concurrent reply notifications and stays quiet fo
     expect(await session.gmailPushWake(wake)).toEqual({status:"duplicate"});
     await expect(session.gmailPushWake({...wake,input:inputValue.replace("Please reply", "Changed")})).rejects.toThrow("different input");
     expect(classifications).toBe(1);
-    expect(state.storage.sql.exec("SELECT source_key, outcome FROM gmail_firehose_decision_receipts").toArray())
+    expect(state.storage.sql.exec("SELECT source_key, outcome FROM gmail_firehose_decision_receipts_v2").toArray())
       .toMatchObject([{outcome:"reply"}]);
     choice = "no_reply";
     expect(await session.gmailPushWake({...wake,eventId:"no-reply",input:inputValue.replaceAll('"m1"','"m2"')}))

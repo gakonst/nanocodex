@@ -12,16 +12,23 @@ runs:
   steps:
     # Archives ~/.cargo only by default; see scripts/ci/README.md.
     - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      # rust-cache always hashes every non-empty CARGO*/CC*/CFLAGS*/CXX*/CMAKE*/
+      # RUST* variable into its key; env-vars only appends prefixes. CI sets
+      # these profile values at workflow level, while the Cloudflare deploy and
+      # preview jobs did not, so they stored a separate ~690MB cargo-home copy
+      # under every lockfile hash. Pin the values set below (CARGO_INCREMENTAL
+      # is forced to 0 by rust-cache itself). Matching jobs on the same runner
+      # platform and toolchain then reuse the same source-cache key.
+      env:
+        CARGO_PROFILE_DEV_DEBUG: "0"
+        CARGO_PROFILE_TEST_DEBUG: "0"
+        CARGO_TERM_COLOR: always
       with:
         cache-targets: ${{ inputs.cache-targets }}
         shared-key: ${{ inputs.cache-targets == 'true' && format('target-{0}', github.job) || 'cargo-home' }}
         workspaces: ${{ inputs.workspace }}
         save-if: ${{ github.ref == 'refs/heads/master' && github.event_name != 'pull_request' }}
         cache-on-failure: "true"
-        # Key cargo-home only on rustc + lockfiles, not per-job CARGO_*/RUST*
-        # env. Per-job env hashes stored ~5 identical 690MB copies and pushed
-        # the repository past its 10GB cache limit, evicting sccache entries.
-        env-vars: ${{ inputs.cache-targets == 'true' && 'CARGO CC CFLAGS CXX CMAKE RUST' || 'NANOCODEX_CARGO_HOME_CACHE' }}
     - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
       with:
         version: v0.16.0

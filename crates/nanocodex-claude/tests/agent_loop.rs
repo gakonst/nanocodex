@@ -56,6 +56,36 @@ fn image_dimensions(block: &Value) -> Option<(u32, u32)> {
     Some((image.width(), image.height()))
 }
 
+/// A PNG of pseudo-random pixels, which lossless encodings cannot compress.
+fn noise_png(width: u32, height: u32) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let noise = image::RgbImage::from_fn(width, height, |_, _| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let bytes = state.to_le_bytes();
+        image::Rgb([bytes[0], bytes[1], bytes[2]])
+    });
+    let mut bytes = Cursor::new(Vec::new());
+    DynamicImage::ImageRgb8(noise)
+        .write_to(&mut bytes, ImageFormat::Png)
+        .unwrap();
+    bytes.into_inner()
+}
+
+/// A 1x1 JPEG whose application segments alone exceed the 5 MiB per-image
+/// limit, so it cannot shrink to fit.
+fn bloated_jpeg() -> Vec<u8> {
+    let mut bytes = Cursor::new(Vec::new());
+    DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut bytes, ImageFormat::Jpeg)
+        .unwrap();
+    let mut bytes = bytes.into_inner();
+    let segment = [&[0xff, 0xef, 0xff, 0xff][..], &[0; 65_533]].concat();
+    bytes.splice(2..2, segment.repeat(100));
+    bytes
+}
+
 #[tokio::test]
 async fn calls_outside_the_catalog_get_paired_errors_and_the_turn_continues() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -943,7 +973,8 @@ async fn tool_images_fit_many_image_limit_before_history_crosses_twenty() {
         "the completed effect is not an error"
     );
     assert_eq!(receipt["content"][0]["text"], "captured");
-    assert_eq!(image_dimensions(&receipt["content"][1]), Some((3000, 150)));
+    // The standard tier's native size, which is within the many-image limit.
+    assert_eq!(image_dimensions(&receipt["content"][1]), Some((1568, 78)));
     assert_eq!(
         receipt["content"][2]["type"], "text",
         "unprocessable image is omitted"
@@ -952,6 +983,125 @@ async fn tool_images_fit_many_image_limit_before_history_crosses_twenty() {
         log[2]["messages"][2], *first,
         "earlier tool images stay byte-identical once history exceeds twenty images"
     );
+    server.abort();
+}
+
+/// Tool-result images, such as screenshots, reach Claude at most at the
+/// model's native resolution and within the per-image byte limit. An image
+/// that cannot be prepared, because it cannot shrink to fit, its header claims
+/// more pixels than can be decoded, or it is a remote URL, becomes an omission
+/// inside the same successful tool result.
+#[tokio::test]
+async fn tool_images_are_prepared_for_the_models_native_resolution() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    // Accept request bodies up to the Messages API's 32 MB limit.
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post(move |Json(body): Json<Value>| {
+                let log = log.clone();
+                async move {
+                    let prompted = body["messages"].as_array().unwrap().len() == 1;
+                    log.lock().unwrap().push(body);
+                    let (blocks, stop) = if prompted {
+                        (
+                            vec![json!({"type":"tool_use","id":"capture","name":"Capture","input":{}})],
+                            "tool_use",
+                        )
+                    } else {
+                        (vec![json!({"type":"text","text":"Seen."})], "end_turn")
+                    };
+                    ([("content-type", "text/event-stream")], stream(blocks, stop))
+                }
+            }),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let image = |media_type: &str, data: String| json!({"type":"image","source":{"type":"base64","media_type":media_type,"data":data}});
+    let captured = vec![
+        image("image/png", png(3840, 2160)),
+        image("image/png", STANDARD.encode(noise_png(2000, 1000))),
+        image("image/jpeg", STANDARD.encode(bloated_jpeg())),
+        image(
+            "image/x-portable-pixmap",
+            STANDARD.encode(b"P6\n4294967295 1\n255\n"),
+        ),
+        json!({"type":"image","source":{"type":"url","url":"https://example.com/screenshot.png"}}),
+    ];
+
+    // Sizes from Anthropic's resolution examples for each tier. The noise image
+    // fits the high-resolution tier but not the byte limit.
+    for (model, screenshot, noise) in [
+        ("claude-opus-5-5", (2576, 1449), (1500, 750)),
+        ("claude-haiku-4-5", (1456, 819), (1568, 784)),
+    ] {
+        let client = ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        );
+        let blocks = captured.clone();
+        let (agent, _) = Nanocodex::builder(Claude::new(client, model))
+            .max_tokens(4096)
+            .tool_blocks(
+                ToolDefinition {
+                    name: "Capture".into(),
+                    description: "Capture a synthetic screenshot".into(),
+                    input_schema: json!({"type":"object"}),
+                    strict: None,
+                    defer_loading: false,
+                },
+                move |_| {
+                    let blocks = blocks.clone();
+                    async move { Ok(blocks) }
+                },
+            )
+            .build()
+            .unwrap();
+        let result = agent
+            .prompt("capture the screen")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        assert_eq!(result.final_message(), "Seen.");
+        agent.shutdown().await.unwrap();
+
+        let request = requests.lock().unwrap().last().unwrap().clone();
+        let receipt = &request["messages"][2]["content"][0];
+        assert_ne!(receipt["is_error"], true, "{model}");
+        let content = &receipt["content"];
+        assert_eq!(image_dimensions(&content[0]), Some(screenshot), "{model}");
+        let sent = STANDARD
+            .decode(content[1]["source"]["data"].as_str().unwrap())
+            .unwrap();
+        assert!(
+            sent.len() <= 5 * 1024 * 1024,
+            "{model}: {} bytes",
+            sent.len()
+        );
+        assert_eq!(image_dimensions(&content[1]), Some(noise), "{model}");
+        assert_eq!(content[2]["type"], "text", "{model}");
+        assert!(
+            content[2]["text"].as_str().unwrap().contains("size limit"),
+            "{model}: {}",
+            content[2]
+        );
+        assert_eq!(content[3]["type"], "text", "{model}");
+        assert!(
+            content[4]["text"]
+                .as_str()
+                .unwrap()
+                .contains("remote image URLs"),
+            "{model}: {}",
+            content[4]
+        );
+    }
     server.abort();
 }
 
@@ -1304,6 +1454,88 @@ async fn large_tool_result_compacts_within_turn_without_rerunning_effect() {
 #[tokio::test]
 async fn unicode_tool_result_uses_same_text_estimate_as_queued_prompt() {
     tool_result_compaction("😀".repeat(600), false).await;
+}
+
+// One oversized receipt must not make every later request, including the round
+// compaction retains verbatim, exceed the model window.
+#[tokio::test]
+async fn oversized_tool_results_are_bounded_before_entering_history() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let index = {
+                    let mut log = log.lock().unwrap();
+                    log.push(body);
+                    log.len()
+                };
+                let (blocks, reason) = if index == 1 {
+                    (
+                        vec![
+                            json!({"type":"tool_use","id":"toolu_text","name":"dump","input":{}}),
+                            json!({"type":"tool_use","id":"toolu_blocks","name":"dump_blocks","input":{}}),
+                        ],
+                        "tool_use",
+                    )
+                } else {
+                    (vec![json!({"type":"text","text":"done"})], "end_turn")
+                };
+                ([("content-type", "text/event-stream")], stream(blocks, reason))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let huge = || format!("HEAD{}TAIL", "x".repeat(4_000_000));
+    let definition = |name: &str| ToolDefinition {
+        name: name.into(),
+        description: "Synthetic oversized output".into(),
+        input_schema: json!({"type":"object"}),
+        strict: None,
+        defer_loading: false,
+    };
+    let (agent, _) = Nanocodex::builder(Claude::latest(client))
+        .tool(definition("dump"), move |_| async move { Ok(huge()) })
+        .tool_blocks(definition("dump_blocks"), move |_| async move {
+            Ok(vec![
+                json!({"type":"text","text":huge()}),
+                json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":png(1, 1)}}),
+                json!({"type":"text","text":"after budget"}),
+            ])
+        })
+        .build()
+        .unwrap();
+    for prompt in ["dump everything", "and again"] {
+        let result = agent.prompt(prompt).await.unwrap().result().await.unwrap();
+        assert_eq!(result.final_message(), "done");
+    }
+    let log = requests.lock().unwrap();
+    // The follow-up turn replays the recorded receipts from history.
+    assert_eq!(log.len(), 3);
+    for request in [&log[1], &log[2]] {
+        assert!(request.to_string().len() < 200_000);
+        let results = &request["messages"][2]["content"];
+        let text = results[0]["content"].as_str().unwrap();
+        assert!(text.starts_with("HEADx") && text.ends_with("xTAIL"));
+        assert!(text.contains("tokens truncated"));
+        let blocks = results[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        let first = blocks[0]["text"].as_str().unwrap();
+        assert!(first.starts_with("HEADx") && first.ends_with("xTAIL"));
+        assert_eq!(blocks[1]["source"]["data"], png(1, 1));
+        assert!(!blocks[2]["text"].as_str().unwrap().contains("after budget"));
+    }
+    server.abort();
 }
 
 #[tokio::test]
@@ -1918,14 +2150,50 @@ async fn steering_acknowledges_consumption_at_tool_and_terminal_boundaries() {
             .await
             .unwrap();
         turn.steer("first steer").await.unwrap();
-        turn.steer("second é").await.unwrap();
+        // A retried identity is admitted and reported once.
+        for _ in 0..2 {
+            turn.steer_with_id("second".into(), "second é")
+                .await
+                .unwrap();
+        }
+        let mut accepted = Vec::new();
         while let Some(event) = events.try_recv_timed() {
             assert_ne!(
                 event.event.kind,
                 AgentEventKind::RunSteered,
                 "admission must not acknowledge consumption"
             );
+            let payload: Value = serde_json::from_str(event.event.payload.get()).unwrap();
+            if event.event.kind == AgentEventKind::InputAccepted && payload["kind"] == "steer" {
+                accepted.push(payload);
+            }
         }
+        // Admission reports each steer's accepted input.
+        assert_eq!(
+            accepted
+                .iter()
+                .map(|payload| payload["input"].clone())
+                .collect::<Vec<_>>(),
+            [json!("first steer"), json!("second é")]
+        );
+        assert_eq!(accepted[0]["request_id"], Value::Null);
+        assert_eq!(accepted[1]["request_id"], "second");
+        for payload in &accepted {
+            let turn_id = payload["turn_id"].as_str().unwrap();
+            assert!(
+                payload["item_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("{turn_id}:steer:")),
+                "{payload}"
+            );
+        }
+        assert!(
+            accepted[1]["item_id"]
+                .as_str()
+                .unwrap()
+                .ends_with(":steer:second")
+        );
         release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), turn.result())
             .await
@@ -2114,6 +2382,172 @@ async fn streamed_text_and_final_message_share_one_response_identity() {
         rows[0].0, rows[1].0,
         "separate model calls keep separate identities"
     );
+}
+
+/// The run publishes streamed text while the caller admits steers on another
+/// thread, and every event of both reaches the session stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn steers_admitted_during_streaming_keep_every_event() {
+    use std::{sync::atomic::AtomicBool, time::Duration};
+
+    const BATCHES: usize = 300;
+    const BATCH: usize = 100;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let streaming = Arc::new(tokio::sync::Notify::new());
+    let streamed = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/messages",
+        post({
+            let streaming = streaming.clone();
+            let streamed = streamed.clone();
+            let requests = requests.clone();
+            move |Json(_): Json<Value>| {
+                let streaming = streaming.clone();
+                let streamed = streamed.clone();
+                let requests = requests.clone();
+                async move {
+                    if requests.fetch_add(1, Ordering::SeqCst) > 0 {
+                        return (
+                            [("content-type", "text/event-stream")],
+                            stream(vec![json!({"type":"text","text":"done"})], "end_turn"),
+                        )
+                            .into_response();
+                    }
+                    let sse = |events: &[Value]| -> String {
+                        events
+                            .iter()
+                            .map(|event| format!("data: {event}\n\n"))
+                            .collect()
+                    };
+                    let head = sse(&[
+                        json!({"type":"message_start","message":{"id":"msg","role":"assistant","model":"test","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                    ]);
+                    let batch = sse(&[json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}})])
+                        .repeat(BATCH);
+                    let tail = sse(&[
+                        json!({"type":"content_block_stop","index":0}),
+                        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}),
+                        json!({"type":"message_stop"}),
+                    ]);
+                    streaming.notify_one();
+                    let batches = futures_util::stream::iter(0..BATCHES).then(move |_| {
+                        let batch = batch.clone();
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(1)).await;
+                            Ok::<_, std::io::Error>(batch)
+                        }
+                    });
+                    let body = futures_util::stream::once(async move { Ok(head) })
+                        .chain(batches)
+                        .chain(futures_util::stream::once(async move {
+                            streamed.store(true, Ordering::SeqCst);
+                            Ok(tail)
+                        }));
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(body))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
+    let (agent, mut events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
+        .build()
+        .unwrap();
+    let turn = agent.prompt("begin").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), streaming.notified())
+        .await
+        .unwrap();
+    // Withdrawing each steer keeps the steering queue from filling.
+    let mut steers = 0;
+    while !streamed.load(Ordering::SeqCst) {
+        let id = format!("steer-{steers}");
+        if turn.steer_with_id(id.clone(), "steer").await.is_err() {
+            break;
+        }
+        steers += 1;
+        let _ = turn.withdraw_steer(id).await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut deltas, mut accepted) = (0, 0);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+            .await
+            .expect("every published event reaches the session stream")
+            .unwrap();
+        let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+        match event.kind {
+            AgentEventKind::AssistantDelta => deltas += 1,
+            AgentEventKind::InputAccepted if payload["kind"] == "steer" => accepted += 1,
+            AgentEventKind::RunCompleted => break,
+            _ => {}
+        }
+    }
+    assert!(steers > 0);
+    assert_eq!(accepted, steers);
+    assert!(deltas >= BATCHES * BATCH);
+    agent.shutdown().await.unwrap();
+    server.abort();
+}
+
+/// A turn retires even when its run panics, so the agent can shut down.
+#[tokio::test]
+async fn a_panicking_tool_does_not_block_shutdown() {
+    use std::time::Duration;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(|Json(_): Json<Value>| async {
+            (
+                [("content-type", "text/event-stream")],
+                stream(
+                    vec![json!({"type":"tool_use","id":"panic","name":"panic","input":{}})],
+                    "tool_use",
+                ),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
+    let (agent, _events) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
+        .tool(
+            ToolDefinition {
+                name: "panic".into(),
+                description: "Panicking tool".into(),
+                input_schema: json!({"type":"object"}),
+                strict: None,
+                defer_loading: false,
+            },
+            |_| -> std::future::Ready<Result<String, String>> { panic!("synthetic tool panic") },
+        )
+        .build()
+        .unwrap();
+    let turn = agent.prompt("begin").await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), turn.result())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    tokio::time::timeout(Duration::from_secs(2), agent.shutdown())
+        .await
+        .expect("a panicked turn must not block shutdown")
+        .unwrap();
+    server.abort();
 }
 
 /// A realtime voice frontend delegates through live routing: idle input
@@ -2327,9 +2761,11 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
             log[0]["messages"][0]["content"]
         );
     }
-    for (format, mime) in [
+    // JPEG and WebP images that fit are sent unchanged. A GIF becomes a PNG of
+    // its first frame, the only frame Claude reads.
+    for (format, sent) in [
         (ImageFormat::Jpeg, "image/jpeg"),
-        (ImageFormat::Gif, "image/gif"),
+        (ImageFormat::Gif, "image/png"),
         (ImageFormat::WebP, "image/webp"),
     ] {
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -2337,6 +2773,7 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
             .write_to(&mut bytes, format)
             .unwrap();
         let data = STANDARD.encode(bytes.into_inner());
+        let mime = format.to_mime_type();
         agent
             .prompt(Prompt::content([UserInput::Image {
                 image_url: format!("data:{mime};base64,{data}"),
@@ -2349,10 +2786,12 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
             .unwrap();
         let log = requests.lock().unwrap();
         let messages = log.last().unwrap()["messages"].as_array().unwrap();
-        assert_eq!(
-            messages.last().unwrap()["content"][0],
-            json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})
-        );
+        let block = &messages.last().unwrap()["content"][0];
+        assert_eq!(block["source"]["media_type"], sent);
+        assert_eq!(image_dimensions(block), Some((1, 1)));
+        if sent == mime {
+            assert_eq!(block["source"]["data"], data);
+        }
     }
 
     let rejected = |file_data: String, filename: Option<&str>| {
@@ -2389,13 +2828,6 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
             ),
             "filename",
         ),
-        (
-            Prompt::content((0..6).map(|_| UserInput::File {
-                file_data: format!("data:application/pdf;base64,{pdf}"),
-                filename: None,
-            })),
-            "5 documents",
-        ),
     ] {
         let error = match agent.prompt(prompt).await {
             Err(error) => error.to_string(),
@@ -2415,6 +2847,30 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
         5,
         "invalid media never reaches the provider"
     );
+    // More documents than the former five-document cap reach the provider;
+    // only the combined media size bounds a prompt.
+    let many = agent
+        .prompt(Prompt::content((0..8).map(|_| UserInput::File {
+            file_data: format!("data:application/pdf;base64,{pdf}"),
+            filename: None,
+        })))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(many.final_message(), "Read both.");
+    {
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 6);
+        let content = requests[5]["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "document")
+            .count();
+        assert_eq!(content, 8);
+    }
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../output/claude-host-integration");
     std::fs::create_dir_all(&artifact).unwrap();
@@ -2424,6 +2880,165 @@ async fn prompt_images_and_documents_become_native_claude_blocks() {
     )
     .unwrap();
     agent.shutdown().await.unwrap();
+    server.abort();
+}
+
+/// Prompt images are prepared like tool-result images. They are converted to a
+/// format Claude accepts and reduced at most to the model's native resolution
+/// (the size the Messages API would otherwise reduce them to) and the per-image
+/// byte limit, or replaced by a note when they cannot be.
+#[tokio::test]
+async fn prompt_images_are_prepared_for_the_models_native_resolution() {
+    use nanocodex_agent::input::{Prompt, UserInput};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    // Accept request bodies up to the Messages API's 32 MB limit.
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post(move |Json(body): Json<Value>| {
+                let log = log.clone();
+                async move {
+                    log.lock().unwrap().push(body);
+                    (
+                        [("content-type", "text/event-stream")],
+                        stream(vec![json!({"type":"text","text":"Seen."})], "end_turn"),
+                    )
+                }
+            }),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent = |model: &str| {
+        let client = ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        );
+        Nanocodex::builder(Claude::new(client, model))
+            .build()
+            .unwrap()
+            .0
+    };
+    let image = |image_url: String| {
+        Prompt::content([UserInput::Image {
+            image_url,
+            detail: None,
+        }])
+    };
+    let send = async |model: &str, image_url: String| {
+        let agent = agent(model);
+        let result = agent
+            .prompt(image(image_url))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        assert_eq!(result.final_message(), "Seen.");
+        agent.shutdown().await.unwrap();
+        requests.lock().unwrap().last().unwrap()["messages"][0]["content"][0].clone()
+    };
+
+    // Sizes from Anthropic's resolution examples for each tier.
+    for (model, (width, height), native) in [
+        ("claude-opus-5-5", (3840, 2160), (2576, 1449)),
+        ("claude-haiku-4-5", (1920, 1080), (1456, 819)),
+        ("claude-haiku-4-5", (1075, 1520), (924, 1307)),
+    ] {
+        let block = send(
+            model,
+            format!("data:image/png;base64,{}", png(width, height)),
+        )
+        .await;
+        assert_eq!(block["source"]["media_type"], "image/png");
+        assert_eq!(
+            image_dimensions(&block),
+            Some(native),
+            "{model} {width}x{height}"
+        );
+    }
+
+    let native = png(1920, 1080);
+    let block = send("claude-opus-5-5", format!("data:image/png;base64,{native}")).await;
+    assert_eq!(
+        block["source"]["data"], native,
+        "an image within the native resolution is sent unchanged"
+    );
+
+    let mut bitmap = Cursor::new(Vec::new());
+    DynamicImage::new_rgb8(4, 3)
+        .write_to(&mut bitmap, ImageFormat::Bmp)
+        .unwrap();
+    let bitmap = STANDARD.encode(bitmap.into_inner());
+    let block = send("claude-opus-5-5", format!("data:image/bmp;base64,{bitmap}")).await;
+    assert_eq!(block["source"]["media_type"], "image/png");
+    assert_eq!(image_dimensions(&block), Some((4, 3)));
+
+    let mut jpeg = Cursor::new(Vec::new());
+    DynamicImage::new_rgb8(4, 3)
+        .write_to(&mut jpeg, ImageFormat::Jpeg)
+        .unwrap();
+    let jpeg = STANDARD.encode(jpeg.into_inner());
+    let block = send("claude-opus-5-5", format!("DATA:image/png;BASE64,{jpeg}")).await;
+    assert_eq!(
+        block["source"],
+        json!({"type":"base64","media_type":"image/jpeg","data":jpeg}),
+        "the scheme and encoding are case-insensitive, and the media type comes from the bytes"
+    );
+
+    // Rounding the shared resizer's short edge to 1093 would cost 1600 visual
+    // tokens, over the standard tier's 1568.
+    let block = send(
+        "claude-haiku-4-5",
+        format!("data:image/png;base64,{}", png(1152, 1140)),
+    )
+    .await;
+    let (width, height) = image_dimensions(&block).unwrap();
+    assert!(
+        width.div_ceil(28) * height.div_ceil(28) <= 1568,
+        "{width}x{height}"
+    );
+    assert!(width >= 1100, "{width}x{height}");
+
+    let noisy = noise_png(2000, 1000);
+    assert!(
+        noisy.len() > 5 * 1024 * 1024,
+        "the source exceeds the image limit"
+    );
+    let block = send(
+        "claude-opus-5-5",
+        format!("data:image/png;base64,{}", STANDARD.encode(noisy)),
+    )
+    .await;
+    let sent = STANDARD
+        .decode(block["source"]["data"].as_str().unwrap())
+        .unwrap();
+    assert!(sent.len() <= 5 * 1024 * 1024, "{} bytes", sent.len());
+    assert_eq!(image_dimensions(&block), Some((1500, 750)));
+
+    // A PNG cut off partway through its pixel data, and an image that cannot
+    // shrink within the byte limit, each become a note.
+    let complete = STANDARD.decode(png(4000, 3000)).unwrap();
+    let truncated = STANDARD.encode(&complete[..complete.len() / 2]);
+    for image_url in [
+        format!("data:image/png;base64,{truncated}"),
+        format!("data:image/jpeg;base64,{}", STANDARD.encode(bloated_jpeg())),
+    ] {
+        let block = send("claude-opus-5-5", image_url).await;
+        assert_eq!(block["type"], "text", "{block}");
+        assert!(
+            block["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("image content omitted"),
+            "{block}"
+        );
+    }
     server.abort();
 }
 

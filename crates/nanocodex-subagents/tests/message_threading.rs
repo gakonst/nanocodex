@@ -52,25 +52,33 @@ impl Service<ResponsesAttempt> for ControlledProvider {
     }
 }
 
+// Agents are Code Mode only since eda4a21e3: the model reaches tools through exec.
+fn exec_input(name: &str, arguments: &str) -> String {
+    format!(
+        r#"const value = await tools.{name}({arguments});
+text(typeof value === "string" ? value : JSON.stringify(value));"#
+    )
+}
+
 fn generation(call: Option<(&str, &str, Value)>) -> ResponsesOutput {
     let (id, output_items, code_calls) = match call {
         Some((id, name, arguments)) => {
-            let arguments = arguments.to_string();
+            let input = exec_input(name, &arguments.to_string());
             (
                 id.to_owned(),
                 vec![
                     serde_json::from_value(json!({
-                        "type": "function_call", "call_id": id, "name": name,
-                        "arguments": arguments,
+                        "type": "custom_tool_call", "call_id": id, "name": "exec",
+                        "input": input,
                     }))
                     .unwrap(),
                 ],
                 vec![CodeCall {
                     call_id: id.to_owned(),
-                    name: name.to_owned(),
+                    name: "exec".to_owned(),
                     namespace: None,
-                    input: arguments,
-                    kind: CodeCallKind::Function,
+                    input,
+                    kind: CodeCallKind::Custom,
                 }],
             )
         }
@@ -204,7 +212,7 @@ impl Journey {
         let target = args["agent_id"].clone();
         let reference = args["in_reply_to"].clone();
         let next = self.tool(pending, id, "send_agent_message", args).await;
-        let receipt: Value = serde_json::from_str(tool_output(&next.0, id)).unwrap();
+        let receipt: Value = serde_json::from_str(&tool_output(&next.0, id)).unwrap();
         assert!(receipt["message_id"].is_number(), "{id}: {receipt}");
         assert_eq!(receipt["to_agent_id"], target);
         assert_eq!(receipt["disposition"], "steered");
@@ -233,7 +241,7 @@ impl Journey {
         let next = self
             .tool(pending, call_id, "submit_result", json!({"output":"done"}))
             .await;
-        let receipt: Value = serde_json::from_str(tool_output(&next.0, call_id)).unwrap();
+        let receipt: Value = serde_json::from_str(&tool_output(&next.0, call_id)).unwrap();
         assert_eq!(receipt, json!({"accepted":true, "status":"accepted"}));
         next.1
             .send(generation(None))
@@ -311,10 +319,31 @@ impl Journey {
     }
 }
 
-fn tool_output<'a>(input: &'a [Value], id: &str) -> &'a str {
-    input.iter().find(|item| item["type"] == "function_call_output" && item["call_id"] == id)
-        .unwrap_or_else(|| panic!("{id}: tool output missing from actual model input: {input:?}"))
-        ["output"].as_str().expect("text tool receipt")
+fn tool_output(input: &[Value], id: &str) -> String {
+    exec_text(
+        input
+            .iter()
+            .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == id)
+            .unwrap_or_else(|| {
+                panic!("{id}: tool output missing from actual model input: {input:?}")
+            }),
+    )
+}
+/// The text a Code Mode cell emitted, without its status/wall-time header.
+fn exec_text(item: &Value) -> String {
+    match &item["output"] {
+        Value::String(text) => text
+            .split_once("Output:\n")
+            .map_or(text.as_str(), |(_, rest)| rest)
+            .to_owned(),
+        Value::Array(content) => content
+            .iter()
+            .skip(1)
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => panic!("unexpected exec output {other}"),
+    }
 }
 
 fn assert_delivery_input(input: &[Value], bodies: &[&str]) {
@@ -405,7 +434,7 @@ async fn root_followup_keeps_default_coordinate_and_authorized_delegate_keeps_it
             ],
         );
         let directory: Value =
-            serde_json::from_str(tool_output(&child_pending.0, "inspect-assignment")).unwrap();
+            serde_json::from_str(&tool_output(&child_pending.0, "inspect-assignment")).unwrap();
         let entry = directory["agents"]
             .as_array()
             .unwrap()
@@ -495,7 +524,7 @@ async fn siblings_continue_a_question_with_findings_but_reply_and_authority_chec
         // The rejected delegate must not change the public assignment.
         let reviewer_pending = journey.tool(reviewer_pending, "inspect-after-rejection", "list_agents",
             json!({"include_self":true})).await;
-        let directory: Value = serde_json::from_str(tool_output(&reviewer_pending.0, "inspect-after-rejection")).unwrap();
+        let directory: Value = serde_json::from_str(&tool_output(&reviewer_pending.0, "inspect-after-rejection")).unwrap();
         let entry = directory["agents"].as_array().unwrap().iter()
             .find(|entry| entry["agent_id"] == json!(engineer)).unwrap();
         assert_eq!(entry["task"], "Implement the storage migration.");
@@ -574,7 +603,7 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
             )
             .await;
         let listed: Value =
-            serde_json::from_str(tool_output(&pending.0, "restored-default")).unwrap();
+            serde_json::from_str(&tool_output(&pending.0, "restored-default")).unwrap();
         let entries = listed["agents"].as_array().unwrap();
         assert_eq!(entries.len(), 6);
         for (index, entry) in entries.iter().enumerate() {
@@ -592,7 +621,7 @@ async fn restored_children_remain_discoverable_before_and_after_failed_resume() 
                 json!({"include_completed":true}),
             )
             .await;
-        let all: Value = serde_json::from_str(tool_output(&pending.0, "restored-all")).unwrap();
+        let all: Value = serde_json::from_str(&tool_output(&pending.0, "restored-all")).unwrap();
         assert_eq!(all["agents"].as_array().unwrap().len(), 10);
         assert_eq!(&all["agents"].as_array().unwrap()[..6], entries.as_slice());
 

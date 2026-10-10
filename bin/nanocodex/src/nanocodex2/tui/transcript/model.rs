@@ -642,7 +642,20 @@ impl TranscriptModel {
             }
             "run.failed" => {
                 self.remove_run(record);
-                self.finish_failed(None, Some(&RunScope::new(record)));
+                let scope = RunScope::new(record);
+                if record
+                    .decode_payload::<RunTerminalPayload>()
+                    .is_ok_and(|payload| payload.status.as_deref() == Some("cancelled"))
+                {
+                    // Cancellation is a terminal outcome, not a failed run.
+                    // Drop the preceding run.error explanation without turning
+                    // it into a persistent error card.
+                    self.pending_compaction_errors.remove(&scope);
+                    self.take_pending_error(Some(&scope));
+                    self.finish_activity(Some(&scope));
+                } else {
+                    self.finish_failed(None, Some(&scope));
+                }
                 Ok(true)
             }
             "tool.call" => self.tool_call(record),
@@ -751,7 +764,7 @@ impl TranscriptModel {
                 })
             })
             .collect::<Vec<_>>();
-        self.fail_unfinished_tools(&unfinished);
+        self.settle_unfinished_tools(&unfinished);
         self.run_activity.retain(|activity| {
             activity.scope.turn.as_deref() != Some(turn_id) || activity.scope.child.is_some()
         });
@@ -1106,7 +1119,15 @@ impl TranscriptModel {
         let result = preferred_result(payload.structured_result, payload.result);
         let resumed_result = resumed_shell.map(|_| result.clone());
         let nested_shell_followup = resumed_shell.is_some();
-        let state = tool_result_state(family, &payload.status, &result);
+        let state = if payload.outcome_unknown == Some(true) {
+            ToolState::Unknown
+        } else {
+            tool_result_state(family, &payload.status, &result)
+        };
+        // An unknown outcome stays open to the call's later actual result.
+        if state == ToolState::Unknown {
+            self.settled_calls.remove(&payload.call_id);
+        }
         let entry_state = if resumed_shell.is_some() && state == ToolState::Yielded {
             ToolState::Succeeded
         } else {
@@ -1262,7 +1283,7 @@ impl TranscriptModel {
             && let Some(parent) = self.code_cells.remove(&cell_id)
             && terminal == CodeCellTerminal::Terminated
         {
-            self.fail_unfinished_code_children(parent);
+            self.settle_unfinished_code_children(parent);
         }
         // A child may finish after the exec envelope, or receive shell follow-up
         // output. Refresh the parent's projection without changing its raw result.
@@ -1407,7 +1428,7 @@ impl TranscriptModel {
 
     fn complete_turn(&mut self, record: &TranscriptRecord) {
         let payload_duration_ns = record
-            .decode_payload::<RunDurationPayload>()
+            .decode_payload::<RunTerminalPayload>()
             .ok()
             .and_then(|payload| payload.duration_ns);
         let recorded_duration_ns = self.remove_run(record).map(|started_at| {
@@ -1480,10 +1501,10 @@ impl TranscriptModel {
                         self.tool_owners.get(id) == Some(scope) && !background.contains(id)
                     })
                     .collect::<Vec<_>>();
-                self.fail_unfinished_tools(&unfinished);
+                self.settle_unfinished_tools(&unfinished);
             }
         } else if self.active_runs.is_empty() {
-            self.fail_orphaned_tools();
+            self.settle_orphaned_tools();
         }
         if let Some(scope) = scope {
             if !self.active_runs.iter().any(|run| &run.scope == scope) {
@@ -1502,7 +1523,7 @@ impl TranscriptModel {
         self.shell_sessions.values().copied().collect()
     }
 
-    fn fail_orphaned_tools(&mut self) {
+    fn settle_orphaned_tools(&mut self) {
         let background = self.background_shell_ids();
         let local_shells = self.local_shells.values().copied().collect::<HashSet<_>>();
         let orphaned = self
@@ -1511,10 +1532,10 @@ impl TranscriptModel {
             .copied()
             .filter(|id| !local_shells.contains(id) && !background.contains(id))
             .collect::<Vec<_>>();
-        self.fail_unfinished_tools(&orphaned);
+        self.settle_unfinished_tools(&orphaned);
     }
 
-    fn fail_unfinished_code_children(&mut self, parent: EntryId) {
+    fn settle_unfinished_code_children(&mut self, parent: EntryId) {
         let background = self.background_shell_ids();
         let unfinished = self
             .code_children
@@ -1524,22 +1545,26 @@ impl TranscriptModel {
             .filter(|id| self.running_tools.contains(id) && !background.contains(id))
             .copied()
             .collect::<Vec<_>>();
-        self.fail_unfinished_tools(&unfinished);
+        self.settle_unfinished_tools(&unfinished);
     }
 
-    fn fail_unfinished_tools(&mut self, unfinished: &[EntryId]) {
+    /// Calls still running when their turn, run or Code Mode cell ends never
+    /// reported a terminal receipt: they may or may not have taken effect, so
+    /// their outcome is unknown rather than failed. A later actual result for
+    /// the same call still settles the card normally.
+    fn settle_unfinished_tools(&mut self, unfinished: &[EntryId]) {
         for id in unfinished {
             self.update(*id, |kind| {
                 let EntryKind::Tool(tool) = kind else {
                     return;
                 };
-                tool.state = ToolState::Failed;
+                tool.state = ToolState::Unknown;
                 let result = tool.result.get_or_insert_with(|| serde_json::json!({}));
                 if let Value::Object(result) = result
-                    && result.get("error").is_none_or(Value::is_null)
+                    && result.get("message").is_none_or(Value::is_null)
                 {
                     result.insert(
-                        "error".to_owned(),
+                        "message".to_owned(),
                         Value::String("tool call ended without a terminal result".to_owned()),
                     );
                 }
@@ -1561,7 +1586,7 @@ impl TranscriptModel {
                     .any(|local_shell| local_shell == id)
             });
         self.active_runs.clear();
-        self.fail_orphaned_tools();
+        self.settle_orphaned_tools();
         self.run_activity.clear();
         self.refresh_transient();
         changed
@@ -1963,6 +1988,9 @@ fn text_may_encode_value(text: &str, value: &Value) -> bool {
 }
 
 fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
+    if matches!(status, "unknown" | "outcome_unknown") || result_reports_unknown(result) {
+        return ToolState::Unknown;
+    }
     if !matches!(status, "success" | "completed") {
         return ToolState::Failed;
     }
@@ -1985,6 +2013,15 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
         return ToolState::Yielded;
     }
     ToolState::Failed
+}
+
+/// A result that reports an unobserved outcome rather than a failure.
+fn result_reports_unknown(result: &Value) -> bool {
+    let Some(fields) = result.as_object() else {
+        return false;
+    };
+    fields.get("outcome").and_then(Value::as_str) == Some("unknown")
+        || fields.get("status").and_then(Value::as_str) == Some("outcome_unknown")
 }
 
 fn result_reports_failure(result: &Value) -> bool {
@@ -2191,12 +2228,17 @@ struct ToolResultPayload {
     #[serde(default)]
     structured_result: Value,
     metadata: Option<Value>,
+    /// Set when observation ended before the call reported a settled outcome.
+    #[serde(default)]
+    outcome_unknown: Option<bool>,
 }
 
 #[derive(Deserialize)]
-struct RunDurationPayload {
+struct RunTerminalPayload {
     #[serde(default)]
     duration_ns: Option<u64>,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2380,7 +2422,7 @@ mod tests {
             matches!(&model.entries()[1].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
         );
         assert!(
-            matches!(&model.entries()[2].kind, EntryKind::Tool(tool) if tool.state == ToolState::Failed)
+            matches!(&model.entries()[2].kind, EntryKind::Tool(tool) if tool.state == ToolState::Unknown)
         );
         model.apply(&call(8, "poll", "write_stdin", json!({"session_id": 7})));
         model.apply(&result(
@@ -3164,7 +3206,7 @@ mod tests {
         assert_eq!(
             states,
             [
-                ToolState::Failed,
+                ToolState::Unknown,
                 ToolState::Running,
                 ToolState::Running,
                 ToolState::Running

@@ -73,7 +73,54 @@ pub enum TranscriptItem {
         name: String,
         /// Serialized tool arguments sent by the model.
         arguments: String,
+        /// Code Mode cell that issued this call, when it is a nested call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<String>,
     },
+    /// The settled outcome of an earlier [`Self::Tool`] call.
+    ToolResult {
+        /// Call identifier of the matching [`Self::Tool`].
+        call_id: String,
+        /// Bounded model-visible text; media is represented by placeholders.
+        output: String,
+        /// Outcome as recorded; unknown is never presented as failure.
+        outcome: ToolOutcome,
+    },
+}
+
+/// Recorded outcome of a replayed tool call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutcome {
+    /// The tool returned without reporting an error.
+    Completed,
+    /// The tool reported an error.
+    Failed,
+    /// No outcome was recorded, or the recorded outcome is unknown.
+    Unknown,
+}
+
+impl TranscriptItem {
+    /// Maximum retained bytes of one replayed tool outcome.
+    pub const MAX_TOOL_OUTPUT_BYTES: usize = 16 * 1024;
+
+    /// Creates a tool outcome bounded to [`Self::MAX_TOOL_OUTPUT_BYTES`].
+    #[must_use]
+    pub fn tool_result(call_id: impl Into<String>, output: &str, outcome: ToolOutcome) -> Self {
+        let mut end = output.len().min(Self::MAX_TOOL_OUTPUT_BYTES);
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bounded = output[..end].to_owned();
+        if end < output.len() {
+            bounded.push_str("\n[output truncated]");
+        }
+        Self::ToolResult {
+            call_id: call_id.into(),
+            output: bounded,
+            outcome,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]

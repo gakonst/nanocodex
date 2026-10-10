@@ -3,14 +3,18 @@ exclude = ["third_party/codex-voice"]
 members = [
     "bin/nanocodex",
     "bin/nanocodex/tui-control",
+    "bin/nanocodex/tui-render",
     "bin/nanocodex/screen-supervisor",
     "bin/nanocodex/account-auth",
+    "bin/nanocodex/hand",
+    "bin/nanocodex/shared",
     "bin/nanousd",
     "bin/nanousd-api",
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-claude",
     "crates/nanocodex-claude-tools",
+    "crates/nanocodex-decisions",
     "crates/nanocodex-home",
     "crates/nanocodex-managed",
     "crates/nanocodex-phone",
@@ -37,9 +41,9 @@ members = [
     "js/nanocodex",
     "py/bindings",
 ]
-# Root Cargo commands target the public library facade. Use `just run` or
-# `cargo run -p nanocodex-bin --bin nanocodex` for the executable consumer.
-default-members = ["crates/nanocodex"]
+# A plain `cargo build` produces both executables, nanocodex and nanocodex-hand.
+# Select library packages with -p (for example `cargo test -p nanocodex`).
+default-members = ["bin/nanocodex", "bin/nanocodex/hand"]
 resolver = "2"
 
 [workspace.package]
@@ -89,6 +93,7 @@ roxmltree = "0.21.1"
 getrandom = "0.4.3"
 hex = "0.4.3"
 http = "1.3.1"
+httpdate = "1.0.3"
 http-body-util = "0.1.3"
 hmac = "0.13.0"
 hudsucker = { version = "0.25.0", git = "https://github.com/gakonst/hudsucker", rev = "9a13609adc4b37b3e7fba28a320546bf672f0f4d", default-features = false, features = ["rcgen-ca", "ring", "rustls-client"] }
@@ -102,9 +107,11 @@ nanocodex = { version = "0.6.7", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.6.7", path = "crates/nanocodex-agent" }
 nanocodex-claude = { version = "0.6.7", path = "crates/nanocodex-claude" }
 nanocodex-claude-tools = { version = "0.6.7", path = "crates/nanocodex-claude-tools", default-features = false }
+nanocodex-decisions = { version = "0.6.7", path = "crates/nanocodex-decisions" }
 nanocodex-home = { version = "0.6.7", path = "crates/nanocodex-home" }
 nanocodex-managed = { version = "0.6.7", path = "crates/nanocodex-managed" }
 nanocodex-cli-auth = { version = "0.6.7", path = "bin/nanocodex/account-auth" }
+nanocodex-bin-shared = { version = "0.6.7", path = "bin/nanocodex/shared" }
 nanocodex-durability = { version = "0.6.7", path = "crates/nanocodex-durability" }
 nanocodex-browser = { version = "0.6.7", path = "crates/nanocodex-browser" }
 nanocodex-computer = { version = "0.6.7", path = "crates/experimental/nanocodex-computer" }
@@ -192,7 +199,6 @@ unicode-width = "0.2"
 url = "2.5.7"
 uuid = { version = "1", features = ["js", "serde", "v4", "v5", "v7"] }
 v8-heap-parser = "1.1.0"
-vergen = { version = "8", default-features = false }
 wasm-bindgen = "0.2.105"
 wasm-bindgen-futures = "0.4.55"
 web-time = "1.1.0"
@@ -224,6 +230,12 @@ split-debuginfo = "unpacked"
 # line, while debug executables and shared targets stay smaller and link faster.
 [profile.dev.package."*"]
 debug = false
+
+# Hashing debug executables must not run each SHA intrinsic through unoptimized
+# SIMD wrappers. Optimize the small hashing dependency; workspace code stays
+# unoptimized with normal incremental compilation and useful backtraces.
+[profile.dev.package."sha2:0.11.0"]
+opt-level = 3
 
 # Display math runs during interactive debug builds. Keep the small native
 # parser/layout/raster stack optimized so a cold formula is ready in one frame.

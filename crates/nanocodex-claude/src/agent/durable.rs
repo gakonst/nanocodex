@@ -67,7 +67,10 @@ impl Snapshot {
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
     // Process-local Code Mode admissions cannot survive a recovered boundary.
-    // Settled receipts still replay; unreceipted calls at this index fail closed.
+    // Settled receipts still replay; an unreceipted exec from a replayed
+    // response at this index fails closed because its guest source may already
+    // have dispatched effects. wait never evaluates source or admits effects:
+    // it observes a live cell or reconciles durable observation evidence.
     #[serde(skip)]
     pub(super) recovered_code_index: Option<u32>,
     #[serde(default)]
@@ -246,13 +249,13 @@ impl State {
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             self.task_board
                 .as_ref()
-                .ok_or_else(|| invalid("Claude task checkpoint requires a task board"))?
+                .ok_or_else(|| unsupported("Claude task checkpoint requires a task board"))?
                 .restore(tasks)
                 .map_err(provider_error)?;
             #[cfg(not(all(feature = "tools", not(target_family = "wasm"))))]
             {
                 let _ = tasks;
-                return Err(invalid(
+                return Err(unsupported(
                     "Claude task checkpoint restoration requires a native target with tools and a task board",
                 ));
             }
@@ -495,10 +498,7 @@ impl State {
         };
         let result = if cancel.flag.load(Ordering::SeqCst) {
             unknown()
-        } else if self.code_only
-            && cursor.recovered_code_index == Some(index)
-            && matches!(name, "exec" | "wait")
-        {
+        } else if self.code_only && cursor.recovered_code_index == Some(index) && name == "exec" {
             ContentBlock::tool_result_content(id, ToolResultContent::Text(
                 "Code Mode admission was lost during recovery; prior effects may have outcome unknown. No code was executed in this attempt. Reconcile those effects before using a fresh cell from a new model request.".into()
             ), true)
@@ -592,7 +592,7 @@ pub fn rewind_checkpoint(
         .clone()
         .unwrap_or_else(|| Lineage::root(source_session_id));
     if latest.conversation.pending_continuation {
-        return Err(invalid(
+        return Err(unsupported(
             "conversation rewind refuses a pending tool/provider continuation",
         ));
     }
@@ -607,7 +607,7 @@ pub fn rewind_checkpoint(
         },
     };
     if selected.conversation.pending_continuation {
-        return Err(invalid(
+        return Err(unsupported(
             "selected checkpoint has a pending tool/provider continuation",
         ));
     }
@@ -799,6 +799,7 @@ impl Snapshot {
                             call_id: id.clone(),
                             name: name.clone(),
                             arguments: input.to_string(),
+                            parent_call_id: None,
                         });
                     }
                     ContentBlock::McpToolUse {
@@ -811,6 +812,7 @@ impl Snapshot {
                         call_id: id.clone(),
                         name: format!("mcp__{server_name}__{name}"),
                         arguments: input.to_string(),
+                        parent_call_id: None,
                     }),
                     _ => {}
                 }

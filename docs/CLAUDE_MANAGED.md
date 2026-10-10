@@ -84,17 +84,19 @@ Root and child sessions follow the same Code Mode contract regardless of harness
 Native Messages history, opaque content and completed receipts survive normal
 Durable Object reopen in the shared durability store. Events retain streaming
 assistant text and tool cards. This does **not** make OpenAI snapshots portable
-to Claude. Managed Claude accepts ordered text, HTTPS/base64 images and inline
-PDF or UTF-8 plain text documents. JPEG, PNG, GIF and WebP originals uploaded by
-native clients are frozen into the dispatch when they fit the application bounds;
-other image formats and oversized originals use the bounded JPEG preview. Missing,
-invalid or over-limit originals and previews produce an explicit notice. Hand-local
-images require that Hand's image tools. Frozen dispatch and native Messages history
-preserve media across reopen without rereading mutable uploads. Web, Connect and
-native transcripts retain document labels alongside images and captions.
+to Claude. Managed Claude accepts ordered text, base64 images and inline PDF or
+UTF-8 plain text documents, and replaces a remote image URL with a note to the
+model. JPEG, PNG, GIF and WebP originals uploaded by native clients are frozen
+into the dispatch when they fit the application bounds; other image formats and
+oversized originals use the bounded JPEG preview. Missing, invalid or over-limit
+originals and previews produce an explicit notice. Hand-local images require
+that Hand's image tools. Frozen dispatch and native Messages history preserve
+media across reopen without rereading mutable uploads. Web, Connect and native
+transcripts retain document labels alongside images and captions.
 
-The application bounds are 20 images, 5 MiB per inline image, five documents,
-10 MiB per document and 20 MiB combined inline media per prompt; these are conservative application limits, not a claim
+The application bounds are 20 images, 5 MiB per inline image,
+10 MiB per document and 20 MiB combined inline media per prompt (any number of
+documents fits within that combined bound); these are conservative application limits, not a claim
 about the provider's maximum. PDF/text documents use native document blocks,
 including supported tool results. Tool audio and video remain available to clients
 and produce an explicit model-facing notice; they are not native Claude media

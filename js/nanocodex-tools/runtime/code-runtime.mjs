@@ -374,8 +374,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           metadata: null,
         };
         // Rust records nested calls in invocation order even when parallel
-        // siblings finish out of order. Reserve the slot before dispatch.
-        nestedCalls.push(recordedCall);
+        // siblings finish out of order. Reserve the slot before dispatch. An
+        // observed cell delivers each call through its observer instead, so
+        // its payloads are never retained for the whole cell lifetime.
+        if (!cell) nestedCalls.push(recordedCall);
         function complete(fields) {
           if (!pendingCalls.delete(callId)) return;
           Object.assign(recordedCall, fields, { duration_ns: elapsedNs(toolStartedAt) });
@@ -907,6 +909,17 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
   }
 
+  // Hosts that consume each exec/wait result whole (Claude) never read the
+  // per-call update stream. Drop it once the call returns: otherwise every
+  // queued update, including full nested payloads, lives as long as the session.
+  function discardCodeUpdates(sessionId, parentCallId) {
+    const key = codeObservationKey(sessionId, parentCallId);
+    const observation = codeObservations.get(key);
+    if (!observation) return 0;
+    codeObservations.delete(key);
+    return observation.take().length;
+  }
+
   async function nextCodeUpdate(sessionId, parentCallId) {
     const key = codeObservationKey(sessionId, parentCallId);
     const observations = codeObservations.has(key) ? codeObservations : codeRelays;
@@ -1121,6 +1134,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       }));
     },
     nextCodeUpdate,
+    discardCodeUpdates,
     detachTurn,
     cancelTurnWithUpdates,
     preempt,

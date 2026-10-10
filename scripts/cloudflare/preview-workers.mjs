@@ -36,22 +36,50 @@ export function selectComponents(component, backend = 'production') {
   return [component];
 }
 
-export function providerClient({ account, token, request = globalThis.fetch }) {
+// Reads are idempotent: a timeout, network error, 429 or 5xx is retried
+// (3 attempts). Mutations are sent exactly once. A provider Retry-After
+// (seconds or HTTP date) replaces the 1s/2s backoff, bounded to 20s.
+const transientStatus = status => status === 429 || status >= 500;
+const maxRetryAfterMs = 20_000;
+export function retryAfterMs(value, now = Date.now()) {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const text = value.trim();
+  const ms = /^\d+$/.test(text) ? Number(text) * 1_000 : Date.parse(text) - now;
+  return Number.isFinite(ms) ? Math.min(Math.max(ms, 0), maxRetryAfterMs) : undefined;
+}
+const backoff = (attempt, providerDelayMs) => new Promise(done => setTimeout(done, providerDelayMs ?? 1_000 * 2 ** attempt));
+
+export function providerClient({ account, token, request = globalThis.fetch, retryDelay = backoff }) {
   if (!/^[a-f0-9]{32}$/.test(account ?? '') || !token) fail('Cloudflare account ID and API token are required');
   return async (path, { optional = false, method = 'GET', body: payload } = {}) => {
-    let status;
-    try {
-      const response = await request(`https://api.cloudflare.com/client/v4/accounts/${account}/${path}`, {
-        method, ...(payload ? { body: JSON.stringify(payload) } : {}), redirect: 'error', signal: AbortSignal.timeout(30_000),
-        headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache', ...(payload ? { 'Content-Type': 'application/merge-patch+json' } : {}) },
-      });
-      status = response.status;
-      if (optional && status === 404) return null;
-      if (!response.ok) throw new Error();
-      const body = await response.json();
-      if (body.success !== true || (body.result === undefined && method !== 'DELETE')) throw new Error();
-      return body.result;
-    } catch { fail(`Cloudflare preview metadata lookup failed (HTTP ${Number.isInteger(status) ? status : 'unavailable'}); no response body logged`); }
+    const attempts = method === 'GET' ? 3 : 1;
+    for (let attempt = 0; ; attempt += 1) {
+      let status;
+      let transient = false;
+      let providerDelayMs;
+      try {
+        const response = await request(`https://api.cloudflare.com/client/v4/accounts/${account}/${path}`, {
+          method, ...(payload ? { body: JSON.stringify(payload) } : {}), redirect: 'error', signal: AbortSignal.timeout(30_000),
+          headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache', ...(payload ? { 'Content-Type': 'application/merge-patch+json' } : {}) },
+        });
+        status = response.status;
+        if (optional && status === 404) return null;
+        if (!response.ok) {
+          transient = transientStatus(status);
+          providerDelayMs = retryAfterMs(response.headers?.get?.('retry-after') ?? undefined);
+          throw new Error();
+        }
+        const body = await response.json();
+        if (body.success !== true || (body.result === undefined && method !== 'DELETE')) throw new Error();
+        return body.result;
+      } catch {
+        if (status === undefined) transient = true;
+        if (!transient || attempt + 1 >= attempts) {
+          fail(`Cloudflare preview metadata lookup failed (HTTP ${Number.isInteger(status) ? status : 'unavailable'}); no response body logged`);
+        }
+      }
+      await retryDelay(attempt, providerDelayMs);
+    }
   };
 }
 

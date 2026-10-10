@@ -1,8 +1,13 @@
 import {
+  boundedEventCost,
   hydrateManagedEventRows,
+  isOversizedEvent,
+  MAX_HISTORY_PAGE_BYTES,
+  truncatedEventMessage,
   type DurableEvent,
   type DurableEventHistory,
   type DurableEventLog,
+  type HistoryBounds,
   type ManagedEventRow,
 } from "./durable-events";
 import { sha256Hex } from "./archive-hash";
@@ -16,6 +21,30 @@ const MAX_SEAL_ROWS = 4_096;
 const encoder = new TextEncoder();
 
 type EventRow = ManagedEventRow;
+
+/** Applies opt-in history bounds to decoded archive events, keeping the edge
+ * nearest the request cursor so the next page continues without a gap. */
+function boundArchivedEvents<Message>(
+  events: DurableEvent<Message>[],
+  newestFirst: boolean,
+  bounds: HistoryBounds | undefined,
+): { data: DurableEvent<Message>[]; trimmed: boolean } {
+  if (bounds === undefined) return { data: events, trimmed: false };
+  const budget = bounds.maxBytes ?? MAX_HISTORY_PAGE_BYTES;
+  const kept: DurableEvent<Message>[] = [];
+  let bytes = 0;
+  for (const event of newestFirst ? [...events].reverse() : events) {
+    const json = JSON.stringify(event.message);
+    const size = encoder.encode(json).byteLength;
+    const cost = boundedEventCost(size, bounds);
+    if (kept.length > 0 && bytes + cost > budget) break;
+    bytes += cost;
+    kept.push(isOversizedEvent(size, bounds)
+      ? { ...event, message: truncatedEventMessage(json, size) as unknown as Message } : event);
+  }
+  if (newestFirst) kept.reverse();
+  return { data: kept, trimmed: kept.length < events.length };
+}
 
 type EventIndexRow = Omit<EventRow, "message_json"> & {
   message_bytes: number;
@@ -395,8 +424,9 @@ export class ManagedEventArchive<Message extends { type: string }> {
     local: DurableEventLog<Message>,
     after: string,
     limit: number,
+    bounds?: HistoryBounds,
   ): Promise<DurableEvent<Message>[]> {
-    return this.#page(local, after, limit, {});
+    return this.#page(local, after, limit, {}, bounds);
   }
 
   pageReader(
@@ -411,6 +441,7 @@ export class ManagedEventArchive<Message extends { type: string }> {
     after: string,
     limit: number,
     cache: SegmentReadCache<Message>,
+    bounds?: HistoryBounds,
   ): Promise<DurableEvent<Message>[]> {
     while (true) {
       const fence = this.#readFence();
@@ -419,8 +450,8 @@ export class ManagedEventArchive<Message extends { type: string }> {
       // for the lifetime of an otherwise idle SSE/WebSocket connection.
       if (!archived) cache.segment = undefined;
       const events = archived
-        ? await this.pageAfter(after, limit, cache)
-        : local.page(after, limit);
+        ? boundArchivedEvents(await this.pageAfter(after, limit, cache), false, bounds).data
+        : local.page(after, limit, bounds);
       if (sameFence(fence, this.#readFence())) return events;
     }
   }
@@ -429,11 +460,12 @@ export class ManagedEventArchive<Message extends { type: string }> {
     local: DurableEventLog<Message>,
     before: string | undefined,
     limit: number,
+    bounds?: HistoryBounds,
   ): Promise<DurableEventHistory<Message>> {
     const cache: SegmentReadCache<Message> = {};
     while (true) {
       const fence = this.#readFence();
-      const localPage = local.history(before, limit);
+      const localPage = local.history(before, limit, bounds);
       let page: DurableEventHistory<Message>;
       // Do not skip a byte-truncated local page to fill it from the archive.
       // Cursor pagination crosses the storage boundary on the next request.
@@ -445,7 +477,9 @@ export class ManagedEventArchive<Message extends { type: string }> {
         };
       } else {
         const archived = await this.#historyBefore(before, limit, cache);
-        page = { ...archived, latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through) };
+        const bounded = boundArchivedEvents(archived.data, true, bounds);
+        page = { data: bounded.data, has_more: archived.has_more || bounded.trimmed,
+          latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through) };
       }
       if (sameFence(fence, this.#readFence())) return page;
     }
@@ -455,8 +489,9 @@ export class ManagedEventArchive<Message extends { type: string }> {
     local: DurableEventLog<Message>,
     after: string,
     limit: number,
+    bounds?: HistoryBounds,
   ): Promise<DurableEventHistory<Message>> {
-    const data = await this.page(local, after, limit);
+    const data = await this.page(local, after, limit, bounds);
     const latest = this.latestCursor(local);
     return {
       data,

@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { createTools } from 'nanocodex/tools';
 import { createAttachment } from 'nanocodex-tools/attachment';
 import { createNodeProcessTools } from 'nanocodex-tools/node';
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 const repo=fileURLToPath(new URL('../../../',import.meta.url));

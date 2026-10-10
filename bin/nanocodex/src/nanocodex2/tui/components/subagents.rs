@@ -11,6 +11,7 @@ use super::{
     },
     transcript::{Transcript, TranscriptEvent},
 };
+use crate::nanocodex2::tui::theme::ThemeExt as _;
 use crate::nanocodex2::{
     config::DEFAULT_MAX_SUBAGENTS,
     tui::{format::sanitize_terminal_text_inline, theme::Theme, transcript::TranscriptRecord},

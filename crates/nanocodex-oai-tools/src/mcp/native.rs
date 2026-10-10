@@ -30,8 +30,8 @@ impl McpHandle {
     /// Discover tools using the existing ranked catalog, or exact `select:name,...`.
     /// Schemas use native name/description/input_schema fields.
     pub async fn native_search(&self, query: &str, max_results: usize) -> Result<Value, String> {
-        if !(1..=32).contains(&max_results) {
-            return Err("max_results must be between 1 and 32".into());
+        if max_results == 0 {
+            return Err("max_results must be at least 1".into());
         }
         self.state.wait_for_startup().await;
         // Search is an explicit discovery boundary: observe remote additions and

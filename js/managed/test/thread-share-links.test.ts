@@ -25,7 +25,9 @@ const api = (path: string, method = "GET", actor?: Principal, body?: unknown, to
   }), env as Parameters<typeof worker.fetch>[1], createExecutionContext(), actor);
 
 async function seed(agentId = id) {
-  await runInDurableObject(sessions().getByName(agentId), async (_, state) => {
+  await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state
       (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
       VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,
@@ -282,7 +284,9 @@ it("root sharing tool manages scoped links and atomically closes all guest feeds
   }
   // Route-level owner/scope isolation remains authoritative for other threads.
   const foreignId = crypto.randomUUID();
-  await runInDurableObject(sessions().getByName(foreignId), async (_, state) => {
+  await runInDurableObject(sessions().getByName(foreignId), async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state
       (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
       VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,

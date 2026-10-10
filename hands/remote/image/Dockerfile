@@ -53,7 +53,7 @@ FROM remote-chef AS remote
 COPY --from=remote-planner /source/recipe.json recipe.json
 # Keep cooked dependencies and Cargo sources in image layers: BuildKit cache
 # mounts are local to each fresh runner and cannot warm source-only PR builds.
-RUN cargo chef cook --release --locked -p nanocodex-bin --bin nanocodex-hand --recipe-path recipe.json
+RUN cargo chef cook --release --locked -p nanocodex-hand-daemon --bin nanocodex-hand --recipe-path recipe.json
 # Install the payload verifier after cooking to preserve shared dependency layers.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -67,7 +67,7 @@ COPY third_party ./third_party
 COPY --from=screen-helpers /out/linux-screen-helpers.tar.gz /opt/linux-screen-helpers.tar.gz
 COPY scripts/tests/linux-screen-helpers-bundle.py ./scripts/tests/
 RUN NANOCODEX_LINUX_SCREEN_BUNDLE=/opt/linux-screen-helpers.tar.gz \
-    cargo build --release --locked -p nanocodex-bin --bin nanocodex-hand \
+    cargo build --release --locked -p nanocodex-hand-daemon --bin nanocodex-hand --features embedded-screen-helpers \
     && mkdir -p /out && cp target/release/nanocodex-hand /out/nanocodex-remote \
     && python3 scripts/tests/linux-screen-helpers-bundle.py \
        --binary /out/nanocodex-remote /opt/linux-screen-helpers.tar.gz

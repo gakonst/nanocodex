@@ -819,7 +819,9 @@ fn local_session_turns(
                     *current_assistant = bounded_text(assistant, MAX_LOCAL_TEXT_BYTES);
                 }
             }
-            TranscriptItem::Reasoning(_) | TranscriptItem::Tool { .. } => {}
+            TranscriptItem::Reasoning(_)
+            | TranscriptItem::Tool { .. }
+            | TranscriptItem::ToolResult { .. } => {}
         }
     }
     if let Some((user, assistant)) = current

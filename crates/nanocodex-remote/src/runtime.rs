@@ -653,6 +653,7 @@ async fn session_loop(
     mut socket: Socket,
 ) -> Result<(), SessionError> {
     let base = endpoint(target).map_err(|_| SessionError::Closed)?;
+    crate::tls::ensure_crypto_provider();
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))

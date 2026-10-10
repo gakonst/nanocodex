@@ -3,6 +3,7 @@
 
 //! Empty transcript decoration, animated alongside live UI activity.
 
+use crate::nanocodex2::tui::theme::ThemeExt as _;
 use crate::nanocodex2::{config::ReasoningEffort, tui::theme::Theme};
 use ratatui::{
     Frame,

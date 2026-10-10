@@ -59,7 +59,7 @@ pub(super) struct ChildSession {
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
-    /// Automatic restart resumes since this child last finished a turn.
+    /// Consecutive automatic restart resumes without committed progress.
     pub(super) resume_attempts: u32,
     /// Bounded tool calls observed during the current or interrupted turn.
     pub(super) in_flight_calls: Vec<durable::InFlightCall>,
@@ -131,6 +131,9 @@ pub struct Registry {
     pending_checkpoints: std::sync::Mutex<HashMap<String, usize>>,
     /// In-flight mid-turn checkpoint captures; `true` requests one more pass.
     progress_captures: std::sync::Mutex<HashMap<(String, AgentId), bool>>,
+    /// Children that finished a tool call in this runtime since their last
+    /// journaled progress checkpoint.
+    completed_tools: std::sync::Mutex<std::collections::HashSet<(String, AgentId)>>,
     pending_resume: std::sync::Mutex<HashMap<String, Vec<AgentId>>>,
     /// Terminal results each caller session already received from `wait`.
     wait_reported: std::sync::Mutex<HashMap<(String, AgentId), u64>>,
@@ -1101,6 +1104,7 @@ impl Registry {
             checkpoints: std::sync::Mutex::new(HashMap::new()),
             pending_checkpoints: std::sync::Mutex::new(HashMap::new()),
             progress_captures: std::sync::Mutex::new(HashMap::new()),
+            completed_tools: std::sync::Mutex::new(std::collections::HashSet::new()),
             pending_resume: std::sync::Mutex::new(HashMap::new()),
             wait_reported: std::sync::Mutex::new(HashMap::new()),
             idle_waits: std::sync::Mutex::new(HashMap::new()),
@@ -1500,13 +1504,28 @@ impl Registry {
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
             loop {
+                // Taken before the snapshot, so the checkpoint includes that tool.
+                let progressed = registry
+                    .completed_tools
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&key);
                 let harness = registry.running_harness(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
                     registry.record_checkpoint(&key.0, key.1, snapshot);
+                    if progressed {
+                        registry.reset_resume_attempts(&key.0, key.1).await;
+                    }
                     registry.changed();
+                } else if progressed {
+                    registry
+                        .completed_tools
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.clone());
                 }
                 let mut captures = registry
                     .progress_captures
@@ -1521,6 +1540,21 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// A resumed child journaled a checkpoint after finishing a tool call in
+    /// this runtime. Its turn is advancing, so a later restart is a new loss
+    /// rather than the same one recurring: the consecutive budget starts over.
+    async fn reset_resume_attempts(&self, root_session_id: &str, id: AgentId) {
+        let mut state = self.state.lock().await;
+        if let Some(session) = state
+            .scopes
+            .get_mut(root_session_id)
+            .and_then(|scope| scope.sessions.get_mut(&id))
+            && session.active
+        {
+            session.resume_attempts = 0;
+        }
     }
 
     /// Journals bounded tool calls observed during a child's turn until the
@@ -1804,6 +1838,8 @@ impl Registry {
                 )
                 .await;
             settle(id);
+            // Waiters treat a pending automatic resume as still running.
+            self.changed();
             results.push((id, result));
         }
         results
@@ -2645,12 +2681,32 @@ impl Registry {
             return Err(std::io::Error::other("agent_ids must not be empty"));
         }
         let mut revision = self.revision.subscribe();
-        let deadline = Instant::now() + duration;
+        // A caller timeout beyond the clock's range waits until an agent
+        // becomes terminal instead of overflowing the deadline.
+        let deadline = Instant::now().checked_add(duration);
         loop {
-            let snapshot = self.state.lock().await.wait_snapshot(session_id, ids)?;
+            let (snapshot, root) = {
+                let state = self.state.lock().await;
+                let root = state.root_session_id(session_id).to_owned();
+                (state.wait_snapshot(session_id, ids)?, root)
+            };
+            // A restored child whose automatic resume is not yet delivered is
+            // about to run. Reporting it as interrupted let a waiting parent
+            // conclude it stopped and re-delegate the same work.
+            let resuming = self
+                .pending_resume
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&root)
+                .cloned()
+                .unwrap_or_default();
             let terminal = snapshot
                 .iter()
-                .filter(|(summary, _)| summary.status.is_wait_terminal())
+                .filter(|(summary, _)| {
+                    summary.status.is_wait_terminal()
+                        && !(matches!(summary.status, AgentStatus::Interrupted)
+                            && resuming.contains(&summary.agent_id))
+                })
                 .map(|(summary, revision)| {
                     (summary.agent_id, wait_mark(&summary.status, *revision))
                 })
@@ -2696,7 +2752,14 @@ impl Registry {
                 return Ok((summaries, false));
             }
             lock_unpoisoned(&self.idle_waits).remove(session_id);
-            if timeout_at(deadline, revision.changed()).await.is_err() {
+            let timed_out = match deadline {
+                Some(deadline) => timeout_at(deadline, revision.changed()).await.is_err(),
+                None => {
+                    let _ = revision.changed().await;
+                    false
+                }
+            };
+            if timed_out {
                 let summaries = self.state.lock().await.summaries(session_id, ids)?;
                 return Ok((summaries, true));
             }
@@ -3068,9 +3131,7 @@ fn validate_submitted_output(
     if validator.is_valid(&output) {
         return Ok((output, false));
     }
-    const MAX_ENCODED_OUTPUT_BYTES: usize = 1_048_576;
     if let Value::String(text) = &output
-        && text.len() <= MAX_ENCODED_OUTPUT_BYTES
         && let Ok(decoded) = serde_json::from_str::<Value>(text)
         && matches!(decoded, Value::Object(_) | Value::Array(_))
         && validator.is_valid(&decoded)
@@ -3218,6 +3279,7 @@ pub(super) fn forward_events(
                 event.kind,
                 AgentEventKind::ModelCallStarted | AgentEventKind::ToolCall
             );
+            let completed_tool = event.kind == AgentEventKind::ToolResult;
             let kind = event.kind;
             let payload = matches!(kind, AgentEventKind::ToolCall | AgentEventKind::ToolResult)
                 .then(|| event.payload.clone());
@@ -3233,6 +3295,13 @@ pub(super) fn forward_events(
                 registry
                     .track_in_flight(&root_session_id, id, &kind, &payload)
                     .await;
+                if completed_tool {
+                    registry
+                        .completed_tools
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert((root_session_id.clone(), id));
+                }
                 if progress {
                     registry.capture_progress(&root_session_id, id);
                 }
@@ -4458,7 +4527,6 @@ mod tests {
             json!("not JSON"),
             json!("42"),
             json!("\"{\\\"answer\\\":42}\""),
-            json!(format!("{}{{\"answer\":42}}", " ".repeat(1_048_576))),
         ] {
             let error = super::validate_submitted_output(&object, invalid).unwrap_err();
             assert_eq!(error.code, super::CompletionErrorCode::SchemaValidation);
@@ -4467,6 +4535,15 @@ mod tests {
             assert!(!error.to_string().contains("42"));
             assert!(!error.to_string().contains("not JSON"));
         }
+        // Encoded results larger than the former 1 MiB decode cap are decoded too.
+        assert_eq!(
+            super::validate_submitted_output(
+                &object,
+                json!(format!("{}{{\"answer\":42}}", " ".repeat(2 * 1_048_576)))
+            )
+            .unwrap(),
+            (json!({ "answer": 42 }), true)
+        );
         let array = jsonschema::validator_for(&json!({"type":"array", "items":{"type":"integer"}}))
             .unwrap();
         assert_eq!(
@@ -4972,7 +5049,22 @@ mod tests {
                 .all(|summary| summary.status == AgentStatus::Running)
         );
 
-        let interrupted = registry.interrupt("main", parent.id).await.unwrap();
+        // An explicit timeout far beyond the former one-hour ceiling (here the
+        // clock's entire range) waits for the agent instead of being clamped
+        // or overflowing its deadline.
+        let parent_ids = [parent.id];
+        let (waited, interrupted) = timeout(Duration::from_secs(5), async {
+            tokio::join!(registry.wait("main", &parent_ids, Duration::MAX), async {
+                tokio::task::yield_now().await;
+                registry.interrupt("main", parent.id).await
+            })
+        })
+        .await
+        .unwrap();
+        let (waited, timed_out) = waited.unwrap();
+        assert!(!timed_out);
+        assert_eq!(waited[0].status, AgentStatus::Interrupted);
+        let interrupted = interrupted.unwrap();
         assert_eq!(
             interrupted
                 .iter()

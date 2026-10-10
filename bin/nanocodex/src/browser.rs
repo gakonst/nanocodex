@@ -1,13 +1,15 @@
 use std::path::PathBuf;
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 use std::{fs, path::Path};
 
 use clap::{Args, ValueEnum};
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 use eyre::eyre;
+#[cfg(all(test, feature = "browser"))]
 use eyre::{Result, WrapErr};
+#[cfg(all(test, feature = "browser"))]
 use nanocodex_browser::Browser;
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 use nanocodex_browser::{
     BraveSession, BraveSessionError, BrowserCookieAuthorization, BrowserProfileKind,
     BrowserStorageState, BrowserTool, FirefoxCookieSource, HostPasskeyAuthenticator,
@@ -46,7 +48,7 @@ enum BrowserProfilePersistence {
     Persistent,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 enum CookieSource {
     Chromium(BraveSession),
     State(BrowserStorageState),
@@ -128,6 +130,7 @@ impl Default for BrowserArgs {
     }
 }
 
+#[cfg(all(test, feature = "browser"))]
 pub(crate) struct ConfiguredBrowser {
     browser: Browser,
 }
@@ -175,7 +178,7 @@ impl BrowserArgs {
         matches!(self.browser_profile, BrowserProfilePersistence::Persistent)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "browser"))]
     pub(crate) fn configure(&self, workspace: &Path) -> Result<Option<ConfiguredBrowser>> {
         if self.browser == Some(BrowserKind::None) {
             if self.browser_executable.is_some() {
@@ -253,17 +256,17 @@ impl BrowserArgs {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn default_virtual_credential_store() -> Result<PathBuf> {
     Ok(default_browser_state_root()?.join("passkeys.json"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn default_persistent_browser_profile() -> Result<PathBuf> {
     Ok(default_browser_state_root()?.join("profile"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn default_browser_state_root() -> Result<PathBuf> {
     let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
         PathBuf::from(root)
@@ -279,7 +282,7 @@ fn default_browser_state_root() -> Result<PathBuf> {
     Ok(root.join("browser"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn create_private_directory(path: &Path) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path)
         && metadata.file_type().is_symlink()
@@ -299,7 +302,7 @@ fn create_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn standard_host_passkey_authenticator() -> Result<HostPasskeyAuthenticator> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -326,12 +329,12 @@ fn standard_host_passkey_authenticator() -> Result<HostPasskeyAuthenticator> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 struct BrowserLaunch {
     executable: Option<PathBuf>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn resolve_browser_launch(
     requested: Option<BrowserKind>,
     explicit_executable: Option<&Path>,
@@ -396,7 +399,7 @@ const fn default_cookie_authorization() -> CookieAuthorizationKind {
     CookieAuthorizationKind::Background
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn cookie_source() -> Option<CookieSource> {
     // Cookie selection is independent from the disposable automation binary.
     // Prefer Chromium-family profiles in the same order as `nanocodex cookies`,
@@ -417,7 +420,7 @@ fn cookie_source() -> Option<CookieSource> {
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 fn chromium_cookie_source(
     mut standard_cookie: impl FnMut(BrowserProfileKind) -> Result<BraveSession, BraveSessionError>,
 ) -> Option<BraveSession> {
@@ -426,7 +429,7 @@ fn chromium_cookie_source(
         .find_map(|source| standard_cookie(source).ok())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 const fn chromium_cookie_source_preferences() -> [BrowserProfileKind; 4] {
     [
         BrowserProfileKind::Brave,
@@ -436,8 +439,8 @@ const fn chromium_cookie_source_preferences() -> [BrowserProfileKind; 4] {
     ]
 }
 
+#[cfg(all(test, feature = "browser"))]
 impl ConfiguredBrowser {
-    #[cfg(test)]
     pub(crate) fn tool(&self) -> BrowserTool {
         BrowserTool::from_browser(self.browser.clone())
     }
@@ -450,7 +453,7 @@ impl ConfiguredBrowser {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 mod tests {
     use std::path::Path;
 

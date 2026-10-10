@@ -22,6 +22,7 @@ from uuid import uuid4
 
 spec = importlib.util.spec_from_file_location('screen', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py'))
 h = importlib.util.module_from_spec(spec)
+COLUMNS = 240
 spec.loader.exec_module(h)
 
 
@@ -92,10 +93,12 @@ def main():
             command += ['--claude-api-key', 'synthetic-claude-key']
         (out / 'scenario.json').write_text(json.dumps({'command': command, 'environment': environment, 'expected_model': expected}, indent=2))
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        # The composer omits its "Enter send" hint when the workspace path on
+        # its bottom border leaves no room; CI artifact paths exceed 120 columns.
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment, start_new_session=True)
         os.close(slave)
-        screen = h.TerminalScreen()
+        screen = h.TerminalScreen(columns=COLUMNS)
         transcript = bytearray()
 
         def drain():
@@ -165,9 +168,14 @@ def main():
             if not claude_auth:
                 # Claude models are offered only once Claude is signed in.
                 models = [model for model in models if not model.startswith('claude-')]
-            wait(lambda: all(model in screen.text() for model in models), 'picker omitted a model')
+            # Unauthenticated, also wait for the footer that bounds the picker box.
+            wait(lambda: all(model in screen.text() for model in models) and (claude_auth or 'esc cancel' in screen.text()), 'picker omitted a model or its footer')
             if not claude_auth:
-                h.require('claude-' not in screen.text().split('Select model', 1)[-1], 'picker offered unauthenticated Claude models')
+                # Read only the picker box: the workspace path on the composer
+                # border below it (claude-model-picker-cli/...) contains "claude-".
+                picker_box = screen.text().split('Select model', 1)[-1].split('esc cancel', 1)[0]
+                h.require('esc cancel' in screen.text(), 'picker footer absent')
+                h.require('claude-' not in picker_box, 'picker offered unauthenticated Claude models')
             (out / 'picker.txt').write_text(screen.text())
             if picker:
                 # Default Sol is second; Sonnet is fifth in the unified picker.

@@ -1,7 +1,7 @@
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import worker, { type DurableAgentSession } from "../src/index";
-import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 import { ROUTING_CANDIDATES } from "../src/thread-model-routing";
 import type { ProviderObservation } from "../src/provider-telemetry";
@@ -62,7 +62,8 @@ describe("trusted managed ingress", () => {
     } } as unknown as Parameters<typeof worker.fetch>[1];
     // Select a deterministic model so this ingress fixture does not depend on
     // the external default-model catalog before reaching the session boundary.
-    const body = { settings: DEFAULT_AGENT_SETTINGS, ...(path.endsWith("agent-runs") ? { input: "Synthetic task" } : {}) };
+    // The broker reports only ChatGPT; the default is now Claude (398726862).
+    const body = { settings: DEFAULT_OPENAI_AGENT_SETTINGS, ...(path.endsWith("agent-runs") ? { input: "Synthetic task" } : {}) };
     const response = await worker.fetch(publicRequest(path, "FRA", body), runtime, createExecutionContext(), principal);
     expect(response.status, await response.clone().text()).toBe(201);
     expect(calls).toEqual(path.endsWith("agent-runs") ? ["/create-run"] : ["/create"]);

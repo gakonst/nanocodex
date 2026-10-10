@@ -17,7 +17,8 @@ describe("managed agent settings schema", () => {
       }).NANOCODEX_SESSIONS;
       const stub = sessions.getByName(crypto.randomUUID());
 
-      await runInDurableObject(stub, async (_session, state) => {
+      await runInDurableObject(stub, async (session, state) => {
+        await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
         state.storage.sql.exec(`
           DROP TABLE managed_agent_settings;
           CREATE TABLE managed_agent_settings (

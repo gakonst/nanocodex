@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "pnpm run \"/^build:(types|bundle)$/\"",
+    "build:types": "tsc --noEmit",
+    "build:bundle": "vite build",
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
     "test": "node --test test/*.test.mjs && vitest run test/*.test.tsx",
     "preview": "vite preview --host 127.0.0.1",

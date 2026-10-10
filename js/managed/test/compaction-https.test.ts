@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import { Agent } from "nanocodex/cloudflare";
+import { managedCodeEvaluator } from "../src/code-evaluator";
 
 for (const failHttps of [false, true]) {
   it(failHttps
@@ -78,7 +79,7 @@ for (const failHttps of [false, true]) {
           },
         }), { headers: { "content-type": "text/event-stream" } });
       } } } };
-      const options = { eventPersistence: "caller" as const };
+      const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
       Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { promptCacheKey: "compaction-test-cache", responseControls: { outputSchema: { type: "object", properties: {} } } },
       });

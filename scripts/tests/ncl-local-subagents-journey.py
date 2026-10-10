@@ -121,7 +121,10 @@ def main():
         session.wait(lambda: session.shown('Concurrency: 0 / unlimited active'), 'tree did not report the default unlimited limit')
         os.write(session.master, b'-')
         session.wait(lambda: session.shown('Concurrency: 0 / 1 active'), 'tree did not show the lowered limit')
-        os.write(session.master, b'\x1b'); session.wait(lambda: not session.screen.text().count('Sub-agent tree'), 'tree did not close', 10)
+        # Wait for the composer to return before typing: the limit notice can cover the tree's title,
+        # and prompt bytes that arrive with the bare Escape are read as Alt+key inside the tree.
+        os.write(session.master, b'\x1b')
+        session.wait(lambda: session.composer_visible() and 'enter inspect' not in session.screen.text(), 'tree did not close', 10)
         session.wait(lambda: session.shown('Subagent limit set to 1'), 'limit notice absent', 10)
         checks.append('/agents opens the live subagent tree; "-" lowers the native child concurrency limit to 1 with a visible notice')
 
@@ -157,7 +160,8 @@ def main():
         session.wait(lambda: session.shown('completed'), 'completed child status absent')
         session.wait(lambda: concurrency(0), 'tree did not keep limit 1 with no active children')
         checks.append('/agents tree (filter all) shows both delegated children as completed under the retained limit 1')
-        os.write(session.master, b'\x1b'); time.sleep(.5)
+        os.write(session.master, b'\x1b')
+        session.wait(lambda: session.composer_visible() and 'enter inspect' not in session.screen.text(), 'tree did not close before quitting', 10)
         session.quit()
         outcome = {'success': True, 'checks': checks, 'agent_ids': state['ids'], 'limit_result': state['limit_result'],
                    'provider_requests': [r['role'] for r in requests], 'max_child_in_flight': state['max_in_flight'], 'child_spans': child_spans}

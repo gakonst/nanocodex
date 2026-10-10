@@ -7,7 +7,9 @@ Foundry's label-grouped, contributor-attributed GitHub release notes.
 ## Nightly releases
 
 The `Nightly Release` workflow runs daily and may also be dispatched manually.
-Each successful run publishes an immutable `nightly-<full SHA>` prerelease and
+Only runs from `master` with no pull request input publish releases; branch and
+pull request builds produce artifacts without changing the rolling nightly.
+Each successful publication creates an immutable `nightly-<full SHA>` prerelease and
 refreshes the rolling `nightly` prerelease with the same gzip-compressed
 binaries and `SHA256SUMS`. The immutable release is assembled as a draft and
 published only after every asset is attached, so updaters never observe a
@@ -18,13 +20,44 @@ resolves and verifies assets from the corresponding immutable release. Raw
 executables remain only on the rolling release so pre-compression updaters can
 cross the format transition.
 
+The immutable manifest includes both compressed and decompressed executable
+checksums. The raw checksum lets the installer reuse its verified running
+bootstrap without downloading it again; the raw executable need not be a
+release attachment. Publication verifies compressed assets before unpacking
+them, then verifies every raw checksum. For manual verification of downloaded
+compressed assets on Linux, `sha256sum --check --strict --ignore-missing SHA256SUMS`
+checks the files present; unpack an executable and repeat to check its raw bytes.
+
 Each native nightly and stable release builds both role binaries per target in
-one invocation (`cargo build -p nanocodex-bin --bin nanocodex --bin nanocodex-hand
---features tempo`). `nanocodex-<triple>[.gz]` is the CLI and
+one invocation (`cargo build --features nanocodex-bin/tempo`, with the release
+profile selected by the workflow). The workspace defaults select the CLI and
+Hand packages; plain `cargo build` produces both debug executables. `nanocodex-<triple>[.gz]` is the CLI and
 `nanocodex2-<triple>[.gz]` is the `nanocodex-hand` daemon, keeping the companion
 name older updaters fetch (`nanocodex-x86_64-pc-windows-msvc.exe` and
 `nanocodex2-x86_64-pc-windows-msvc.exe` on Windows). `SHA256SUMS` lists both.
 x86_64 Linux also contains the static VM guest.
+
+Linux x86_64 and Apple Silicon bundles include a platform voice runtime archive.
+The voice jobs verify initialization and relocation before upload; the updater
+checks its checksum and installs it under the selected version's
+`nanocodex-resources/voice`. Windows currently has no voice archive. Native voice
+payloads are release components, not outputs of an ordinary Rust debug build.
+
+Ordinary debug builds use Cargo's incremental cache without a provenance build
+script. CLI, Hand, shared executable support, and terminal rendering are separate
+packages. CLI-only edits leave the Hand package cached. A plain development build
+reports its package version without inventing a Git revision or release identity.
+
+Release staging sets `VERGEN_GIT_SHA`, `TAG_NAME`, and
+`NANOCODEX_HAND_IDENTITY` at the executable boundary. The identity comes from
+`scripts/release/hand-source-identity.py`: the Hand dependency closure, resolved
+features and dependency edges, source, toolchain, build configuration, and native
+payloads. Post-build verification checks the compiler's dependency file against
+that closure before the artifact can be reused. This preserves an unchanged
+Hand across CLI-only releases without invalidating ordinary debug builds.
+Linux distribution builds additionally embed the prepared screen helpers using
+`nanocodex-hand-daemon/embedded-screen-helpers`; plain debug builds report a
+missing payload if that screen backend is requested.
 
 On Apple Silicon, `scripts/release/macos-sign-hand.sh` signs the Hand with the
 identifier `com.nanocodex.hand` and the hypervisor entitlement its libkrun VMM
@@ -47,6 +80,8 @@ builds is verified only on a real Mac.
 platform bundle atomically and exposes the CLI as `nanocodex`, `nc`, and `ncl`
 under `$NANOCODEX_DIR/bin`; the invoked name selects the managed tree
 (`nanocodex`, `nc`) or the local agent tree (`ncl`, or `nanocodex --local`).
+The verified Hand companion is exposed as `nanocodex-hand` and `nc-hand`.
+These names are aliases for the two role executables, not extra Cargo binaries.
 `nanocodex update --branch NAME` and `nanocodex update --pr NUMBER` fetch source into a temporary
 checkout, compile the CLI and Hand locally, and install them together; when the
 built Hand reports the running Hand's identity, only the CLI changes.
@@ -58,8 +93,21 @@ nightly update to promote the bundle-aware manager and a second invocation to
 fetch `nanocodex2`; subsequent nightly updates install the complete bundle in
 one invocation.
 
-To bootstrap an exact published nightly, pin its full commit tag on the shell
-side of the public installer pipeline:
+To install the newest published nightly, including the CLI, Hand, and voice
+bundle, use:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --nightly
+```
+
+Use `--help` to inspect the installer options without downloading a binary. For
+an unattended installation into a separate prefix, pass `--no-setup` and
+`--no-modify-path`, and set `NANOCODEX_DIR` on the shell side of the pipe.
+The native updater bounds metadata retries and reports rate-limit reset times;
+a transient failure can be retried with the same command.
+
+To bootstrap or roll back to an exact published nightly, pin its full commit
+tag on the shell side of the public installer pipeline:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | NANOCODEX_RELEASE_TAG='nightly-<full-40-hex-commit>' sh

@@ -55,20 +55,21 @@ fn generation(call: Option<(&str, &str)>) -> ResponsesOutput {
     let (output_items, code_calls) = match call {
         Some((id, result)) => {
             let arguments = json!({"output": {"result": result}}).to_string();
+            let input = exec_input("submit_result", &arguments);
             (
                 vec![
                     serde_json::from_value(json!({
-                        "type": "function_call", "call_id": id, "name": "submit_result",
-                        "arguments": arguments,
+                        "type": "custom_tool_call", "call_id": id, "name": "exec",
+                        "input": input,
                     }))
                     .unwrap(),
                 ],
                 vec![CodeCall {
                     call_id: id.to_owned(),
-                    name: "submit_result".to_owned(),
+                    name: "exec".to_owned(),
                     namespace: None,
-                    input: arguments,
-                    kind: CodeCallKind::Function,
+                    input,
+                    kind: CodeCallKind::Custom,
                 }],
             )
         }
@@ -95,13 +96,37 @@ fn generation(call: Option<(&str, &str)>) -> ResponsesOutput {
     })
 }
 
+// Agents are Code Mode only since eda4a21e3: the model reaches tools through exec.
+fn exec_input(name: &str, arguments: &str) -> String {
+    format!(
+        r#"const value = await tools.{name}({arguments});
+text(typeof value === "string" ? value : JSON.stringify(value));"#
+    )
+}
+
+/// The text a Code Mode cell emitted, without its status/wall-time header.
+fn exec_text(item: &Value) -> String {
+    match &item["output"] {
+        Value::String(text) => text
+            .split_once("Output:\n")
+            .map_or(text.as_str(), |(_, rest)| rest)
+            .to_owned(),
+        Value::Array(content) => content
+            .iter()
+            .skip(1)
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => panic!("unexpected exec output {other}"),
+    }
+}
+
 fn assert_receipt(input: &[Value], call_id: &str, accepted: bool, status: &str) {
     let item = input
         .iter()
-        .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+        .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == call_id)
         .expect("submission result must reach the next request");
-    let output: Value =
-        serde_json::from_str(item["output"].as_str().expect("text receipt")).unwrap();
+    let output: Value = serde_json::from_str(&exec_text(item)).unwrap();
     assert_eq!(output, json!({"accepted": accepted, "status": status}));
 }
 
@@ -270,6 +295,10 @@ async fn regression(steer_after_acceptance: bool) {
                 && event.kind == AgentEventKind::ToolResult
             {
                 let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+                // Each exec cell also reports its own result; count the submissions.
+                if payload["tool"] != "submit_result" {
+                    continue;
+                }
                 assert_eq!(payload["status"], "completed", "{payload}");
                 results += 1;
             }

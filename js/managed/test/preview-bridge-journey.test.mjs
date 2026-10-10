@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
+import { fetch } from "./support/miniflare-fetch.mjs";
 const source = `
 import { routeManaged } from '../account/worker/managedProxy.ts';
 import { receiveManagedPreview } from './src/preview-bridge.ts';

@@ -1324,11 +1324,15 @@ mod tests {
         let specs = runtime.model_specs("test-session");
         assert_eq!(
             specs.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
-            ["exec", "wait", "tool_search"],
-            "Code Mode-only must retain the discovery primitive while deferring MCP tools"
+            ["exec", "wait"],
+            "Code Mode-only exposes only its entrypoints while deferring MCP tools"
         );
 
         let description = specs[0].description();
+        assert!(
+            description.contains("### `tool_search`"),
+            "Code Mode-only must retain the discovery primitive as a nested tool"
+        );
         assert!(description.contains("Some deferred nested tools may be omitted"));
         assert!(
             !description.contains("### `mcp__fixture__echo`"),
@@ -1342,8 +1346,8 @@ mod tests {
                 .into_iter()
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
-            ["mcp__fixture__echo"],
-            "discovered MCP tools must be callable through Code Mode from its first cell"
+            ["mcp__fixture__echo", "tool_search"],
+            "discovered MCP tools and nested discovery must be callable through Code Mode from its first cell"
         );
     }
 
@@ -1671,6 +1675,32 @@ mod tests {
         assert_eq!(payment.lifecycle.commits.load(Ordering::Relaxed), 0);
         assert_eq!(payment.lifecycle.rollbacks.load(Ordering::Relaxed), 0);
         assert_eq!(payment.lifecycle.abandons.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_search_returns_the_requested_limit_beyond_the_former_cap_of_32() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "many",
+                McpServer::stdio("node")
+                    .arg(fixture.to_string_lossy())
+                    .env("NANOCODEX_MCP_FIXTURE_TOOL_COUNT", "48")
+                    .tool_exposure(McpToolExposure::DeferredOnly),
+            )
+            .build()
+            .unwrap();
+        mcp.start();
+
+        let search = mcp.state.search("echo", Some(40)).await.unwrap();
+        assert_eq!(search.tool_count(), 40);
+        let search = mcp.state.search("echo", None).await.unwrap();
+        assert_eq!(
+            search.tool_count(),
+            8,
+            "the omitted-limit default is unchanged"
+        );
     }
 
     #[tokio::test]

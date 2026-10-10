@@ -46,8 +46,9 @@ async fn claude_durable_receipt_replays_through_facade() {
         let state = DurableSession::open(store.clone(), "facade-claude")
             .await
             .unwrap();
+        // Unknown models need an explicit Messages budget since c7d02b6bb.
         let (agent, _events) = Nanocodex::builder(Claude::new(client.clone(), "synthetic-claude"))
-            .max_tokens(1024)
+            .max_tokens(4096)
             .durability(state)
             .await
             .unwrap()

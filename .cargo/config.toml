@@ -2,9 +2,6 @@
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = { value = "scripts/aarch64-unknown-linux-musl-linker", relative = true, force = true }
 CC_aarch64_unknown_linux_musl = { value = "scripts/aarch64-unknown-linux-musl-linker", relative = true, force = true }
 AR_aarch64_unknown_linux_musl = { value = "scripts/aarch64-unknown-linux-musl-ar", relative = true, force = true }
-# Identifies this checkout to bin/nanocodex/build_version.rs, which reruns only
-# when the checkout, its Git HEAD/ref, or VERGEN_GIT_SHA changes.
-NANOCODEX_BUILD_CHECKOUT = { value = ".", relative = true, force = true }
 
 [target.aarch64-apple-darwin]
 linker = "/usr/bin/clang"

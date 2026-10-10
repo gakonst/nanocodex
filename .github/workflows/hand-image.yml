@@ -3,16 +3,17 @@ name: Linux Hand image
 on:
   pull_request:
     paths:
-      - 'hands/remote/image/Dockerfile'
-      - 'hands/remote/image/smoke.sh'
+      # Every path the Dockerfile COPYs, plus the smoke test.
+      - 'hands/remote/image/**'
+      - 'scripts/build-linux-screen-helpers.sh'
+      - 'scripts/build-linux-screen-helpers.py'
+      - 'scripts/tests/linux-screen-helpers-bundle.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'bin/**'
       - 'crates/**'
       - 'examples/**'
-      - 'js/nanocodex/Cargo.toml'
-      - 'js/nanocodex/build.rs'
-      - 'js/nanocodex/src/**'
+      - 'js/nanocodex/**'
       - 'py/bindings/**'
       - 'third_party/**'
       - '.github/workflows/hand-image.yml'
@@ -56,6 +57,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          # Pull the BuildKit bootstrap image from mirror.gcr.io by digest.
+          # Docker Hub build images try mirror.gcr.io before Docker Hub.
+          driver-opts: image=mirror.gcr.io/moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Configure per-architecture registry cache
         id: image-cache
         shell: bash
@@ -95,22 +103,16 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --file hands/remote/image/Dockerfile .
       - name: Exercise offline creative and development tools
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: docker run --rm --network none --entrypoint sh "$IMAGE:$IMAGE_TAG-$ARCH" -lc nanocodex-check-hand-toolkit
       - name: Exercise the desktop and both video encoders
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: bash hands/remote/image/smoke.sh "$IMAGE:$IMAGE_TAG-$ARCH" "$ARCH"
       # A native smoke can hide a binary specialized for the build runner's CPU.
       # User-mode QEMU masks extensions; no privileged binfmt registration needed.
       - name: Verify capture startup on a baseline CPU
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -159,6 +161,13 @@ jobs:
       packages: write
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          # Pull the BuildKit bootstrap image from mirror.gcr.io by digest.
+          # Docker Hub build images try mirror.gcr.io before Docker Hub.
+          driver-opts: image=mirror.gcr.io/moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io

@@ -5,6 +5,7 @@ import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real HTTP -> shipped account proxy -> real API-key auth -> shipped TODO router ->
 // real account SQLite DO -> credential egress. Only Google/broker is synthetic.

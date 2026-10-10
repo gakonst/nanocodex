@@ -13,6 +13,7 @@ it("pages complete long histories in either direction across the archive boundar
   };
   await runInDurableObject(runtime.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (session, state) => {
     const owner = crypto.randomUUID(), organization = crypto.randomUUID(), team = crypto.randomUUID();
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     state.storage.sql.exec(`INSERT INTO session_state
       (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
        public_origin, runtime_profile, last_active)

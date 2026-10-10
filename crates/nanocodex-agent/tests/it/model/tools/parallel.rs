@@ -76,22 +76,42 @@ fn ordered_tools(state: &Arc<OrderedProbeState>) -> Result<Tools> {
         .build()?)
 }
 
+// Agents require Code Mode since eda4a21e3: each provider call is its own
+// top-level exec cell that awaits one nested tool.
+fn exec_call(call_id: &str, tool: &str) -> Value {
+    json!({
+        "type": "custom_tool_call",
+        "call_id": call_id,
+        "name": "exec",
+        "input": format!("text(await tools.{tool}({{}}));")
+    })
+}
+
+// Returns the nested tool text of a completed exec cell's model-visible output.
+fn completed_cell_output(output: &Value) -> Option<&str> {
+    let [header, body] = output.as_array()?.as_slice() else {
+        return None;
+    };
+    header["text"]
+        .as_str()?
+        .starts_with("Script completed\n")
+        .then(|| body["text"].as_str())?
+}
+
+// Joins every text part of an exec cell output, including its status header.
+fn cell_text(output: &Value) -> String {
+    output
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect()
+}
+
 fn ordered_calls() -> [Value; 2] {
     [
-        json!({
-            "type": "function_call",
-            "call_id": "call-first",
-            "namespace": "parallel__",
-            "name": "first",
-            "arguments": "{}"
-        }),
-        json!({
-            "type": "function_call",
-            "call_id": "call-second",
-            "namespace": "parallel__",
-            "name": "second",
-            "arguments": "{}"
-        }),
+        exec_call("call-first", "parallel__first"),
+        exec_call("call-second", "parallel__second"),
     ]
 }
 
@@ -102,7 +122,12 @@ async fn next_tool_result(events: &mut AgentEvents) -> Result<Value> {
             .await
             .ok_or_else(|| eyre!("agent event stream closed before tool result"))?;
         if event.kind == AgentEventKind::ToolResult {
-            return Ok(event.decode_payload()?);
+            let payload: Value = event.decode_payload()?;
+            // Nested handler results are reported separately; the model-call
+            // ordering contract concerns the top-level exec cells.
+            if payload["tool"] == "exec" {
+                return Ok(payload);
+            }
         }
     }
 }
@@ -143,9 +168,12 @@ async fn parallel_results_emit_on_completion_but_enter_history_in_provider_order
             .ok_or_else(|| eyre!("tool continuation input was not an array"))?;
         assert_eq!(input.len(), 2);
         assert_eq!(input[0]["call_id"], "call-first");
-        assert_eq!(input[0]["output"], "first-ok");
+        assert_eq!(completed_cell_output(&input[0]["output"]), Some("first-ok"));
         assert_eq!(input[1]["call_id"], "call-second");
-        assert_eq!(input[1]["output"], "second-ok");
+        assert_eq!(
+            completed_cell_output(&input[1]["output"]),
+            Some("second-ok")
+        );
         eprintln!("Provider-order outputs after overlapping execution: {continuation}");
         send_final(&mut socket, "resp-final").await
     });
@@ -240,7 +268,7 @@ async fn cancellation_keeps_completed_siblings_and_aborts_only_pending_calls() -
             .as_array()
             .ok_or_else(|| eyre!("replay input was not an array"))?
             .iter()
-            .filter(|item| item["type"] == "function_call_output")
+            .filter(|item| item["type"] == "custom_tool_call_output")
             .collect::<Vec<_>>();
         assert_eq!(outputs.len(), 2, "{replay}");
         assert_eq!(outputs[0]["call_id"], "call-first");
@@ -251,7 +279,10 @@ async fn cancellation_keeps_completed_siblings_and_aborts_only_pending_calls() -
             "{replay}"
         );
         assert_eq!(outputs[1]["call_id"], "call-second");
-        assert_eq!(outputs[1]["output"], "second-ok");
+        assert_eq!(
+            completed_cell_output(&outputs[1]["output"]),
+            Some("second-ok")
+        );
         eprintln!(
             "Recovery after cancellation retains call identity and completed sibling: {outputs:?}"
         );
@@ -410,15 +441,18 @@ async fn tool_metadata_does_not_gate_dispatch_and_provider_errors_reach_the_mode
                 .collect::<Vec<_>>(),
             ["provider-first", "provider-second", "parallel"]
         );
-        assert_eq!(input[2]["output"], "provider__parallel");
+        assert_eq!(
+            completed_cell_output(&input[2]["output"]),
+            Some("provider__parallel")
+        );
         let provider_outputs = input[..2]
             .iter()
-            .map(|item| item["output"].as_str().unwrap_or_default())
+            .map(|item| &item["output"])
             .collect::<Vec<_>>();
         assert_eq!(
             provider_outputs
                 .iter()
-                .filter(|output| output.contains("provider resource busy"))
+                .filter(|output| cell_text(output).contains("provider resource busy"))
                 .count(),
             1,
             "{continuation}"
@@ -426,7 +460,9 @@ async fn tool_metadata_does_not_gate_dispatch_and_provider_errors_reach_the_mode
         assert_eq!(
             provider_outputs
                 .iter()
-                .filter(|output| output.starts_with("provider__"))
+                .filter(|output| {
+                    completed_cell_output(output).is_some_and(|text| text.starts_with("provider__"))
+                })
                 .count(),
             1,
             "{continuation}"
@@ -503,11 +539,7 @@ async fn tool_metadata_does_not_gate_dispatch_and_provider_errors_reach_the_mode
         .find(|result| result["status"] == "failed")
         .unwrap();
     assert!(failed["call_id"] == "provider-first" || failed["call_id"] == "provider-second");
-    assert!(
-        failed["result"]
-            .as_str()
-            .is_some_and(|output| output.contains("provider resource busy"))
-    );
+    assert!(cell_text(&failed["result"]).contains("provider resource busy"));
     let terminal = next_run_completed(&mut events).await?;
     let work = terminal["tool_work_duration_ns"]
         .as_u64()
@@ -533,11 +565,5 @@ async fn tool_metadata_does_not_gate_dispatch_and_provider_errors_reach_the_mode
 }
 
 fn namespaced_call(call_id: &str, name: &str) -> Value {
-    json!({
-        "type": "function_call",
-        "call_id": call_id,
-        "namespace": "provider__",
-        "name": name,
-        "arguments": "{}"
-    })
+    exec_call(call_id, &format!("provider__{name}"))
 }

@@ -19,6 +19,8 @@ function brokerFixture() {
 function read(cache: AccountCatalogCache, broker: Fetcher, owner = "owner", scope = authority) {
   return Promise.all([cache.get(broker, owner, scope), cache.vault(broker, owner, scope)]);
 }
+// Owner accountInfo also reads the wallet by default since 24e8ebdb8; these tests
+// count connector/Vault discovery reads, so they opt out as model startup does.
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("shared account discovery snapshots", () => {
@@ -156,7 +158,7 @@ describe("shared account discovery snapshots", () => {
     });
     const broker = { fetch } as unknown as Fetcher;
     const cache = new AccountCatalogCache();
-    const options = () => ({ enabled: true, catalog: cache.get(broker, "owner", authority),
+    const options = () => ({ enabled: true, includeWallet: false, catalog: cache.get(broker, "owner", authority),
       vault: cache.vault(broker, "owner", authority) });
     await expect(accountInfo(broker, "owner", options())).resolves.toMatchObject({ status: "ready", vault: [] });
     await expect(accountInfo(broker, "owner", options())).resolves.toMatchObject({ status: "ready", vault });
@@ -222,7 +224,7 @@ describe("shared account discovery snapshots", () => {
     expect(permitted.vault).toEqual(vault);
     expect(restricted.vault).toEqual(vault);
     expect(fetch).toHaveBeenCalledTimes(2);
-    await accountInfo(broker, "owner", { enabled: true });
+    await accountInfo(broker, "owner", { enabled: true, includeWallet: false });
     expect(fetch).toHaveBeenCalledTimes(4); // No overrides means an explicit live read.
   });
 
@@ -238,9 +240,9 @@ describe("shared account discovery snapshots", () => {
     const broker = { fetch } as unknown as Fetcher;
     const cache = new AccountCatalogCache();
     const discovery = { catalog: cache.get(broker, "owner", authority), vault: cache.vault(broker, "owner", authority) };
-    const first = accountInfo(broker, "owner", { enabled: true, ...discovery, signal: controller.signal });
+    const first = accountInfo(broker, "owner", { enabled: true, includeWallet: false, ...discovery, signal: controller.signal });
     const rejected = expect(first).rejects.toBe(reason);
-    const second = accountInfo(broker, "owner", { enabled: true, ...discovery });
+    const second = accountInfo(broker, "owner", { enabled: true, includeWallet: false, ...discovery });
     controller.abort(reason);
     catalogRead.resolve(Response.json(catalog));
     vaultRead.resolve(Response.json({ vault }));
@@ -277,7 +279,7 @@ describe("strict cacheable vault metadata", () => {
 
   it("reprojects a supplied override instead of exposing unexpected fields", async () => {
     const fetch = vi.fn();
-    const info = await accountInfo({ fetch }, "owner", { enabled: true, catalog: Promise.resolve(catalog),
+    const info = await accountInfo({ fetch }, "owner", { enabled: true, includeWallet: false, catalog: Promise.resolve(catalog),
       vault: Promise.resolve([{ ...vault[0], password: "fixture-secret" }] as unknown as readonly VaultEntry[]) });
     expect(info.vault).toEqual([]);
     expect(JSON.stringify(info)).not.toContain("fixture-secret");

@@ -97,7 +97,10 @@ def main():
         wait(lambda:len(requests)==7,drain,'TUI question absent'); pending(7,drain)
         wait(lambda:visible('tui', b'Choose one number'),drain,'TUI did not render question')
         os.write(fd,b'1\r'); wait(at_gate.is_set,drain,'question answer did not arrive')
-        os.write(fd,b'approve'); time.sleep(.2); drain(); gate.set()
+        # Release the held response only once the whole stale draft is rendered
+        # in the composer; otherwise its tail lands in the approval dialog.
+        drain(); require(not visible('tui', b'approve'),'stale draft text visible before typing')
+        os.write(fd,b'approve'); wait(lambda:visible('tui', b'approve'),drain,'stale draft not rendered'); gate.set()
         wait(lambda:visible('tui', b'Plan approval required'),drain,'plan approval absent'); time.sleep(.2); drain()
         os.write(fd,b'\r'); pending(8,drain) # stale draft must be cleared
         os.write(fd,b'deny\r'); wait(lambda:len(requests)==10,drain,'denial did not preserve plan'); pending(10,drain)
@@ -108,6 +111,11 @@ def main():
         plan_dir.unlink(); saved_dir.rename(plan_dir)
         os.write(fd,b'/cancel\r'); wait(lambda:len(requests)==17,drain,'cancel did not return error'); pending(17,drain)
         wait(lambda:visible('tui', b'interaction-journey-complete'),drain,'TUI final answer absent')
+        # The answer streams before lifecycle hooks and the durable terminal
+        # commit (settle); "Turn completed" renders from the committed terminal
+        # record. This TUI phase is one turn. Exiting earlier abandons it, and
+        # the headless reopen below must then refuse to overlap it (#958).
+        wait(lambda:visible('tui', b'Turn completed'),drain,'TUI turn never reached its terminal record')
         os.write(fd,b'\x03\x03'); p.wait(timeout=10); drain(); os.close(fd)
         require((workspace/'approved.txt').read_text()=='approved-effect','approved write absent')
         require((workspace/'prior.txt').read_text()=='prior','plan entry after exec_command failed')

@@ -79,6 +79,8 @@ it("authenticates the HTTP attachment route, account scope, epoch, capabilities,
   const principal: Principal = { kind: "api_key", userId: crypto.randomUUID(), organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(),
     role: "owner", subjectId: "api_key:attachment-test", credentialId: "attachment-test", authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"] };
   await runInDurableObject(sessions.getByName(id), async (session, ctx) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
     id, principal.userId, principal.organizationId, principal.teamId, Date.now());

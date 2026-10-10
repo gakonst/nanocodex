@@ -3,6 +3,7 @@
 
 mod account;
 mod browser;
+mod claude;
 mod code;
 pub(super) mod computer;
 mod mcp;
@@ -206,6 +207,9 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
             session::present(tool, width, theme, expanded)
         }
         "exec" | "wait" => code::present(tool, width, theme, expanded),
+        "Read" | "Write" | "Edit" | "NotebookEdit" | "Glob" | "Grep" | "TodoWrite"
+        | "TaskCreate" | "TaskGet" | "TaskList" | "TaskUpdate" | "TaskOutput" | "TaskStop"
+        | "WebFetch" | "WebSearch" | "Skill" => claude::present(tool, width, theme, expanded),
         _ => generic(tool, width, theme, expanded),
     }
 }
@@ -409,9 +413,10 @@ fn summary_lines_with_origin(
             status_symbol(tool.state),
             count_label(total as usize, "tool", "tools")
         );
-        for (count, label) in counts
-            .iter()
-            .zip(["running", "completed", "failed", "waiting"])
+        for (count, label) in
+            counts
+                .iter()
+                .zip(["running", "completed", "failed", "waiting", "unknown"])
         {
             let count = count.as_u64().unwrap_or(0);
             if count > 0 {
@@ -463,6 +468,27 @@ fn summary_lines_with_origin(
             &format!(" · {}", tool.execution_qualifier()),
             Style::default().fg(theme.muted()),
         );
+    }
+    if tool.state == ToolState::Unknown {
+        let reason = unknown_reason(tool.result.as_ref());
+        let stated = presentation
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.contains("unknown"));
+        let text = match reason {
+            Some(reason) if reason.to_lowercase().contains("unknown") => {
+                Some(format!(" · {reason}"))
+            }
+            Some(reason) => Some(format!(" · outcome unknown · {reason}")),
+            None => (!stated).then(|| " · outcome unknown".to_owned()),
+        };
+        if let Some(text) = text {
+            append_span(
+                &mut outcome_spans,
+                &text,
+                Style::default().fg(Color::Yellow),
+            );
+        }
     }
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
@@ -597,6 +623,11 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
         .iter()
         .filter(|(call, _)| call.state == ToolState::Failed)
         .count();
+    let unknown = group
+        .calls
+        .iter()
+        .filter(|(call, _)| call.state == ToolState::Unknown)
+        .count();
     let mut header = vec![
         Span::raw("  "),
         Span::styled("▶ ", border),
@@ -621,6 +652,9 @@ pub(super) fn group_lines(group: &ToolGroup<'_>, width: u16, theme: &Theme) -> V
     }
     if failed > 0 {
         details.push(format!("{failed} failed"));
+    }
+    if unknown > 0 {
+        details.push(format!("{unknown} outcome unknown"));
     }
     if group.duration_ns > 0 {
         details.push(format_duration(group.duration_ns));
@@ -701,7 +735,7 @@ fn group_rows(group: &ToolGroup<'_>) -> Vec<usize> {
         .filter(|&index| {
             matches!(
                 group.calls[index].0.state,
-                ToolState::Running | ToolState::Failed
+                ToolState::Running | ToolState::Failed | ToolState::Unknown
             )
         })
         .collect::<Vec<_>>();
@@ -1029,6 +1063,16 @@ fn generic_outcome(result: Option<&Value>) -> Option<String> {
     })
 }
 
+/// First line of an explicit unknown-outcome explanation; never command output.
+fn unknown_reason(result: Option<&Value>) -> Option<String> {
+    let fields = result?.as_object()?;
+    ["message", "error", "text"]
+        .into_iter()
+        .find_map(|key| fields.get(key).and_then(Value::as_str))
+        .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(sanitize)
+}
+
 /// First error line of a failed call, as shown in its summary row.
 pub(super) fn failure_line(tool: &ToolEntry) -> Option<String> {
     first_error_line(tool.result.as_ref())
@@ -1227,6 +1271,7 @@ fn status_symbol(state: ToolState) -> &'static str {
         ToolState::Yielded => "◇",
         ToolState::Succeeded => "✓",
         ToolState::Failed => "×",
+        ToolState::Unknown => "?",
     }
 }
 
@@ -1236,6 +1281,7 @@ fn status_style(state: ToolState, theme: &Theme) -> Style {
         ToolState::Yielded => theme.muted(),
         ToolState::Succeeded => Color::Green,
         ToolState::Failed => theme.thinking_xhigh(),
+        ToolState::Unknown => Color::Yellow,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }

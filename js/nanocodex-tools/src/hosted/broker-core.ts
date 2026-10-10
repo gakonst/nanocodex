@@ -179,6 +179,25 @@ export type HostedToolsInvokeRequest = Readonly<{
   signal?: AbortSignal;
 }>;
 
+export type HostedToolsReceiptRequest = Readonly<{
+  sessionId: string;
+  callId: string;
+  /** Exposed definition name, or the canonical machine primitive when machineId is set. */
+  name: string;
+  machineId?: string;
+  waitMs: number;
+  /** The caller's pinned route token; must equal the route the row was admitted under. */
+  routeToken: string;
+  /** The caller's authorization context; receipts are never broader than invocation. */
+  context?: HostedToolsAuthorizationContext;
+}>;
+
+export type HostedToolsReceipt =
+  | Readonly<{ state: "missing" }>
+  | Readonly<{ state: "unresolved" }>
+  | Readonly<{ state: "running"; deadlineAt: number }>
+  | Readonly<{ state: "settled"; result: unknown; processRouteToken?: string }>;
+
 export type HostedToolsPreparedTool = Readonly<{
   routeToken: string;
   connectGrantId?: string;
@@ -305,7 +324,7 @@ export type HostedToolsDiagnosticReason = "transport_closed" | "transport_error"
   | "dispatch_ownership_lost";
 
 export type HostedToolsCallObservation = Readonly<{
-  stage: "received" | "admitted" | "dispatched" | "terminal" | "replay" | "receipt" | "late_receipt" | "receipt_replay" | "cancel_requested"
+  stage: "received" | "admitted" | "dispatched" | "terminal" | "replay" | "receipt" | "late_receipt" | "receipt_replay" | "receipt_lookup" | "cancel_requested"
     | "host_progress" | "send_started" | "sent" | "send_failed" | "ack_attempt" | "ack_sent" | "ack_failed" | "transport_lost" | "admission_failed" | "connection_draining";
   tool: string;
   session_id?: string;
@@ -937,7 +956,94 @@ export class HostedToolsBrokerCore {
     }
   }
 
+  /**
+   * Receipt-only reconciliation for one exact source call identity. This is a
+   * ledger lookup: it never admits, dispatches, cancels or repins a call, so a
+   * missing row stays missing. A dispatched call is awaited only through its
+   * original pinned lease/generation/runtime, bounded by the caller's wait and
+   * the call's original admitted deadline.
+   */
+  async receipt(request: HostedToolsReceiptRequest): Promise<HostedToolsReceipt> {
+    const row = this.#persistence.callBySource(request.sessionId, request.callId);
+    if (!row || row.session_id !== request.sessionId || row.source_call_id !== request.callId) return { state: "missing" };
+    const candidates = this.#catalogBindings(undefined, true).filter(candidate => (request.machineId === undefined
+      ? candidate.machine === undefined && candidate.entry.definition.name === request.name
+      : candidate.machine?.id === request.machineId && candidate.wireName === request.name)
+      && candidate.hostId === row.host_id);
+    // Authorize and attribute only from the row's own pinned route. A
+    // reconnect of the same Hand runtime may carry it under a later
+    // generation; a replacement runtime never resolves this receipt.
+    const exact = candidates.find(candidate => candidate.leaseId === row.lease_id && candidate.generation === row.generation);
+    const binding = exact ?? (row.host_runtime_id
+      ? candidates.find(candidate => candidate.runtimeId === row.host_runtime_id) : undefined);
+    if (!binding || row.name !== binding.wireName
+      || (request.machineId !== undefined && row.hand_id !== request.machineId)
+      || request.routeToken !== JSON.stringify(row.name === "write_stdin" && binding.machine && row.host_runtime_id
+        // The caller must present the route this exact row was admitted under.
+        ? [binding.routeId, "process-runtime", row.host_runtime_id, row.name]
+        : [binding.routeId, row.generation, row.lease_id, row.name])
+      || !this.#entryAllowed(binding.entry, binding.connectGrantId, binding.appToolCatalogDigest, request.context)) {
+      return { state: "unresolved" };
+    }
+    this.#observe("receipt_lookup", row);
+    let outcome: HostedToolCallOutcome | undefined;
+    if (row.state === "ambiguous" && row.receipt_json) {
+      // A terminal result that arrived after the deadline is real evidence.
+      const late = JSON.parse(row.receipt_json) as { outcome?: HostedToolCallOutcome };
+      outcome = late.outcome;
+    }
+    if (outcome) { /* late receipt */ }
+    else if (row.result_json) outcome = JSON.parse(row.result_json) as HostedToolCallOutcome;
+    else if (row.state === "dispatched") {
+      const owner = this.#stateForLease(row.lease_id, row.generation);
+      const pending = this.#pending.get(row.call_id)
+        ?? (owner && this.#canRecover(owner) && owner.runtime_id === row.host_runtime_id ? this.#restorePending(row) : undefined);
+      if (!pending) outcome = hostedToolsAmbiguous("Hosted Tools call has no retained terminal receipt");
+      else {
+        // Never attach a signal: a receipt read cannot cancel the call.
+        const waitMs = Math.max(0, Math.min(request.waitMs, row.deadline_at - this.#now()));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const settled = await Promise.race([
+          pending.promise,
+          new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), waitMs); }),
+        ]).finally(() => clearTimeout(timer));
+        if (!settled) return { state: "running", deadlineAt: row.deadline_at };
+        outcome = settled;
+      }
+    } else if (row.state === "admitted") outcome = hostedToolsUnavailable("Hosted Tools call was admitted but never dispatched");
+    else outcome = hostedToolsAmbiguous("Hosted Tools call has no retained terminal receipt");
+    if (outcome.status !== "completed") return { state: "settled", result: toolResult(outcome.message, outcome, false, null) };
+    const final = outcome;
+    const structured: unknown = final.output.structured_result;
+    const sessionBound = structured !== null && typeof structured === "object" && "session_id" in structured;
+    let processRouteToken: string | undefined;
+    if (row.name === "exec_command" && request.machineId !== undefined && sessionBound) {
+      // A process session belongs to the runtime that started it. Only bind
+      // the write_stdin route of that exact lease/generation/runtime.
+      const stdin = this.#catalogBindings(undefined, true).find(candidate => candidate.machine?.id === request.machineId
+        && candidate.wireName === "write_stdin" && candidate.leaseId === row.lease_id
+        && candidate.generation === row.generation && candidate.runtimeId === row.host_runtime_id);
+      if (!stdin) {
+        const message = "The retained command receipt belongs to an earlier Hand connection and cannot prove process ownership. Use its original saved process session if available. The command was not resent.";
+        return { state: "settled", result: toolResult(message, hostedToolsAmbiguous(message), false, null) };
+      }
+      processRouteToken = this.#preparedTool(stdin).routeToken;
+    }
+    const prepared = this.#preparedTool(binding);
+    return { state: "settled", result: wireToolResult(final.output, prepared.canonicalName, prepared.machine),
+      ...(processRouteToken === undefined ? {} : { processRouteToken }) };
+  }
+
   cancel(callId: string): boolean {
+    return this.cancelDelivery(callId) !== false;
+  }
+
+  /**
+   * Requests cancellation and reports how far it got: "sent" when the cancel
+   * frame was written to the live Hand socket, "queued" when it is only
+   * persisted for redelivery once the same runtime reconnects.
+   */
+  cancelDelivery(callId: string): "sent" | "queued" | false {
     const row = this.#persistence.call(callId);
     if (!row || row.state !== "dispatched") return false;
     const state = this.#stateForLease(row.lease_id, row.generation);
@@ -950,13 +1056,13 @@ export class HostedToolsBrokerCore {
     if (!cancelRequested || cancelRequested.state !== "dispatched"
       || cancelRequested.cancel_requested !== 1) return false;
     this.#observe("cancel_requested", row);
-    if (!socket) return this.#canRecover(state);
+    if (!socket) return this.#canRecover(state) ? "queued" : false;
     try {
       this.#send(socket, {
         type: "cancel",
         call_id: row.call_id,
       });
-      return true;
+      return "sent";
     } catch {
       this.#retire(socket, "cancellation delivery failed", "cancel_send_failed");
       closeSocket(socket, 1011, "Hosted Tools cancellation delivery failed");
@@ -1874,8 +1980,10 @@ export class HostedToolsBrokerCore {
         "Hosted Tools attachment was absent before durable admission",
       ));
     }
-    if (this.#persistence.generationCallCount(leaseId, binding.generation)
-      >= this.#maxCallsPerGeneration) {
+    // The default limit is unreachable; skip counting the generation's whole
+    // retained ledger on every admission unless a finite limit is configured.
+    if (this.#maxCallsPerGeneration < Number.MAX_SAFE_INTEGER
+      && this.#persistence.generationCallCount(leaseId, binding.generation) >= this.#maxCallsPerGeneration) {
       const state = this.#persistence.state(binding.routeId);
       const socket = state?.lease_id === leaseId && state.generation === binding.generation
         ? this.#socketForState(state)

@@ -107,7 +107,10 @@ impl Bridge {
                 }
                 AgentEventKind::RunFailed => self.current.clone().map(|id| {
                     let error = failure_text(event);
-                    if error.to_ascii_lowercase().contains("cancel") {
+                    // Both harnesses report a cancelled run as RunFailed with
+                    // status "cancelled" and no message; the text check covers
+                    // producers that only describe the cancellation.
+                    if run_cancelled(event) || error.to_ascii_lowercase().contains("cancel") {
                         ManagedEventData::TurnCancelled { id }
                     } else {
                         ManagedEventData::TurnFailed { id, error }
@@ -122,6 +125,16 @@ impl Bridge {
         }
         out
     }
+}
+
+fn run_cancelled(event: &AgentEvent) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Terminal {
+        #[serde(default)]
+        status: Option<String>,
+    }
+    serde_json::from_str::<Terminal>(event.payload.get())
+        .is_ok_and(|terminal| terminal.status.as_deref() == Some("cancelled"))
 }
 
 fn failure_text(event: &AgentEvent) -> String {

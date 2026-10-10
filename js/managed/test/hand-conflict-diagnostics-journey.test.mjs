@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import WebSocket from 'ws';
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const source = `

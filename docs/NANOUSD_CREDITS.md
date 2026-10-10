@@ -32,6 +32,10 @@ headless browser, asks Link for purchase approval, injects the merchant-bound
 short-lived token, and submits the existing Checkout Session without exposing
 card details or opening `checkout.stripe.com` in the system browser.
 
+The private headless browser is the CLI's optional `browser` feature
+(`--features tempo,browser`); builds without it report that and open the hosted
+Checkout URL in the system browser instead.
+
 Run `link-cli auth login --client-name Nanocodex` once before using this path.
 If Link CLI is absent or the Checkout Session does not expose its agent-payment
 markers, the CLI opens the hosted Checkout URL in the system browser as before.

@@ -12,6 +12,7 @@ import WebSocket from 'ws';
 import { createTools } from 'nanocodex/tools';
 import { createAttachment } from 'nanocodex-tools/attachment';
 import { createNodeProcessTools } from 'nanocodex-tools/node';
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // One persistent native Hand keeps its command-recovery generation across
 // reconnects, so its call ledger grows with lifetime use. Transport loss and

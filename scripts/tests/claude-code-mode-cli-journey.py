@@ -29,6 +29,10 @@ spec = importlib.util.spec_from_file_location('native', Path(__file__).with_name
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 require, sse, text_of = helper.require, helper.sse, helper.text_of
+screen_spec = importlib.util.spec_from_file_location('screen', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py'))
+screen_helper = importlib.util.module_from_spec(screen_spec)
+screen_spec.loader.exec_module(screen_helper)
+TerminalScreen = screen_helper.TerminalScreen
 
 
 def main():
@@ -127,7 +131,7 @@ else: print('{}')
     server = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     environment = {'HOME': str(artifact / 'home'), 'CODEX_HOME': str(artifact / 'home/codex'), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'NANOCODEX_COMPUTER': 'off'}
-    common = [str(binary), 'run', '--claude', '--model', 'claude-sonnet-5-5', '--claude-api-key', 'synthetic-code-key', '--claude-messages-url', f'http://127.0.0.1:{server.server_port}/v1/messages', '--cwd', str(workspace), '--rollouts', 'false', '--browser=none', '--mcp-defaults', 'false', '--mcp-codex-config', 'false', '--web-search', 'false', '--image-generation', 'false', '--subagents', 'true', '--memory', 'false', '--claude-hooks', str(hooks)]
+    common = [str(binary), '--local', 'run', '--claude', '--model', 'claude-sonnet-5-5', '--claude-api-key', 'synthetic-code-key', '--claude-messages-url', f'http://127.0.0.1:{server.server_port}/v1/messages', '--cwd', str(workspace), '--rollouts', 'false', '--browser=none', '--mcp-defaults', 'false', '--mcp-codex-config', 'false', '--web-search', 'false', '--image-generation', 'false', '--subagents', 'true', '--memory', 'false', '--claude-hooks', str(hooks)]
 
     def run(name, steps, extra=None, child=None):
         phase.update(name=name, steps=steps, counts={}, child=child or [])
@@ -143,13 +147,15 @@ else: print('{}')
 
     def interrupt_pending_inference():
         phase.update(name='interrupt', counts={}, child=[], steps=[execute('const r=await tools.exec_command({cmd:"printf started > interrupt-started.txt; while [ ! -f interrupt-release.txt ]; do sleep 0.05; done; printf retained > interrupt-leak.txt",yield_time_ms:250}); store("interruptShell",r.session_id); await yield_control(); text(r);', 'Script running with cell ID')])
-        command = [common[0]] + common[2:] + ['--prompt', 'Interrupt pending inference journey']
+        command = common[:2] + common[3:] + ['--prompt', 'Interrupt pending inference journey']
         commands.append(command)
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
         process = subprocess.Popen(command, cwd=workspace, env=dict(environment, TERM='xterm-256color'), stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
         transcript = bytearray()
+        screen = TerminalScreen(rows=45, columns=170)
+        frames = []
 
         def drain():
             while select.select([master], [], [], 0)[0]:
@@ -160,12 +166,16 @@ else: print('{}')
                 if not chunk:
                     break
                 transcript.extend(chunk)
+                screen.feed(chunk)
                 if b'\x1b[6n' in chunk:
                     os.write(master, b'\x1b[1;1R')
 
+            text = screen.text()
+            if not frames or frames[-1] != text:
+                frames.append(text)
+
         def visible(marker):
-            plain = re.sub(rb'\x1b\[[0-9;?]*[A-Za-z]', b'', transcript)
-            return marker in re.sub(rb'\s+', b'', plain)
+            return marker.decode() in re.sub(r'\s+', '', screen.text())
 
         def until(predicate, message):
             deadline = time.monotonic() + 25
@@ -183,15 +193,22 @@ else: print('{}')
             require(not (workspace / 'interrupt-leak.txt').exists(), 'delayed native effect ran before fixture gate release')
             cancel_sent = time.time()
             os.write(master, b'/cancel\r')
-            until(lambda: visible(b'Cancelled'), 'user cancellation did not settle while inference was pending')
-            (artifact / 'interrupt-timing.json').write_text(json.dumps({**inference_timing, 'effect_started': (workspace / 'interrupt-started.txt').stat().st_mtime, 'cancel_sent': cancel_sent, 'cancel_settled': time.time(), 'effect_present_at_settlement': (workspace / 'interrupt-leak.txt').exists()}, indent=2))
-            require(not release_inference.is_set(), 'fixture released inference before cancellation settled')
-            release_inference.set()
-            (workspace / 'interrupt-release.txt').write_text('release delayed native effect after cancellation settled')
+            # Submit the next prompt. Admission while the cancelled inference
+            # is still held proves settlement without a status-copy match.
             phase.update(name='interrupt-recovery', counts={}, child=[], steps=[execute('const r=await tools.write_stdin({session_id:load("interruptShell"),yield_time_ms:1000}); if(r.exit_code!==0) throw Error("retained shell failed"); text("INTERRUPT_RECOVERY_OK");', 'INTERRUPT_RECOVERY_OK')])
             os.write(master, b'Continue after cancellation\r')
+            until(lambda: phase['counts'].get('root', 0) > 0, 'next turn was not admitted after cancellation')
+            cancel_settled = time.time()
+            effect_present = (workspace / 'interrupt-leak.txt').exists()
+            (workspace / 'interrupt-release.txt').write_text('release delayed native effect after cancellation settled')
+            require(not release_inference.is_set(), 'fixture released inference before the next turn was admitted')
             until(lambda: visible(b'interrupt-recovery-complete'), 'next turn failed after cancellation')
+            require(not any(re.search(r'×.*(?:turn.*cancel|turn failed)', line, re.I) for line in screen.text().splitlines()), 'user cancellation was presented as a failed turn')
+            (artifact / 'interrupt-timing.json').write_text(json.dumps({**inference_timing, 'effect_started': (workspace / 'interrupt-started.txt').stat().st_mtime, 'cancel_sent': cancel_sent, 'cancel_settled': cancel_settled, 'effect_present_at_settlement': effect_present}, indent=2))
+            release_inference.set()
             require((workspace / 'interrupt-leak.txt').read_text() == 'retained', 'turn cancellation lost retained shell session')
+            os.write(master, b"\x03")
+            time.sleep(.2)
             os.write(master, b"\x03")
             deadline = time.monotonic() + 10
             while process.poll() is None and time.monotonic() < deadline:
@@ -207,6 +224,7 @@ else: print('{}')
             drain()
             os.close(master)
             (artifact / 'interrupt.pty').write_bytes(transcript)
+            (artifact / 'interrupt.frames.txt').write_text('\n=====FRAME=====\n'.join(frames))
 
     outcome = {'success': False}
     try:

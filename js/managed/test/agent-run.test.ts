@@ -273,7 +273,7 @@ describe("fused SessionDO creation and admission", () => {
         .toMatchObject({ status: 409, sessions: 1, turns: 1, accepted: 1, body: { error: "idempotency_conflict" } });
       expect(await dispatch({ ...principal, organizationId: crypto.randomUUID() }))
         .toMatchObject({ status: 404, sessions: 1, turns: 1, accepted: 1 });
-      expect(await dispatch(principal, { ...initialization, settings: { ...DEFAULT_AGENT_SETTINGS, fast_mode: true } }))
+      expect(await dispatch(principal, { ...initialization, settings: { ...DEFAULT_AGENT_SETTINGS, thinking: DEFAULT_AGENT_SETTINGS.thinking === "low" ? "high" : "low" } }))
         .toMatchObject({ status: 409, sessions: 1, turns: 1, accepted: 1, body: { error: "agent_initialization_conflict" } });
     } finally {
       await runInDurableObject(stub, async (_session, state) => { await state.storage.deleteAlarm(); });

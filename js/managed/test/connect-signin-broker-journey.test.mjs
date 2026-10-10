@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare, Log, LogLevel } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real HTTP -> managed SMS/account/session routes -> encrypted credential broker
 // -> Accounts SDK root signing -> Connect Accounts Handler + SQLite grant state

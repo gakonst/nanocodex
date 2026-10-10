@@ -83,11 +83,31 @@ async function httpControl(body,credential=key,requestAgent=agent){
 }
 async function newLogin(path='/login'){
  if(activeId){await tools('browser_login_close',{});if(activePage&&!activePage.isClosed())await activePage.close();}
+ // Playwright auto-attaches each new target and can interfere with the product's navigation.
+ // Keep this fixture observer disconnected until Chrome reports the expected URL committed.
+ if(browser){await browser.close();browser=undefined;}
  const operation=crypto.randomUUID();
  const hint=await tools('request_browser_login',{operation_id:operation,url:siteOrigin+path,allowed_origins:[siteOrigin]});
  activeId=hint.request_id;
- if(!browser)browser=await chromium.connectOverCDP(chromeEndpoint);
- await wait(()=>{activePage=browser.contexts().flatMap(c=>c.pages()).find(p=>p.url()===siteOrigin+path&&!p.isClosed());return activePage;},'fixture page');
+ const pageTargets=async()=>(await (await fetch(chromeEndpoint+'/json/list',{signal:AbortSignal.timeout(2000)})).json()).filter(t=>t.type==='page');
+ const until=Date.now()+15000;let lastPollError;
+ const committed=async()=>{try{return (await pageTargets()).some(t=>t.url===siteOrigin+path);}catch(error){lastPollError=String(error?.message||error);return false;}};
+ try{
+  while(!(await committed())){if(fixtureError)throw fixtureError;if(Date.now()>until)throw Error('Timed out fixture page commit');await delay(25);}
+  const remaining=until-Date.now();if(remaining<=0)throw Error('Timed out fixture page commit');
+  browser=await chromium.connectOverCDP(chromeEndpoint,{timeout:remaining});
+  await wait(()=>{activePage=browser.contexts().flatMap(c=>c.pages()).find(p=>p.url()===siteOrigin+path&&!p.isClosed());return activePage;},'fixture page',Math.max(0,until-Date.now()));
+ }catch(error){
+  // Metadata only: synthetic fixture URLs and target IDs, never page content.
+  try{
+   const known=url=>url==='about:blank'||url===''||url.startsWith(siteOrigin+'/')?url:'[other]';
+   const diagnosis={path,request_id:hint.request_id,last_poll_error:lastPollError??null,chrome_pages:await pageTargets().then(ts=>ts.slice(0,20).map(t=>({id:t.id,url:known(t.url)})),error=>({error:String(error?.message||error)})),
+    playwright_pages:browser?browser.contexts().flatMap(c=>c.pages()).slice(0,20).map(p=>known(p.url())):null};
+   assertNoPrivateInput(diagnosis,'fixture page diagnosis');trace.fixture_page_diagnosis=diagnosis;
+   writeFileSync(join(output,'trace.json'),JSON.stringify(trace,null,2)+'\n');
+  }catch{}
+  throw error;
+ }
  await activePage.locator('input').first().waitFor();
  return hint;
 }
@@ -97,8 +117,10 @@ const ctrlEnter='\x1b[13;5u';
 const {Terminal}=xterm;
 const emulator=new Terminal({cols:160,rows:32,allowProposedApi:true,scrollback:1000});
 const visibleText=()=>Array.from({length:emulator.rows},(_,row)=>emulator.buffer.active.getLine(emulator.buffer.active.viewportY+row)?.translateToString(true)||'').join('\n');
-let rendered=Promise.resolve(),lastSafetyToken='';
-const capture=()=>{let text=visibleText().replace(/(Type safety token \(keys only\): )([a-f0-9]{32})/g,'$1[redacted safety token]');for(const value of privateValues)text=text.replaceAll(value,'[redacted private input]');writeFileSync(join(output,'terminal.txt'),text);};
+let rendered=Promise.resolve();
+const verifiedText='Safety token verified. Controls above are now enabled.';
+const fieldsPhase='Ctrl+Enter: submit once',statusPhase='Esc closes this private panel.';
+const capture=()=>{let text=visibleText().replace(/(Type )(\d{4})( to enable input)/g,'$1[redacted safety token]$3');for(const value of privateValues)text=text.replaceAll(value,'[redacted private input]');writeFileSync(join(output,'terminal.txt'),text);};
 
 
 let siteOrigin,chromeEndpoint;
@@ -202,22 +224,27 @@ function resumeModel(message,id){
  modelResumptions.push({turn_id:id,request_id:receipt.request_id,challenge_id:receipt.challenge_id,id:receipt.id,type:receipt.type,status:receipt.status});
  setTimeout(()=>{ws.send(JSON.stringify({type:'turn_accepted',id,turn_id:id,created_at:Date.now()/1000,cursor:String(++cursor),input:message.input,replayed:false}));ws.send(JSON.stringify({type:'turn_completed',id,turn_id:id,created_at:Date.now()/1000,cursor:String(++cursor),final_message:'Synthetic model resumed from safe receipt. '+(receipt.request_id||receipt.challenge_id||receipt.id),usage:null,citations:[],usage_error:null}));},100);
 }
+// One short typed token arms each private flow; later phases of that flow stay
+// armed. Every phase change still discards typeahead until its frame renders,
+// so each step waits for its own rendered phase rather than a fresh token.
 async function unlock(){
- const safetyToken=()=>visibleText().match(/Type safety token \(keys only\): ([a-f0-9]{32})/)?.[1];
- await wait(()=>{const token=safetyToken();return token&&token!==lastSafetyToken;},'fresh private safety token');
- // Esc first renders a local cancelled phase, then the HTTP receipt replaces
- // it with another guarded phase. Follow a replacement token without retrying
- // the private operation or assuming that an earlier token enabled this phase.
- for(let transitions=0;transitions<5;transitions++){
-  const token=safetyToken();assert.ok(token,'private phase must show a safety token');
-  terminal.stdin.write(token);
-  await wait(()=>visibleText().includes('Safety token verified. Controls above are now enabled.')||(safetyToken()&&safetyToken()!==token),'private controls enabled or phase replaced');
-  if(visibleText().includes('Safety token verified. Controls above are now enabled.')){lastSafetyToken=token;return;}
- }
- throw Error('Private safety phase did not settle');
+ const safetyToken=()=>visibleText().match(/Type (\d{4}) to enable input \(typed, not pasted\)\./)?.[1];
+ await wait(()=>safetyToken()&&!visibleText().includes(verifiedText),'private safety token for new flow');
+ terminal.stdin.write(safetyToken());
+ await wait(()=>visibleText().includes(verifiedText)&&!safetyToken(),'private controls enabled');
 }
-async function openFields(){await unlock();await keypress(ctrlEnter);await unlock();}
-async function dismiss(){await unlock();await keypress('\x1b');await delay(150);}
+async function settled(marker,stage,before){await wait(()=>{const text=visibleText();return text!==before&&text.includes(marker)&&text.includes(verifiedText);},stage);}
+async function openFields(){await unlock();await keypress(ctrlEnter);await settled(fieldsPhase,'private fields');}
+async function dismiss(before){
+ await settled(statusPhase,'private status',before);
+ // A cancel or save receipt can replace a local status before Esc is read.
+ // Esc in a status phase only closes the panel, so repeat it until closed.
+ for(let attempt=0;attempt<5;attempt++){
+  await keypress('\x1b');
+  try{await wait(()=>!visibleText().includes(statusPhase),'private panel closed',2000);await delay(150);return;}catch(error){if(fixtureError)throw error;}
+ }
+ throw Error('Private status panel did not close');
+}
 async function submit(dismissPanel=true){const before=trace.receipts.length;await keypress(ctrlEnter);await wait(()=>trace.receipts.length>before,'private finish receipt');if(dismissPanel)await dismiss();return trace.receipts.at(-1);}
 async function fill(values){for(let i=0;i<values.length;i++){type(values[i]);await delay(90);if(i<values.length-1)await keypress('\t');}}
 async function panel(path='/login'){const hint=await newLogin(path);requestPanel(hint);await openFields();return hint;}
@@ -259,7 +286,7 @@ async function runJourneys(){
  pass('Two-step username/password navigation pairs one encrypted login within same session');
  await panel();const retryUser='save-retry-private-user',retryPass='save-retry-private-password';privateValues.push(retryUser,retryPass);await fill([retryUser,retryPass]);failNextSave=true;const savedBeforeFailure=saveCalls.length,failed=await submit(false);assert.equal(failed.vault_save?.status,'failed');assert.equal(failed.vault_save?.retryable,true);assert.equal(saveCalls.length,savedBeforeFailure);
  const eventsBeforeRetry=await activePage.evaluate(()=>({...counts})),attempt=saveAttempts.at(-1);
- await unlock();assert.ok(visibleText().includes('F5: retry Vault saving only'));const beforeRetry=trace.save_retries.length;await keypress('\x1b[15~');await wait(()=>trace.save_retries.length>beforeRetry,'TUI F5 save-only receipt');const retry={status:200,body:trace.save_retries.at(-1).body};assert.equal(retry.body.vault_save.status,'saved');await dismiss();await wait(()=>parsedReceipts().some(r=>r.type==='private_vault_save_receipt'&&r.request_id===activeId),'safe save-only retry continuation');assert.equal(saveAttempts.at(-1),attempt);assert.equal(saveCalls.length,savedBeforeFailure+1);assert.deepEqual(await activePage.evaluate(()=>({...counts})),eventsBeforeRetry);
+ await settled('F5: retry Vault saving only','retryable Vault save status');const beforeRetry=trace.save_retries.length,retryScreen=visibleText();await keypress('\x1b[15~');await wait(()=>trace.save_retries.length>beforeRetry,'TUI F5 save-only receipt');const retry={status:200,body:trace.save_retries.at(-1).body};assert.equal(retry.body.vault_save.status,'saved');await dismiss(retryScreen);await wait(()=>parsedReceipts().some(r=>r.type==='private_vault_save_receipt'&&r.request_id===activeId),'safe save-only retry continuation');assert.equal(saveAttempts.at(-1),attempt);assert.equal(saveCalls.length,savedBeforeFailure+1);assert.deepEqual(await activePage.evaluate(()=>({...counts})),eventsBeforeRetry);
  const replay=await httpControl({challenge_id:activeId,action:'retry_vault_save'});assert.deepEqual(replay,retry);assert.equal(saveCalls.length,savedBeforeFailure+1);assert.deepEqual(await activePage.evaluate(()=>({...counts})),eventsBeforeRetry);pass('Actual TUI F5 retries stable broker save, no repeated Chrome input or duplicate item');
  await panel();const expiring=durable.get('browser-login:'+agent);durable.set('browser-login:'+agent,{...expiring,expiresAt:Date.now()-1});
  await fill(['expired-private-user','expired-private-password']);privateValues.push('expired-private-user','expired-private-password');await keypress(ctrlEnter);await dismiss();assert.equal(await activePage.locator('#username').inputValue(),'');pass('Expired request fails closed without Chrome input');
@@ -297,15 +324,19 @@ async function intakeAndReuseJourneys(){
   const beforeEcho=trace.requests.length;requestPanel(hint,'request_vault_intake',turn);await delay(350);assert.equal(trace.requests.length,beforeEcho);
   pass('Actual TUI native '+entry.kind+' intake saves encrypted item and duplicate echo stays closed');
   await panel(entry.path);
-  await keypress('\x1bOR');await unlock();await delay(100);
+  await keypress('\x1bOR');await settled('Vault picker','Vault picker');
   // Safe item names and semantic roles are sufficient to choose; saved values stay broker-side.
-  for(let n=0;n<40;n++){
-   const rendered=visibleText();
-   if(rendered.includes('"'+entry.name+'" · '+entry.kind+' · '+entry.role))break;
-   await keypress('\x1b[B');
-   if(n===39)throw Error('Vault picker did not offer '+entry.kind);
+  // Await each rendered move: a lagging frame must not leave an extra queued
+  // arrow that silently moves past the matched item before Enter.
+  const pickerChoice=()=>visibleText().match(/Vault picker (\d+)\/(\d+): ([^\n]*)/);
+  for(let n=0;;n++){
+   const [,position,total,choice]=pickerChoice()||[];assert.ok(total,'Vault picker renders its current choice');
+   if(choice.includes('"'+entry.name+'" · '+entry.kind+' · '+entry.role))break;
+   if(n>=Number(total))throw Error('Vault picker did not offer '+entry.kind);
+   const next=String(Number(position)%Number(total)+1);
+   await keypress('\x1b[B');await wait(()=>pickerChoice()?.[1]===next,'Vault picker choice '+next);
   }
-  await keypress('\r');await unlock();const beforeSave=saveCalls.length;await submit();
+  await keypress('\r');await settled('Selected Vault:','selected Vault field');const beforeSave=saveCalls.length;await submit();
   assert.equal(await activePage.locator(entry.selector).inputValue(),entry.secret);
   assert.equal(saveCalls.length,beforeSave);
   pass('Actual TUI F3 reuses '+entry.kind+' through encrypted broker into Chrome');

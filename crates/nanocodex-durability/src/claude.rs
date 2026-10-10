@@ -439,6 +439,18 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
         })
     }
 
+    fn cancel_unstarted(&self, id: String) -> PolicyFuture<'_, bool> {
+        Box::pin(async move {
+            // The state machine refuses a checkpoint-free cancellation once an
+            // attempt is running or recorded steps, continuation or steering.
+            match self.owner.cancel(id, None).await {
+                Ok(()) => Ok(true),
+                Err(crate::Error::CancellationCheckpointRequired { .. }) => Ok(false),
+                Err(error) => Err(agent_error(error)),
+            }
+        })
+    }
+
     fn release(&self, id: String) -> PolicyFuture<'_, ()> {
         Box::pin(async move { self.owner.release_claim(id).await.map_err(agent_error) })
     }

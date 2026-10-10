@@ -26,7 +26,9 @@ const req = (path: string, body?: unknown) => new Request(`https://session.inter
 });
 async function fixture() {
   const id = crypto.randomUUID();
-  await runInDurableObject(sessions.getByName(id), async (_session, state) => {
+  await runInDurableObject(sessions.getByName(id), async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,
       authorization_epoch,public_origin,runtime_profile,last_active) VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,
       id, actor.userId, actor.organizationId, actor.teamId, Date.now());
@@ -146,7 +148,9 @@ it("serves only the requested grant-owned publication and immutable bytes", asyn
 });
 
 it("finishes a Connect turn without a native file host and retains files through archival", async () => {
-  const { DEFAULT_AGENT_SETTINGS } = await import("../src/agent-settings");
+  // Since 398726862 the default is Claude, which Connect grants cannot use; the
+  // public create route selects an OpenAI default for them (claude_forbidden).
+  const { DEFAULT_OPENAI_AGENT_SETTINGS } = await import("../src/agent-settings");
   const id = crypto.randomUUID(), turnId = crypto.randomUUID(), generation = crypto.randomUUID().toUpperCase();
   const inputPath = `/brain/connect/${grantId}/inputs/${generation}/source.txt`;
   const outputRoot = `/brain/connect/${grantId}/outputs/${turnId}`;
@@ -188,7 +192,7 @@ it("finishes a Connect turn without a native file host and retains files through
     };
     expect((await call("/create", "POST", { session_id: id, owner_id: actor.userId,
       organization_id: actor.organizationId, team_id: actor.teamId, authorization_epoch: 1,
-      public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS, configuration: {} })).status).toBe(200);
+      public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS, configuration: {} })).status).toBe(200);
     try {
       expect((await call(`/inputs/${generation}/source.txt`, "PUT", encoded("CLOUD-ONLY-STEP"))).status).toBe(201);
       const input = "Use the uploaded source and publish its bytes to the scoped output directory.";

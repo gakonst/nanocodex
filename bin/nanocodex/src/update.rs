@@ -49,6 +49,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+const METADATA_ATTEMPTS: u32 = 5;
+const METADATA_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Wall-clock limit for every metadata attempt and wait, including
+/// server-requested delays; a longer requested wait fails immediately.
+const METADATA_DEADLINE: Duration = Duration::from_secs(90);
+const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reuse only the exact running CLI covered by this release manifest.
 fn verified_running_binary(manifest: &[u8], asset_name: &str) -> Option<Vec<u8>> {
@@ -86,11 +93,11 @@ pub(crate) async fn linux_hand_binary() -> Result<Vec<u8>> {
         return Ok(binary);
     }
     let client = Client::builder()
-        .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
+        .user_agent(format!("nanocodex/{}", version::semver()))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()?;
-    let release = if version::IS_NIGHTLY {
+    let release = if version::is_nightly() {
         let pointer = fetch_release(&client, NIGHTLY_RELEASE_API, "nightly release").await?;
         fetch_immutable_nightly(&client, &pointer).await?
     } else {
@@ -110,7 +117,7 @@ pub(crate) async fn linux_hand_binary() -> Result<Vec<u8>> {
 /// Older updater binaries install executables without their voice archive.
 /// Repair only this exact managed stable installation, on first voice use.
 pub(crate) async fn ensure_installed_voice_runtime() -> Result<()> {
-    if version::IS_NIGHTLY || std::env::var_os("NANOCODEX_VOICE_PACKAGE").is_some() {
+    if version::is_nightly() || std::env::var_os("NANOCODEX_VOICE_PACKAGE").is_some() {
         return Ok(());
     }
     let store = VersionStore::discover()?;
@@ -120,7 +127,7 @@ pub(crate) async fn ensure_installed_voice_runtime() -> Result<()> {
         return Ok(());
     };
     let client = Client::builder()
-        .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
+        .user_agent(format!("nanocodex/{}", version::semver()))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()?;
@@ -145,10 +152,30 @@ pub(crate) async fn ensure_installed_voice_runtime() -> Result<()> {
 }
 
 pub(crate) fn prepare_legacy_nightly_bootstrap() -> Result<()> {
-    if version::IS_NIGHTLY {
+    if version::is_nightly() {
         VersionStore::prepare_legacy_nightly_bootstrap()?;
     }
     Ok(())
+}
+
+/// Repair entrypoints left by an older updater that activated this version.
+/// Uses the running executable's own installation, never NANOCODEX_DIR.
+pub(crate) fn repair_legacy_activation() {
+    #[cfg(unix)]
+    {
+        let Some(root) = crate::launcher::running_install_root() else {
+            return;
+        };
+        match VersionStore::at_root(root).repair_legacy_activation() {
+            Ok(true) => eprintln!(
+                "Repaired Nanocodex command links left by an older updater (nanocodex2, nc, ncl, nanocodex-hand, nc-hand)"
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("warning: could not repair Nanocodex command links: {error:#}");
+            }
+        }
+    }
 }
 
 /// Repair missing default scheduling only for an installed, managed CLI.
@@ -165,7 +192,7 @@ pub(crate) fn ensure_default_automatic_updates() -> Result<()> {
         return Ok(());
     }
     if store.active()?.is_some() && root.join("updater/nanocodex").is_file() {
-        automatic::ensure_default(&root, version::IS_NIGHTLY)?;
+        automatic::ensure_default(&root, version::is_nightly())?;
     }
     Ok(())
 }
@@ -337,7 +364,7 @@ impl Update {
         }
         let manager_key = manager_key(&manager_version);
         store.prepare(&manager_key)?;
-        automatic::ensure_default(store.root(), self.nightly || version::IS_NIGHTLY)?;
+        automatic::ensure_default(store.root(), self.nightly || version::is_nightly())?;
         VersionStore::promote_running_legacy_nightly_manager()?;
         let previous = store.active()?.unwrap_or_else(|| manager_key.clone());
         if self.background
@@ -398,7 +425,7 @@ impl Update {
         }
 
         let client = Client::builder()
-            .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
+            .user_agent(format!("nanocodex/{}", version::semver()))
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
             .build()
@@ -1306,19 +1333,236 @@ async fn activate_transaction<S: ServiceTransaction>(
     Ok(true)
 }
 
+/// GitHub release metadata is one small idempotent GET. Transient network
+/// failures, 408, 5xx and rate limits with a short server-requested wait are
+/// retried within one wall-clock deadline; missing releases, refusals and
+/// malformed metadata fail on the first response.
 async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<Release> {
-    client
+    let deadline = std::time::Instant::now() + METADATA_DEADLINE;
+    for attempt in 1..=METADATA_ATTEMPTS {
+        let timeout = METADATA_REQUEST_TIMEOUT
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
+        let (reason, requested) = match fetch_release_once(client, url, description, timeout).await
+        {
+            Ok(release) => return Ok(release),
+            Err(MetadataFailure::Permanent(error)) => return Err(error),
+            Err(MetadataFailure::Transient {
+                reason,
+                retry_after,
+            }) => (reason, retry_after),
+        };
+        if attempt == METADATA_ATTEMPTS {
+            bail!("could not fetch the {description} after {attempt} attempts: {reason}");
+        }
+        let delay =
+            requested.unwrap_or_else(|| METADATA_RETRY_DELAY.saturating_mul(1 << (attempt - 1)));
+        let limit = METADATA_DEADLINE.as_secs();
+        if delay > deadline.saturating_duration_since(std::time::Instant::now()) {
+            if requested.is_some() {
+                bail!(
+                    "could not fetch the {description}: {reason}. GitHub asked to wait {}, longer than the {limit}s update retry limit; try again after that time",
+                    human_wait(delay)
+                );
+            }
+            bail!("could not fetch the {description} within {limit}s: {reason}");
+        }
+        eprintln!(
+            "{description} metadata unavailable ({reason}); retrying {}/{METADATA_ATTEMPTS} in {:.1}s...",
+            attempt + 1,
+            delay.as_secs_f64()
+        );
+        tokio::time::sleep(delay).await;
+    }
+    unreachable!("the metadata attempt loop always returns")
+}
+
+enum MetadataFailure {
+    Transient {
+        reason: String,
+        retry_after: Option<Duration>,
+    },
+    Permanent(eyre::Report),
+}
+
+async fn fetch_release_once(
+    client: &Client,
+    url: &str,
+    description: &str,
+    timeout: Duration,
+) -> std::result::Result<Release, MetadataFailure> {
+    let response = client
         .get(url)
+        .timeout(timeout)
         .header(header::ACCEPT, "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
-        .wrap_err_with(|| format!("failed to query the {description}"))?
-        .error_for_status()
-        .wrap_err_with(|| format!("GitHub did not return the {description}"))?
-        .json::<Release>()
-        .await
-        .wrap_err_with(|| format!("GitHub returned invalid {description} metadata"))
+        .map_err(|error| MetadataFailure::Transient {
+            reason: error_chain(&error),
+            retry_after: None,
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let headers = response.headers().clone();
+        // GitHub explains refusals in a small JSON body; a lost body is not fatal.
+        let message = read_limited(response, 4096)
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+            .and_then(|body| {
+                body["message"]
+                    .as_str()
+                    .map(|text| text.chars().take(200).collect::<String>())
+            });
+        return Err(classify_metadata_status(
+            status,
+            &headers,
+            message,
+            url,
+            description,
+        ));
+    }
+    let body = match read_limited(response, MAX_METADATA_BYTES).await {
+        Ok(body) => body,
+        Err(None) => {
+            return Err(MetadataFailure::Permanent(eyre!(
+                "GitHub returned {description} metadata larger than {} MiB",
+                MAX_METADATA_BYTES / (1024 * 1024)
+            )));
+        }
+        Err(Some(error)) => {
+            return Err(MetadataFailure::Transient {
+                reason: format!("response interrupted: {}", error_chain(&error)),
+                retry_after: None,
+            });
+        }
+    };
+    serde_json::from_slice::<Release>(&body).map_err(|error| {
+        MetadataFailure::Permanent(
+            eyre!(error).wrap_err(format!("GitHub returned invalid {description} metadata")),
+        )
+    })
+}
+
+/// Read at most `limit` bytes; `Err(None)` means the body exceeded it.
+async fn read_limited(
+    response: reqwest::Response,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, Option<reqwest::Error>> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(Some)?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn classify_metadata_status(
+    status: StatusCode,
+    headers: &header::HeaderMap,
+    message: Option<String>,
+    url: &str,
+    description: &str,
+) -> MetadataFailure {
+    let header_text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+    };
+    let detail = message.map(|text| format!(": {text}")).unwrap_or_default();
+    let retry_after = header_text("retry-after").and_then(parse_retry_after);
+    let quota_exhausted = header_text("x-ratelimit-remaining") == Some("0");
+    if matches!(
+        status,
+        StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+    ) && quota_exhausted
+    {
+        let limit = header_text("x-ratelimit-limit").unwrap_or("unknown");
+        let reset = header_text("x-ratelimit-reset").and_then(|value| value.parse::<i64>().ok());
+        let now = chrono::Utc::now().timestamp();
+        // Untrusted headers: saturate rather than overflow on extreme values.
+        let wait = reset.map(|reset| {
+            Duration::from_secs(
+                u64::try_from(reset.saturating_sub(now))
+                    .unwrap_or(0)
+                    .saturating_add(1),
+            )
+        });
+        let reset_text = reset
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
+            .map_or_else(
+                || "at an unreported time".to_owned(),
+                |at| format!("at {}", at.format("%Y-%m-%d %H:%M:%S UTC")),
+            );
+        return MetadataFailure::Transient {
+            reason: format!(
+                "GitHub API rate limit exhausted (HTTP {}; {limit} requests/hour for unauthenticated clients on this network); the quota resets {reset_text}",
+                status.as_u16()
+            ),
+            // Honour the longer of Retry-After and the quota reset.
+            retry_after: retry_after.max(wait).or(Some(Duration::MAX)),
+        };
+    }
+    let http = format!("HTTP {status}{detail}");
+    if status == StatusCode::TOO_MANY_REQUESTS
+        || (status == StatusCode::FORBIDDEN && retry_after.is_some())
+    {
+        return MetadataFailure::Transient {
+            reason: format!("GitHub rate limited the request ({http})"),
+            retry_after,
+        };
+    }
+    if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
+        return MetadataFailure::Transient {
+            reason: http,
+            retry_after,
+        };
+    }
+    MetadataFailure::Permanent(if status == StatusCode::NOT_FOUND {
+        eyre!("GitHub has no {description} ({http}) at {url}; check the requested version or tag")
+    } else {
+        eyre!("GitHub did not return the {description} ({http})")
+    })
+}
+
+/// Retry-After is either delay seconds or an HTTP date.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let seconds = at
+        .timestamp()
+        .saturating_sub(chrono::Utc::now().timestamp());
+    Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
+}
+
+fn human_wait(delay: Duration) -> String {
+    if delay == Duration::MAX {
+        return "until an unreported reset".to_owned();
+    }
+    let seconds = delay.as_secs();
+    if seconds >= 120 {
+        format!("about {} minutes", seconds.div_ceil(60))
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 async fn fetch_immutable_nightly(client: &Client, pointer: &Release) -> Result<Release> {
@@ -1353,10 +1597,10 @@ fn parse_pr_number(value: &str) -> std::result::Result<u64, String> {
 }
 
 fn manager_key(version_number: &Version) -> String {
-    if version::IS_NIGHTLY {
+    if version::is_nightly() {
         "nightly".to_owned()
-    } else if version::SEMVER_VERSION.contains("-dev+") {
-        format!("dev-{}", version::SEMVER_VERSION)
+    } else if version::semver().contains("-dev+") {
+        format!("dev-{}", version::semver())
     } else {
         version_number.to_string()
     }

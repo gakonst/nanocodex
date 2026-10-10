@@ -651,12 +651,38 @@ fn exposure_controls_direct_visibility_without_removing_code_mode_access() {
 
 #[test]
 fn per_tool_exposure_selects_direct_and_code_mode_surfaces_independently() {
+    // Shipped agents are Code Mode-only: per-tool direct overrides never reach
+    // the model surface there. The standalone direct adapter still honors them.
+    let code_mode_only = Tools::builder()
+        .without_defaults()
+        .tool_with_exposure(
+            NamedTool {
+                name: "direct_only",
+                output: "direct",
+            },
+            ToolExposure::DirectOnly,
+        )
+        .build()
+        .unwrap();
+    assert_eq!(
+        ToolRuntime::new_with_tools(".", None, None, &code_mode_only)
+            .model_specs("test-session")
+            .iter()
+            .map(ToolDefinition::name)
+            .collect::<Vec<_>>(),
+        ["exec", "wait"]
+    );
+
     let tools = Tools::builder()
         .without_defaults()
-        .tool(NamedTool {
-            name: "nested_only",
-            output: "nested",
-        })
+        .exposure(ToolExposure::DirectAndCodeMode)
+        .tool_with_exposure(
+            NamedTool {
+                name: "nested_only",
+                output: "nested",
+            },
+            ToolExposure::CodeModeOnly,
+        )
         .tool_with_exposure(
             NamedTool {
                 name: "direct_only",
@@ -1111,7 +1137,7 @@ async fn direct_model_calls_reach_activated_dynamic_tools() {
 }
 
 #[tokio::test]
-async fn code_mode_can_search_and_call_a_deferred_tool_in_one_cell() {
+async fn code_mode_calls_a_deferred_tool_discovered_by_an_earlier_cell() {
     let tools = Tools::builder()
         .without_defaults()
         .provider(DeferredProvider {
@@ -1130,20 +1156,61 @@ async fn code_mode_can_search_and_call_a_deferred_tool_in_one_cell() {
             .is_some_and(|description| !description.contains("Shared MCP Types:")),
         "ordinary deferred providers must not opt into MCP-specific guidance"
     );
-    let execution = runtime
+    let context = || {
+        ToolContext::new(
+            "test-model",
+            "test-session",
+            "test-call",
+            &[],
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+    };
+    let last_text = |output: ToolOutputBody| {
+        let ToolOutputBody::Content(content) = output else {
+            panic!("expected content output");
+        };
+        serde_json::to_value(content)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .last()
+            .cloned()
+    };
+
+    // Each cell pins its catalog at admission (docs/codex-code-mode.md, "Warm
+    // discovery and admission"): a tool activated by search is callable from
+    // the next cell, while the searching cell rejects it locally.
+    let discovery = runtime
         .execute_code(
             r#"
 const found = await tools.tool_search({ query: "echo" });
-const result = await tools[found.name]({ value: 21 });
+let code;
+try {
+  await tools[found.name]({ value: 21 });
+} catch (error) {
+  code = error.code;
+}
+text(found.name + " " + code);
+"#,
+            context(),
+        )
+        .await
+        .unwrap();
+    assert!(discovery.success);
+    assert_eq!(discovery.nested_calls.len(), 1);
+    assert_eq!(discovery.nested_calls[0].name, "tool_search");
+    assert_eq!(
+        last_text(discovery.output),
+        Some(json!({ "type": "input_text", "text": "deferred_echo TOOL_NOT_AVAILABLE" }))
+    );
+
+    let execution = runtime
+        .execute_code(
+            r#"
+const result = await tools.deferred_echo({ value: 21 });
 text(result.value);
 "#,
-            ToolContext::new(
-                "test-model",
-                "test-session",
-                "test-call",
-                &[],
-                DEFAULT_TOOL_OUTPUT_TOKENS,
-            ),
+            context(),
         )
         .await
         .unwrap();
@@ -1154,18 +1221,10 @@ text(result.value);
         model_specs_before,
         "activating deferred tools must not change the model request prefix"
     );
-    assert_eq!(execution.nested_calls.len(), 2);
-    assert_eq!(execution.nested_calls[0].name, "tool_search");
-    assert_eq!(execution.nested_calls[1].name, "deferred_echo");
-    let ToolOutputBody::Content(content) = execution.output else {
-        panic!("expected content output");
-    };
+    assert_eq!(execution.nested_calls.len(), 1);
+    assert_eq!(execution.nested_calls[0].name, "deferred_echo");
     assert_eq!(
-        serde_json::to_value(content)
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .last(),
-        Some(&json!({ "type": "input_text", "text": "21" }))
+        last_text(execution.output),
+        Some(json!({ "type": "input_text", "text": "21" }))
     );
 }

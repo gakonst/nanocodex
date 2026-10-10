@@ -59,9 +59,18 @@ test("native creation uses live key authority once and the existing internal rou
 });
 
 test("query and upgrade errors occur before auth or creation", async () => {
-  for (const query of ["?model=gpt-6-sol", "?model=gpt-6-astra&model=gpt-6.1-sol", "?unknown=1", "?thinking=bad", "?fast_mode=1", "?public_origin=https://evil", "?reasoning_mode=pro"]) {
-    const f = fixture(); assert.equal((await run(request(query), f.env)).status, 400); assert.deepEqual(f.calls, { auth: 0, session: 0, fallback: 0 });
+  // Cross-field combinations the shared settings contract still refuses (Claude is
+  // standard-mode only; Astra/Sol need thinking) fail before auth, like malformed keys.
+  for (const query of ["?model=gpt-6-sol", "?model=gpt-6-astra&model=gpt-6.1-sol", "?unknown=1", "?thinking=bad", "?fast_mode=1", "?public_origin=https://evil",
+    "?reasoning_mode=bad", "?model=claude-opus-5-5&reasoning_mode=pro", "?model=gpt-6-astra&thinking=none"]) {
+    const f = fixture(); assert.equal((await run(request(query), f.env)).status, 400, query); assert.deepEqual(f.calls, { auth: 0, session: 0, fallback: 0 });
   }
+  // Astra Pro is a supported selection (#913): the default model with pro is admitted
+  // through the live key authority exactly once and forwarded unchanged.
+  const pro = fixture(); assert.equal((await run(request("?reasoning_mode=pro"), pro.env)).status, 200);
+  assert.deepEqual(pro.calls, { auth: 1, session: 1, fallback: 0 });
+  assert.equal(new URL(pro.forwarded().url).searchParams.get("reasoning_mode"), "pro");
+  assert.equal(new URL(pro.forwarded().url).searchParams.get("model"), "gpt-6-astra");
   const f = fixture(), req = request(); req.headers.delete("upgrade");
   assert.equal((await run(req, f.env)).status, 426); assert.deepEqual(f.calls, { auth: 0, session: 0, fallback: 0 });
 });

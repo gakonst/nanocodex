@@ -533,6 +533,11 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
           controller.enqueue(new TextEncoder().encode(`event: message_start\ndata: ${JSON.stringify({type:'message_start',message:{id:'cancel-fixture',role:'assistant',model:body.model,content:[],usage:{input_tokens:10,output_tokens:0}}})}\n\n`));
         } }),{headers:{'content-type':'text/event-stream'}});
       }
+      if(prompt.includes('Live nested Code Mode proof')) {
+        // The exec yields while its nested call still runs; the generic running
+        // branch above continues it through wait.
+        return code('// @exec: {"yield_time_ms": 200}\nconst slow = await tools.exec_command({cmd:"sleep 2; printf LIVE_NESTED_MANAGED",workdir:"/brain",yield_time_ms:10000,max_output_tokens:1000}); let failure = "none"; try { await tools.exec_command({}); } catch (error) { failure = "caught"; } text(slow.output, failure);');
+      }
       assert.ok(admits('exec_command'));assert.ok(admits('Write'));assert.ok(admits('Read'));
       if(prompt.includes('Write durable proof')){writes++;return use('Write',{file_path:'/brain/proof.txt',content:'NATIVE_CLAUDE_DURABLE_PROOF'});}
       if(prompt.includes('Read durable proof')){
@@ -763,6 +768,32 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
     await mf.dispose(); mf=new Miniflare(options);
     await turn(agent,'Run exec_command durable proof','journey-exec-command');
     {
+      // Live nested Code Mode events through the public Worker and real Rust
+      // WASM: the yielded exec announces its still-running nested call before
+      // the parent result, and the wait reports it exactly once.
+      const live=(await call('/v1/agents','POST',{},201)).agent_id;
+      await turn(live,'Live nested Code Mode proof','journey-live-nested');
+      const liveHistory=await call(`/v1/agents/${live}/events/history?after=0&limit=256`);
+      await writeFile(resolve(evidence,'live-nested-history.json'),JSON.stringify(liveHistory,null,2));
+      const rows=liveHistory.data.map(row=>row.event).filter(event=>event&&['tool.call','tool.result'].includes(event.type));
+      const exec=rows.find(event=>event.type==='tool.call'&&event.payload.tool==='exec').payload.call_id;
+      const wait=rows.find(event=>event.type==='tool.call'&&event.payload.tool==='wait').payload.call_id;
+      const at=(type,id)=>rows.findIndex(event=>event.type===type&&event.payload.call_id===id);
+      const nested=[...new Set(rows.map(event=>event.payload.call_id).filter(id=>id.startsWith(exec+'/code-')))];
+      assert.equal(nested.length,2,'slow and failing nested calls are both published');
+      for (const id of nested) {
+        const own=rows.filter(event=>event.payload.call_id===id);
+        assert.deepEqual(own.map(event=>event.type),['tool.call','tool.result'],`${id} has exactly one start and one result`);
+        assert.ok(own.every(event=>event.payload.parent_call_id===exec),`${id} keeps its parent exec identity`);
+      }
+      const slow=nested.find(id=>JSON.stringify(rows[at('tool.call',id)].payload.arguments).includes('LIVE_NESTED_MANAGED'));
+      assert.ok(at('tool.call',slow)<at('tool.result',exec),'nested start is published live before the yielded exec result');
+      assert.ok(at('tool.result',exec)<at('tool.result',slow)&&at('tool.result',slow)<at('tool.result',wait),'slow result arrives during the wait observation');
+      assert.deepEqual(nested.map(id=>rows[at('tool.result',id)].payload.status).sort(),['completed','failed'],'nested outcomes keep their status');
+      assert.match(JSON.stringify(rows[at('tool.result',wait)].payload),/LIVE_NESTED_MANAGED caught/);
+      trace.push({liveNested:{exec,wait,nested}});
+    }
+    {
       // Attachments: images and inline PDFs reach Claude as native blocks.
       const media=(await call('/v1/agents','POST',{settings:{model:'claude-opus-4-6',thinking:'low',reasoning_mode:'standard',fast_mode:false}},201)).agent_id;
       const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -782,14 +813,16 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       const document=sent.find(block=>block.type==='document');
       assert.deepEqual(document?.source,{type:'base64',media_type:'application/pdf',data:pdf.split(',')[1]});
       assert.equal(document.title,'proof.pdf');
-      assert.deepEqual(sent.filter(block=>block.type==='image').map(block=>block.source.media_type), ['image/png','image/jpeg','image/gif','image/webp']);
+      assert.deepEqual(sent.filter(block=>block.type==='image').map(block=>block.source.media_type), ['image/png','image/jpeg','image/png','image/webp']); // GIF prompt images become PNG (876d83ea1)
       assert.deepEqual(sent.find(block=>block.title==='notes.txt')?.source,{type:'text',media_type:'text/plain',data:notes});
       await mf.dispose(); mf=new Miniflare(options);
       await turn(media,'MULTIMODAL_PROOF recall all attached documents','journey-media-reopen');
       const replay=mediaRequests.at(-1).messages.flatMap(message=>Array.isArray(message.content)?message.content:[]);
-      for(const mime of ['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain']) {
+      for(const mime of ['image/png','image/jpeg','image/webp','application/pdf','text/plain']) {
         assert.ok(replay.some(block=>block.source?.media_type===mime), `reopened history retains ${mime}`);
       }
+      // The GIF was sent as a PNG (876d83ea1): history keeps both PNG images.
+      assert.ok(replay.filter(block=>block.type==='image'&&block.source?.media_type==='image/png').length>=2,'reopened history retains the PNG and the converted GIF');
       // Exercise the same multipart upload + descriptor sent by iOS/macOS.
       const attachmentId='01234567-89ab-4def-8123-456789abcdef';
       const original=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
@@ -800,7 +833,10 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       await call(attachmentPath+'/complete','POST');
       const descriptor='Attached original image file.\n[Image attachment]\n'+JSON.stringify({path:upload.path,media_type:'image/gif',preview_path:`/brain/attachments/${attachmentId}/preview.jpg`});
       await turn(media,[{type:'text',text:'MULTIMODAL_PROOF original upload'},{type:'text',text:descriptor}],'journey-original');
-      assert.deepEqual(mediaRequests.at(-1).latest.content.find(block=>block.type==='image')?.source,{type:'base64',media_type:'image/gif',data:original.toString('base64')});
+      // The frozen GIF original is prepared like any prompt image and sent as PNG (876d83ea1), not as the JPEG preview.
+      const frozen=mediaRequests.at(-1).latest.content.find(block=>block.type==='image')?.source;
+      assert.equal(frozen?.type,'base64'); assert.equal(frozen?.media_type,'image/png');
+      assert.ok(Buffer.from(frozen.data,'base64').subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])),'frozen original is a PNG');
       const missing=descriptor.replaceAll(attachmentId,'01234567-89ab-4def-8123-456789abcdee');
       await turn(media,[{type:'text',text:'MULTIMODAL_PROOF missing upload'},{type:'text',text:missing}],'journey-missing');
       assert.match(JSON.stringify(mediaRequests.at(-1).latest.content),/Image attachment unavailable to Claude/);

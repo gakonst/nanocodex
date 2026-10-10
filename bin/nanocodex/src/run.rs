@@ -149,11 +149,6 @@ impl Run {
         // them so every started call in the JSONL is closed.
         let late_events = write_settled_jsonl(&mut events, &mut stdout).await;
         drop(events);
-        let browser_shutdown_result = if let Some(browser) = configured.browser {
-            browser.shutdown().await
-        } else {
-            Ok(())
-        };
         let vm_shutdown_result = if let Some(vm) = configured.vm {
             vm.shutdown().await
         } else {
@@ -167,7 +162,6 @@ impl Run {
         run_result?;
         agent_shutdown?;
         late_events?;
-        browser_shutdown_result?;
         vm_shutdown_result?;
         shutdown_result
     }

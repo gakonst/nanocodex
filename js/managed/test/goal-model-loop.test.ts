@@ -36,6 +36,7 @@ it("continues a real managed model turn and stops at the goal token budget", asy
     } });
     const now = Date.now();
     const threadId = crypto.randomUUID();
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES (1,?,'fixture-owner','fixture-org','fixture-team',1,'https://nanocodex.example/','managed',?)`, threadId, now);
     state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));

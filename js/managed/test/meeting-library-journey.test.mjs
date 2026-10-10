@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { startMeetingFixture, fixtureKeys } from "../scripts/meeting-library-fixture.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 test("meeting library HTTP journey: durable revisions, isolation, summaries and permanent deletion", {timeout:120000}, async()=>{
  const output=resolve("../../output/meeting-library-journey"),persist=output+"/state",trace=[];

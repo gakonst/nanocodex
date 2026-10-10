@@ -38,10 +38,14 @@ if (!packages) {
 const lint = ["--", "-D", "warnings", "-A", "clippy::missing_const_for_fn"];
 const selected = packages === "*" ? null : packages.split(/\s+/).filter(Boolean);
 run("cargo", ["fmt", "--all", "--", "--check"]);
-// Features that only compile on Linux (seccomp, landlock, netlink). CI lints on
-// Linux with every feature; other hosts lint these packages without them.
-const linuxOnlyFeatures = process.platform === "linux" ? {} : { "nanocodex-vm": ["guest-runtime"] };
-const restricted = Object.keys(linuxOnlyFeatures).filter(p => !selected || selected.includes(p));
+// Features withheld from --all-features linting, per package:
+// * packaging-only: embedded-screen-helpers include_bytes! the release payload
+//   named by NANOCODEX_LINUX_SCREEN_BUNDLE; release builds compile and verify it;
+// * Linux-only (seccomp, landlock, netlink): CI lints on Linux with every
+//   feature; other hosts lint these packages without them.
+const withheldFeatures = { "nanocodex-hand-daemon": ["embedded-screen-helpers"] };
+if (process.platform !== "linux") withheldFeatures["nanocodex-vm"] = ["guest-runtime"];
+const restricted = Object.keys(withheldFeatures).filter(p => !selected || selected.includes(p));
 const library = selected
   ? selected.filter(p => p !== "nanocodex-bin" && !restricted.includes(p)).flatMap(p => ["-p", p])
   : ["--workspace", "--exclude", "nanocodex-bin", ...restricted.flatMap(p => ["--exclude", p])];
@@ -50,8 +54,8 @@ if (restricted.length) {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], { encoding: "utf8" }));
   for (const name of restricted) {
     const features = Object.keys(metadata.packages.find(p => p.name === name).features)
-      .filter(feature => !linuxOnlyFeatures[name].includes(feature));
-    run("cargo", ["clippy", "--locked", "-p", name, "--all-targets", "--features", features.join(","), ...lint]);
+      .filter(feature => feature !== "default" && !withheldFeatures[name].includes(feature));
+    run("cargo", ["clippy", "--locked", "-p", name, "--all-targets", ...(features.length ? ["--features", features.join(",")] : []), ...lint]);
   }
 }
 // The CLI crate is linted for its binary and benchmark only; it reuses the

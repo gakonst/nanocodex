@@ -45,20 +45,30 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("pending");
-            let (marker, color) = match status {
-                "completed" => ("●", theme.thinking_medium()),
-                "in_progress" => ("◐", theme.accent()),
-                _ => ("○", theme.muted()),
-            };
             let text = step.get("step").and_then(Value::as_str).unwrap_or_default();
-            details.extend(super::super::markdown::wrap_plain(
-                &format!("{marker} {text}"),
-                width,
-                Style::default().fg(color),
-            ));
+            details.extend(checklist_line(status, text, width, theme));
         }
     }
     presentation
         .unselectable_details(details)
         .footer(format!("{completed}/{total} complete"))
+}
+
+/// One plan or todo item with its completion marker.
+pub(super) fn checklist_line(
+    status: &str,
+    text: &str,
+    width: u16,
+    theme: &Theme,
+) -> Vec<ratatui::text::Line<'static>> {
+    let (marker, color) = match status {
+        "completed" => ("●", theme.thinking_medium()),
+        "in_progress" => ("◐", theme.accent()),
+        _ => ("○", theme.muted()),
+    };
+    super::super::markdown::wrap_plain(
+        &format!("{marker} {text}"),
+        width,
+        Style::default().fg(color),
+    )
 }

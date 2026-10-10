@@ -1,0 +1,938 @@
+//! Account-wide native workspace attachment, independent of an agent or VM.
+
+use std::{
+    fs::{self, File, OpenOptions},
+    future::Future,
+    io::{ErrorKind, Write},
+    path::{Path, PathBuf},
+};
+
+use nanocodex_managed::{ManagedClient, ManagedError};
+use nanocodex_oai_tools::{
+    Tools, WorkspaceTools,
+    attachment::{
+        AttachmentError, AttachmentEvent, AttachmentMachine, AttachmentMetadata, AttachmentTarget,
+    },
+};
+use serde::{Deserialize, Serialize};
+
+use super::{hand_observability::HandObservabilityArgs, host};
+
+struct NativeHand {
+    observability: HandObservabilityArgs,
+    workspace: PathBuf,
+    state_dir: Option<PathBuf>,
+    machine_name: Option<String>,
+    vm_provider: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Identity {
+    machine_id: uuid::Uuid,
+    workspace: PathBuf,
+}
+
+pub(super) struct NativeState {
+    pub(super) machine: AttachmentMachine,
+    _lock: NativeStateLock,
+    directory: PathBuf,
+    service_status: bool,
+    connection_phase: std::sync::atomic::AtomicU8,
+    screen_ready: std::sync::atomic::AtomicBool,
+}
+
+pub(super) struct NativeStateLock(pub(super) File);
+
+impl Drop for NativeStateLock {
+    fn drop(&mut self) {
+        // Closing alone leaves the lock held by descriptors inherited during a
+        // concurrent fork. Release ownership explicitly, including error paths.
+        let _ = self.0.unlock();
+    }
+}
+
+impl NativeState {
+    // A persistent native service publishes bounded readiness independently of
+    // CLI/controller lifetime. DeviceHand owns its richer status file separately.
+    fn publish_service_status(&self, status: &str) -> Result<(), ManagedError> {
+        self.connection_phase.store(
+            match status {
+                "connected" => 1,
+                "stopped" => 2,
+                _ => 0,
+            },
+            std::sync::atomic::Ordering::Release,
+        );
+        self.write_service_status()
+    }
+
+    fn publish_screen_status(&self, ready: bool) -> Result<(), ManagedError> {
+        self.screen_ready
+            .store(ready, std::sync::atomic::Ordering::Release);
+        self.write_service_status()
+    }
+
+    fn write_service_status(&self) -> Result<(), ManagedError> {
+        if !self.service_status {
+            return Ok(());
+        }
+        let status = match self
+            .connection_phase
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            1 => "connected",
+            2 => "stopped",
+            _ => "connecting",
+        };
+        let path = self.directory.join("status.json");
+        if path.try_exists().map_err(configuration)? {
+            require_regular(&path, false)?;
+        }
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(&self.directory).map_err(configuration)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(configuration)?;
+        }
+        let executable = std::env::current_exe().map_err(configuration)?;
+        let updated_at_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(configuration)?
+            .as_millis();
+        serde_json::to_writer(
+            &mut temporary,
+            &serde_json::json!({
+                "status": status,
+                "machine_id": self.machine.id(),
+                "updated_at_millis": updated_at_millis,
+                "screen": { "status": if self.screen_ready.load(std::sync::atomic::Ordering::Acquire) { "ready" } else { "unavailable" }, "transport": "webrtc" },
+                "daemon": {"pid": std::process::id(), "executable": executable},
+            }),
+        )
+        .map_err(configuration)?;
+        temporary.write_all(b"\n").map_err(configuration)?;
+        temporary.as_file().sync_all().map_err(configuration)?;
+        temporary.persist(&path).map_err(configuration)?;
+        Ok(())
+    }
+
+    pub(super) fn advertise_vm_provider(&mut self, provider: &str) -> Result<(), ManagedError> {
+        super::validate_vm_factory_name(provider)?;
+        let mut capabilities: Vec<String> = self
+            .machine
+            .capabilities()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        capabilities.push(format!("vm_factory:{provider}"));
+        self.machine = AttachmentMachine::new(
+            self.machine.id(),
+            self.machine.name(),
+            self.machine.workspace(),
+            capabilities,
+        )
+        .map_err(configuration)?;
+        Ok(())
+    }
+
+    pub(super) fn open(
+        workspace: &Path,
+        directory: &Path,
+        name: String,
+    ) -> Result<Self, ManagedError> {
+        let workspace = fs::canonicalize(workspace).map_err(configuration)?;
+        if !workspace.is_dir() {
+            return Err(configuration(
+                "native Hand workspace must be an existing directory",
+            ));
+        }
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(directory).map_err(configuration)?;
+        require_regular(directory, true)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if fs::metadata(directory)
+                .map_err(configuration)?
+                .permissions()
+                .mode()
+                & 0o077
+                != 0
+            {
+                return Err(configuration(
+                    "native Hand state directory must be private; restrict its permissions to 0700 or use a separate --state-dir",
+                ));
+            }
+        }
+        let lock_path = directory.join("host.lock");
+        if lock_path.exists() {
+            require_regular(&lock_path, false)?;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let lock = options.open(lock_path).map_err(configuration)?;
+        lock.try_lock()
+            .map_err(|_| configuration("another native Hand is using this state directory"))?;
+        let lock = NativeStateLock(lock);
+
+        let path = directory.join("identity.json");
+        let identity = match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                require_regular(&path, false)?;
+                let identity: Identity =
+                    serde_json::from_slice(&fs::read(&path).map_err(configuration)?)
+                        .map_err(configuration)?;
+                if identity.machine_id.get_version_num() != 4 || identity.workspace != workspace {
+                    return Err(configuration(
+                        "native Hand identity belongs to another workspace or is invalid; use its workspace or a separate --state-dir",
+                    ));
+                }
+                identity
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let identity = Identity {
+                    machine_id: uuid::Uuid::new_v4(),
+                    workspace,
+                };
+                let mut temporary =
+                    tempfile::NamedTempFile::new_in(directory).map_err(configuration)?;
+                serde_json::to_writer(&mut temporary, &identity).map_err(configuration)?;
+                temporary.write_all(b"\n").map_err(configuration)?;
+                temporary.as_file().sync_all().map_err(configuration)?;
+                temporary.persist_noclobber(&path).map_err(configuration)?;
+                identity
+            }
+            Err(error) => return Err(configuration(error)),
+        };
+        let workspace = identity
+            .workspace
+            .to_str()
+            .ok_or_else(|| configuration("native Hand workspace must be valid UTF-8"))?;
+        let capabilities = host::MACHINE_CAPABILITIES
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let machine = AttachmentMachine::new(
+            identity.machine_id.to_string(),
+            name,
+            workspace,
+            capabilities,
+        )
+        .map_err(configuration)?;
+        Ok(Self {
+            machine,
+            _lock: lock,
+            directory: directory.to_path_buf(),
+            service_status: false,
+            connection_phase: std::sync::atomic::AtomicU8::new(0),
+            screen_ready: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+fn require_regular(path: &Path, directory: bool) -> Result<(), ManagedError> {
+    let kind = fs::symlink_metadata(path)
+        .map_err(configuration)?
+        .file_type();
+    if (directory && kind.is_dir()) || (!directory && kind.is_file()) {
+        Ok(())
+    } else {
+        Err(configuration(
+            "native Hand state must use regular files and directories",
+        ))
+    }
+}
+
+pub(super) async fn serve_hand(command: super::Hand) -> Result<(), ManagedError> {
+    reject_browser_options(command.browser, command.browser_executable.as_deref())?;
+    if command.machine_id.is_some() {
+        return Err(configuration(
+            "Native Hand identities are retained automatically; use --state-dir for another workspace",
+        ));
+    }
+    if command.vm_workspace.is_none()
+        && command.state_dir.is_none()
+        && command.machine_name.is_none()
+        && command.vm_provider.is_none()
+    {
+        let _observability = command.observability.install().map_err(configuration)?;
+        let mut device = super::device_hand::DeviceHand::default();
+        device.daemon = true;
+        return super::device_hand::serve(device).await;
+    }
+    let client = super::client_from_environment(None)?;
+    serve(
+        &client,
+        NativeHand {
+            observability: command.observability,
+            workspace: match command.vm_workspace {
+                Some(path) => path.into(),
+                None => std::env::current_dir().map_err(configuration)?,
+            },
+            state_dir: command.state_dir,
+            machine_name: command.machine_name,
+            vm_provider: command.vm_provider,
+        },
+    )
+    .await
+}
+
+async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), ManagedError> {
+    let _observability = command.observability.install().map_err(configuration)?;
+    let directory = match command.state_dir {
+        Some(directory) => directory,
+        None => host::config_path()
+            .map_err(configuration)?
+            .with_file_name("native-hand"),
+    };
+    let name = command
+        .machine_name
+        .unwrap_or_else(|| host::bounded_display_name(whoami::devicename()));
+    let mut state = NativeState::open(&command.workspace, &directory, name)?;
+    state.service_status = true;
+    if let Some(provider) = command.vm_provider {
+        state.advertise_vm_provider(&provider)?;
+    }
+    let target = client.account_attachment_target()?;
+    // Display readiness must not delay shell/filesystem publication. Keep the
+    // NativeState lock until both the attachment and screen have shut down.
+    super::screen_supervisor::while_attached_observed(
+        || super::screen_native::NativeScreen::start(&target, &state.machine, &directory),
+        run(target.clone(), &state, super::service::shutdown_signal()),
+        |error| {
+            if state.publish_screen_status(error.is_none()).is_err() {
+                tracing::warn!(target: "nanocodex2", stage = "native.hand.status_write_failed", "Cannot publish bounded device service status");
+            }
+        },
+    )
+    .await
+}
+
+pub(super) fn reject_browser_options(
+    browser: bool,
+    executable: Option<&Path>,
+) -> Result<(), ManagedError> {
+    if browser || executable.is_some() {
+        return Err(configuration(
+            "Hand browser automation is disabled; use the Hand's CUA tools to interact with its desktop browser",
+        ));
+    }
+    Ok(())
+}
+
+async fn run(
+    target: AttachmentTarget,
+    state: &NativeState,
+    shutdown: impl Future<Output = Result<(), ManagedError>>,
+) -> Result<(), ManagedError> {
+    run_observed(target, state, shutdown, |_| {}).await
+}
+
+pub(super) async fn run_observed(
+    target: AttachmentTarget,
+    state: &NativeState,
+    shutdown: impl Future<Output = Result<(), ManagedError>>,
+    mut observe: impl FnMut(&AttachmentEvent),
+) -> Result<(), ManagedError> {
+    state.publish_service_status("connecting")?;
+    // WorkspaceTools uses the existing sanitized subprocess environment. Do not
+    // forward the account credential or ambient sensitive variables to programs.
+    let mut tools = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(state.machine.workspace()));
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if super::native_secure_input::NativeSecureInput::installed() {
+        tools = tools.add(super::native_secure_input::NativeSecureInput);
+    }
+    let mut machine = state.machine.clone();
+    if let Some(computer) = computer_tools().await? {
+        for tool in computer.tools() {
+            tools = tools.add(tool);
+        }
+        let mut capabilities = machine
+            .capabilities()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        capabilities.extend(["computer".to_owned(), "screen".to_owned()]);
+        machine = AttachmentMachine::new(
+            machine.id(),
+            machine.name(),
+            machine.workspace(),
+            capabilities,
+        )
+        .map_err(configuration)?;
+    }
+    let tools = tools.build().map_err(configuration)?;
+    let (attachment, mut events) = tools
+        .attach(target)
+        .metadata(AttachmentMetadata::machine(observe_resources(machine)))
+        .start()
+        .map_err(configuration)?;
+    let closed = attachment.clone();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            result = &mut shutdown => {
+                result?;
+                state.publish_service_status("stopped")?;
+                return attachment.detach().await.map_err(configuration);
+            }
+            result = closed.closed() => {
+                state.publish_service_status("stopped")?;
+                return result.map_err(|error| {
+                let status = match &error {
+                    AttachmentError::Authentication(_) => reqwest::StatusCode::UNAUTHORIZED,
+                    AttachmentError::Fenced(_) => reqwest::StatusCode::FORBIDDEN,
+                    _ => return configuration(error),
+                };
+                ManagedError::Http { status, code: "hand_attachment_access".into(), message: error.to_string() }
+                });
+            },
+            Some(event) = events.recv() => {
+              observe(&event);
+              match event {
+                AttachmentEvent::Connecting => {
+                    state.publish_service_status("connecting")?;
+                    tracing::info!(target: "nanocodex2", stage = "native.hand.connecting", "Connecting native Hand");
+                },
+                AttachmentEvent::CatalogPublished { .. } => {
+                    state.publish_service_status("connected")?;
+                    super::service::ready();
+                    tracing::info!(target: "nanocodex2",
+                    stage = "native.hand.ready", machine_id = state.machine.id(),
+                    "Native Hand is ready; press Ctrl-C to detach");
+                },
+                _ => {}
+              }
+            }
+        }
+    }
+}
+
+/// Downloads are independent of attachment readiness. Native screen controls
+/// remain available while the optional upstream provider is being prepared.
+pub(super) async fn computer_tools()
+-> Result<Option<nanocodex_computer::ComputerTools>, ManagedError> {
+    super::computer::connect_for_hand()
+        .await
+        .map_err(configuration)
+}
+
+fn configuration(error: impl std::fmt::Display) -> ManagedError {
+    ManagedError::Configuration(error.to_string())
+}
+
+// Sample once for this attachment. A long-lived publisher retains its original
+// timestamp so consumers cannot mistake startup capacity for a live reservation.
+fn observe_resources(machine: AttachmentMachine) -> AttachmentMachine {
+    use nanocodex_oai_tools::attachment::AttachmentResourceObservation;
+    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return machine;
+    };
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total = system.total_memory();
+    #[cfg(unix)]
+    let disk = nix::sys::statvfs::statvfs(machine.workspace()).ok();
+    #[cfg(unix)]
+    let (disk_total_bytes, disk_available_bytes) = disk.map_or((None, None), |disk| {
+        (
+            u64::try_from(u128::from(disk.blocks()) * u128::from(disk.fragment_size())).ok(),
+            u64::try_from(u128::from(disk.blocks_available()) * u128::from(disk.fragment_size()))
+                .ok(),
+        )
+    });
+    #[cfg(not(unix))]
+    let (disk_total_bytes, disk_available_bytes) = (None, None);
+    machine.with_resources(AttachmentResourceObservation {
+        observed_at_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        cpu_logical_count: std::thread::available_parallelism()
+            .ok()
+            .and_then(|count| u32::try_from(count.get()).ok()),
+        memory_total_bytes: (total > 0).then_some(total),
+        memory_available_bytes: (total > 0).then(|| system.available_memory()),
+        disk_total_bytes,
+        disk_available_bytes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use axum::{
+        Router,
+        extract::{
+            State, WebSocketUpgrade,
+            ws::{Message, WebSocket},
+        },
+        http::HeaderMap,
+        routing::get,
+    };
+    use clap::Parser as _;
+    use serde_json::{Value, json};
+    use tokio::sync::{mpsc, oneshot};
+
+    use super::*;
+
+    fn private_state_directory() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn native_computer_advertises_its_factory_without_changing_identity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let mut state =
+            NativeState::open(workspace.path(), directory.path(), "Computer".into()).unwrap();
+        let identity = state.machine.id().to_owned();
+        assert!(state.advertise_vm_provider("cf_sandbox").is_err());
+        assert!(state.advertise_vm_provider("bad provider").is_err());
+        state.advertise_vm_provider("linux-computer").unwrap();
+        assert_eq!(state.machine.id(), identity);
+        assert!(
+            state
+                .machine
+                .capabilities()
+                .iter()
+                .any(|value| value.as_ref() == "vm_factory:linux-computer")
+        );
+        assert!(
+            crate::daemon::DaemonCli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--vm",
+                "root.ext4",
+                "--vm-provider",
+                "linux-computer"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hand_defaults_to_the_computer_and_keeps_explicit_workspace_and_vm_modes() {
+        for args in [
+            vec!["nanocodex2", "hand"],
+            vec!["nanocodex2", "hand", "--workspace", "/app"],
+            vec![
+                "nanocodex2",
+                "hand",
+                "--workspace",
+                "/tmp",
+                "--state-dir",
+                "/tmp/identity",
+            ],
+        ] {
+            let cli = crate::daemon::DaemonCli::try_parse_from(args).unwrap();
+            let crate::daemon::DaemonCommand::Hand(hand) = cli.command else {
+                panic!("expected unified Hand");
+            };
+            assert!(hand.rootfs.is_none() && hand.docker.is_none());
+        }
+        assert!(
+            crate::daemon::DaemonCli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--vm",
+                "root.ext4",
+                "--docker",
+                "image",
+                "--volume",
+                "volume"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hand_parses_legacy_browser_options_and_rejects_removed_command() {
+        assert!(crate::daemon::DaemonCli::try_parse_from(["nanocodex2", "native-hand"]).is_err());
+        assert!(
+            crate::daemon::DaemonCli::try_parse_from([
+                "nanocodex2",
+                "native-hand",
+                "--workspace",
+                "."
+            ])
+            .is_err()
+        );
+        let cli = crate::daemon::DaemonCli::try_parse_from([
+            "nanocodex2",
+            "hand",
+            "--workspace",
+            ".",
+            "--machine-name",
+            "Linux server",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, crate::daemon::DaemonCommand::Hand(_)));
+        assert!(
+            crate::daemon::DaemonCli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--workspace",
+                ".",
+                "--browser-executable",
+                "/opt/chrome",
+            ])
+            .is_err()
+        );
+        let cli = crate::daemon::DaemonCli::try_parse_from([
+            "nanocodex2",
+            "hand",
+            "--workspace",
+            ".",
+            "--browser",
+            "--browser-executable",
+            "/opt/chrome",
+        ])
+        .unwrap();
+        let crate::daemon::DaemonCommand::Hand(command) = cli.command else {
+            panic!("expected native Hand");
+        };
+        assert!(command.browser);
+        assert_eq!(
+            command.browser_executable,
+            Some(PathBuf::from("/opt/chrome"))
+        );
+    }
+
+    #[test]
+    fn persistent_owner_status_distinguishes_catalog_capture_and_stop() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let mut state =
+            NativeState::open(workspace.path(), directory.path(), "Service".into()).unwrap();
+        state.service_status = true;
+        let read = || -> Value {
+            serde_json::from_slice(&fs::read(directory.path().join("status.json")).unwrap())
+                .unwrap()
+        };
+        state.publish_service_status("connecting").unwrap();
+        assert_eq!(read()["status"], "connecting");
+        state.publish_service_status("connected").unwrap();
+        assert_eq!(read()["screen"]["status"], "unavailable");
+        state.publish_screen_status(true).unwrap();
+        let ready = read();
+        assert_eq!(ready["status"], "connected");
+        assert_eq!(ready["screen"]["status"], "ready");
+        assert_eq!(ready["screen"]["transport"], "webrtc");
+        assert_eq!(ready["daemon"]["pid"], std::process::id());
+        assert_eq!(ready["machine_id"], state.machine.id());
+        assert_eq!(
+            ready["daemon"]["executable"],
+            std::env::current_exe().unwrap().to_str().unwrap()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(directory.path().join("status.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        state.publish_screen_status(false).unwrap();
+        assert_eq!(read()["screen"]["status"], "unavailable");
+        state.publish_service_status("stopped").unwrap();
+        assert_eq!(read()["status"], "stopped");
+    }
+
+    #[test]
+    fn native_hand_has_no_browser_automation_capabilities() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state =
+            NativeState::open(workspace.path(), directory.path(), "CUA host".into()).unwrap();
+        let machine = serde_json::to_value(&state.machine).unwrap();
+        let capabilities = machine["capabilities"].as_array().unwrap();
+        assert!(!capabilities.contains(&json!("browser")));
+        assert!(!capabilities.contains(&json!("browser-egress")));
+    }
+
+    #[test]
+    fn legacy_browser_options_require_cua() {
+        reject_browser_options(false, None).unwrap();
+        for (browser, executable) in [(true, None), (false, Some(Path::new("/opt/chrome")))] {
+            let error = reject_browser_options(browser, executable).unwrap_err();
+            assert!(error.to_string().contains("CUA"));
+        }
+    }
+
+    #[test]
+    fn native_identity_survives_restart_and_excludes_other_workspaces_or_processes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let other_workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state = NativeState::open(workspace.path(), directory.path(), "Server".into()).unwrap();
+        let id = state.machine.id().to_owned();
+        assert!(NativeState::open(workspace.path(), directory.path(), "Other".into()).is_err());
+        drop(state);
+        assert!(
+            NativeState::open(other_workspace.path(), directory.path(), "Other".into()).is_err()
+        );
+        let reopened =
+            NativeState::open(workspace.path(), directory.path(), "Renamed".into()).unwrap();
+        assert_eq!(reopened.machine.id(), id);
+        assert_eq!(reopened.machine.name(), "Renamed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(directory.path().join("identity.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_identity_releases_its_lock_while_an_inherited_descriptor_exists() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state = NativeState::open(workspace.path(), directory.path(), "Server".into()).unwrap();
+        // A duplicated descriptor has the same lock lifetime as one inherited at fork.
+        let inherited = state._lock.0.try_clone().unwrap();
+        drop(state);
+        let reopened = NativeState::open(workspace.path(), directory.path(), "Restarted".into());
+        assert!(
+            reopened.is_ok(),
+            "the owner released the lock: {:?}",
+            reopened.err()
+        );
+        drop(inherited);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_identity_rejects_symlinked_state() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let linked = directory.path().join("linked");
+        std::os::unix::fs::symlink(workspace.path(), &linked).unwrap();
+        assert!(NativeState::open(workspace.path(), &linked, "Server".into()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_identity_does_not_repurpose_a_shared_state_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(NativeState::open(workspace.path(), directory.path(), "Server".into()).is_err());
+        assert!(!directory.path().join("identity.json").exists());
+        assert_eq!(
+            fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(NativeState::open(workspace.path(), directory.path(), "Server".into()).is_ok());
+    }
+
+    #[derive(Clone)]
+    struct LocalService {
+        connections: Arc<AtomicUsize>,
+        catalogs: mpsc::UnboundedSender<Value>,
+        completed: mpsc::UnboundedSender<()>,
+    }
+
+    async fn accept(
+        State(state): State<LocalService>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> axum::response::Response {
+        assert_eq!(
+            headers["authorization"],
+            "Bearer native-hand-test-credential"
+        );
+        upgrade.on_upgrade(move |socket| serve_socket(socket, state))
+    }
+
+    async fn receive(socket: &mut WebSocket) -> Value {
+        loop {
+            let Some(Ok(Message::Text(frame))) = socket.recv().await else {
+                panic!("native Hand closed before its protocol response");
+            };
+            let frame: Value = serde_json::from_str(&frame).unwrap();
+            if frame["type"] == "ping" {
+                socket
+                    .send(Message::Text(
+                        json!({"type":"pong", "nonce":frame["nonce"]})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            } else if frame["type"] != "diagnostic" {
+                // The catalog enables per-call phase diagnostics; they precede
+                // each result and are not protocol responses.
+                return frame;
+            }
+        }
+    }
+
+    async fn serve_socket(mut socket: WebSocket, state: LocalService) {
+        let connection = state.connections.fetch_add(1, Ordering::SeqCst);
+        let catalog = receive(&mut socket).await;
+        assert_eq!(catalog["type"], "catalog");
+        state.catalogs.send(catalog).unwrap();
+        socket
+            .send(Message::Text(json!({"type":"ready"}).to_string().into()))
+            .await
+            .unwrap();
+        if connection == 0 {
+            socket.send(Message::Close(None)).await.unwrap();
+            return;
+        }
+        let command = if cfg!(windows) {
+            "echo native-process-proof> native-proof.txt && type native-proof.txt"
+        } else {
+            "printf 'native-process-proof\\n' > native-proof.txt && cat native-proof.txt"
+        };
+        socket.send(Message::Text(json!({
+            "type":"call", "session_id":"native-test-agent", "call_id":"native-file-process",
+            "model":"gpt-6-astra", "name":"exec_command",
+            "input":{"cmd":command},
+            "output_token_budget":1024, "output_byte_budget":131072,
+            "deadline_at":9_000_000_000_000_u64,
+        }).to_string().into())).await.unwrap();
+        let result = receive(&mut socket).await;
+        assert_eq!(result["type"], "result");
+        assert_eq!(result["call_id"], "native-file-process");
+        assert_eq!(result["outcome"]["status"], "completed");
+        assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
+        assert!(
+            result["outcome"]["output"]["output"]
+                .as_str()
+                .unwrap()
+                .contains("native-process-proof")
+        );
+        socket
+            .send(Message::Text(
+                json!({"type":"ack", "call_id":"native-file-process"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        state.completed.send(()).unwrap();
+        assert_eq!(receive(&mut socket).await["type"], "drain");
+        socket
+            .send(Message::Text(json!({"type":"draining"}).to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_hand_executes_in_its_workspace_after_outbound_reconnect_and_detaches() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state =
+            NativeState::open(workspace.path(), directory.path(), "Test host".into()).unwrap();
+        let machine_id = state.machine.id().to_owned();
+        let (catalogs_tx, mut catalogs) = mpsc::unbounded_channel();
+        let (completed_tx, mut completed) = mpsc::unbounded_channel();
+        let service = LocalService {
+            connections: Arc::new(AtomicUsize::new(0)),
+            catalogs: catalogs_tx,
+            completed: completed_tx,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/account/tool-host", get(accept))
+            .with_state(service);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let target = AttachmentTarget::new(
+            format!("ws://{address}/v1/account/tool-host"),
+            "native-hand-test-credential",
+        )
+        .unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let hand = tokio::spawn(async move {
+            run(target, &state, async {
+                shutdown_rx.await.unwrap();
+                Ok(())
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let first = catalogs.recv().await.unwrap();
+            let second = catalogs.recv().await.unwrap();
+            // Each outbound connection carries its own connection_id; the
+            // rest of the catalog stays pinned across the reconnect.
+            assert_ne!(first["connection_id"], second["connection_id"]);
+            let mut pinned = [first.clone(), second.clone()];
+            for catalog in &mut pinned {
+                catalog.as_object_mut().unwrap().remove("connection_id");
+            }
+            assert_eq!(pinned[0], pinned[1]);
+            assert!(
+                second["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| { tool["definition"]["name"] != "browser_execute" })
+            );
+            assert_eq!(second["attachment_id"], machine_id);
+            assert_eq!(second["machines"][0]["id"], machine_id);
+            assert_eq!(
+                second["machines"][0]["capabilities"],
+                json!(host::MACHINE_CAPABILITIES)
+            );
+            completed.recv().await.unwrap();
+            assert_eq!(
+                fs::read_to_string(workspace.path().join("native-proof.txt"))
+                    .unwrap()
+                    .trim(),
+                "native-process-proof"
+            );
+            shutdown_tx.send(()).unwrap();
+            hand.await.unwrap().unwrap();
+        })
+        .await
+        .expect("native Hand lifecycle timed out");
+        server.abort();
+        let restarted =
+            NativeState::open(workspace.path(), directory.path(), "Test host".into()).unwrap();
+        assert_eq!(restarted.machine.id(), machine_id);
+    }
+}

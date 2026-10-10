@@ -117,6 +117,18 @@ async fn astra_prompt_is_restored_from_the_retained_model() -> Result<()> {
     Ok(())
 }
 
+// Return the exact caller-owned developer instructions from the second input
+// item after validating the runtime identity block appended by #808.
+pub(crate) fn caller_instructions(request: &Value) -> &str {
+    let instructions = assert_runtime_model_identity(request);
+    assert_eq!(request["input"][1]["role"], "developer");
+    assert_eq!(request["input"][1]["content"][0]["text"], instructions);
+    instructions
+        .split_once("\n\n<runtime_model_identity>")
+        .expect("runtime identity follows caller instructions")
+        .0
+}
+
 // Observe the actual serialized provider request, independently of prompt prose.
 fn assert_runtime_model_identity(request: &Value) -> &str {
     let instructions = request["input"]

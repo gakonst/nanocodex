@@ -12,114 +12,49 @@ mod connectors;
 mod continue_auth;
 mod continue_sessions;
 mod control;
-pub(crate) mod daemon;
-mod device_hand;
-mod hand_observability;
-mod hand_recording;
-mod hand_recording_control;
 mod hand_share;
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "musl")),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-mod hand_workspace;
-mod host;
 #[allow(dead_code)]
 mod installation;
-#[cfg(any(target_os = "linux", test))]
-mod linux_hand_install;
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-mod linux_hand_update;
-mod native_hand;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-mod native_secure_input;
-mod observation_providers;
 mod reload;
-mod screen_audio;
-mod screen_broadcast;
-#[cfg(target_os = "linux")]
-mod screen_gamepad;
-#[cfg(target_os = "linux")]
-mod screen_helpers;
-mod screen_hls;
-#[cfg(target_os = "linux")]
-mod screen_host;
-mod screen_ice;
-#[cfg(target_os = "linux")]
-mod screen_linux_session;
-#[cfg(target_os = "macos")]
-mod screen_macos;
-mod screen_native;
-mod screen_publisher;
-mod screen_supervisor;
-mod screen_video;
-#[cfg(target_os = "linux")]
-mod screen_wayland;
-#[cfg(target_os = "linux")]
-mod screen_wayland_encoder;
-#[cfg(target_os = "linux")]
-mod screen_wayland_input;
-mod service;
 #[allow(dead_code)]
 mod skill;
 #[allow(dead_code, unused_imports)]
 pub(crate) mod tui;
 mod vault;
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "musl")),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-mod vm_hand;
-#[cfg(not(any(
-    all(target_os = "linux", not(target_env = "musl")),
-    all(target_os = "macos", target_arch = "aarch64")
-)))]
-#[path = "vm_hand_unsupported.rs"]
-mod vm_hand;
-mod vm_hand_config;
-mod vm_host;
 mod voice;
-mod voice_recording;
 mod voice_state;
 
-// Modules shared with the local (`ncl`) command tree are compiled once at the
-// crate root; keep their historical paths inside this managed tree.
-#[cfg(target_os = "macos")]
-pub(crate) use crate::hand_keep_awake;
+// Shared with the Hand executable through nanocodex-bin-shared; keep their
+// historical paths inside this managed tree.
 pub(crate) use crate::{computer, hand_login, launcher, startup_timing, version};
+pub(crate) use nanocodex_bin_shared::hand_args::valid_managed_agent_id;
+use nanocodex_bin_shared::hand_args::{HandRecordingArgs, HandServe, Host};
+pub(crate) use nanocodex_bin_shared::{host, screen_ice, voice_recording};
 
 use std::{
     ffi::OsString,
     io::{self, Write},
-    path::PathBuf,
     process::ExitCode,
-    time::Instant,
 };
 
 use clap::{
-    Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
-    builder::NonEmptyStringValueParser,
+    Args, CommandFactory, FromArgMatches, Parser, Subcommand, builder::NonEmptyStringValueParser,
 };
-use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
 use nanocodex_cli_auth::client_from_environment;
 use nanocodex_managed::{
     AgentSettings, AgentState, EventCursor, Managed, ManagedClient, ManagedError, ManagedEvent,
-    PromptInput, validate_vm_factory_name,
+    PromptInput,
 };
-use nanocodex_oai_tools::attachment::{Attachment, AttachmentMetadata, AttachmentTarget};
 use percent_encoding::percent_decode_str;
-use tracing::Instrument as _;
 use url::Url;
-
-const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
 
 #[derive(Parser)]
 #[command(
     name = "nanocodex",
-    version = version::SHORT_VERSION,
-    long_version = version::LONG_VERSION,
+    version = version::short(),
+    long_version = version::long(),
     about = "Nanocodex terminal client connected to the background machine Hand"
 )]
 struct Cli {
@@ -152,32 +87,6 @@ enum Command {
     Attach(Attach),
     /// Connect this computer as a Hand; optionally run a VM or Docker Hand.
     Hand(Hand),
-    #[command(name = "__device-hand", hide = true)]
-    DeviceHand(device_hand::DeviceHand),
-    /// Publish this Hand's native screen; owned by the desktop runtime.
-    #[command(name = "__hand-screen", hide = true)]
-    HandScreen(screen_native::ScreenCommand),
-    #[cfg(target_os = "linux")]
-    #[command(name = "__hand-desktop", hide = true)]
-    HandDesktop(screen_native::DesktopCommand),
-    /// Install this binary as a native Linux Hand from a private stdin request.
-    #[cfg(any(target_os = "linux", test))]
-    #[command(name = "__install-hand", hide = true)]
-    InstallHand,
-    /// Update an existing native Linux Hand without enrollment or factory migration.
-    #[cfg(any(target_os = "linux", target_os = "macos", test))]
-    #[command(name = "__update-hand", hide = true)]
-    UpdateHand,
-    /// Share an existing Wayland session through the shared Rust publisher.
-    #[cfg(target_os = "linux")]
-    #[command(name = "wayland-host", hide = true)]
-    WaylandHost(screen_host::HostCommand),
-    #[cfg(target_os = "linux")]
-    #[command(name = "desktop-host", hide = true)]
-    DesktopHost(screen_host::HostCommand),
-    #[cfg(target_os = "linux")]
-    #[command(name = "server-host", hide = true)]
-    ServerHost(screen_host::HostCommand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
@@ -199,7 +108,7 @@ enum Command {
     /// Read owner-only rolling 24-hour Hand tool statistics as JSON.
     HandStats,
     /// Control this Hand’s recorder locally, without account authentication.
-    HandRecording(hand_recording_control::Args),
+    HandRecording(HandRecordingArgs),
     /// Read one managed agent's durable state as JSON.
     State(AgentId),
     /// Read one managed turn's durable state as JSON.
@@ -218,15 +127,6 @@ enum Command {
     Steer(Steer),
     /// Cancel an active managed turn.
     Cancel(TurnId),
-    /// Private synchronous entrypoint used by the VM hand's VMM child.
-    #[command(name = "__vm-run-config", hide = true)]
-    VmRunConfig(VmRunConfig),
-    /// Create a private VM disk through the shared Rust image lifecycle.
-    #[command(name = "__vm-clone-image", hide = true)]
-    VmCloneImage {
-        source: PathBuf,
-        destination: PathBuf,
-    },
 }
 
 #[derive(Args)]
@@ -243,294 +143,19 @@ struct AgentReference {
     managed_origin: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum HandNetwork {
-    Off,
-    Internet,
-}
-
+/// The CLI hand command: service management subcommands, or serving flags
+/// that the CLI forwards to the Hand executable.
 #[derive(Args)]
 #[command(
     args_conflicts_with_subcommands = true,
-    group(clap::ArgGroup::new("backend").args(["rootfs", "docker"])),
     after_help = "Without a subcommand, serve this computer as a Hand. Use --vm or --docker for an isolated Hand.\n\nExamples:\n  nanocodex hand --docker nanocodex-hand:local --volume my-workspace\n  nanocodex hand --vm root.ext4 --guest-runtime /path/to/nanocodex-vm-guest\n\nUse --network internet to give a Docker Hand internet access."
 )]
 struct Hand {
     /// Manage the installed Hand service; omit to serve this computer.
     #[command(subcommand)]
     management: Option<crate::hand_setup::HandCommand>,
-    /// Private identity directory for an explicitly selected native workspace.
-    #[arg(long, conflicts_with_all = ["rootfs", "docker"])]
-    state_dir: Option<PathBuf>,
-    /// VM with a persistent ext4 root (Linux KVM or Apple Silicon Hypervisor.framework).
-    #[arg(
-        long = "vm",
-        alias = "vm-rootfs",
-        value_name = "ROOTFS",
-        help_heading = "Backend"
-    )]
-    rootfs: Option<PathBuf>,
-
-    /// Container using an existing Linux Docker image; no KVM required.
-    #[arg(long, value_name = "IMAGE", requires = "docker_volume", conflicts_with_all = ["vm_guest_runtime", "vm_firmware", "vm_gpu"], help_heading = "Backend")]
-    docker: Option<String>,
-
-    /// Persistent named Docker workspace volume (required with --docker).
-    #[arg(
-        long = "volume",
-        alias = "docker-volume",
-        value_name = "VOLUME",
-        requires = "docker",
-        help_heading = "Workspace"
-    )]
-    docker_volume: Option<String>,
-
-    /// Guest network access [default: off for Docker, internet for VM].
-    #[arg(long, value_enum, conflicts_with_all = ["docker_internet", "vm_no_network"], help_heading = "Workspace")]
-    network: Option<HandNetwork>,
-
-    #[arg(
-        long,
-        hide = true,
-        requires = "docker",
-        conflicts_with = "vm_no_network"
-    )]
-    docker_internet: bool,
-
-    #[arg(long, hide = true, requires = "rootfs")]
-    vm_no_network: bool,
-
-    /// Absolute workspace directory inside the Hand.
-    #[arg(
-        long = "workspace",
-        alias = "vm-workspace",
-        value_name = "PATH",
-        help_heading = "Workspace"
-    )]
-    vm_workspace: Option<String>,
-
-    /// CPU limit.
-    #[arg(long = "cpus", alias = "vm-cpus", value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..), help_heading = "Resources")]
-    vm_cpus: u8,
-
-    /// Memory limit in MiB.
-    #[arg(long = "memory", alias = "vm-memory-mib", value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Resources")]
-    vm_memory_mib: u32,
-
-    /// Share the host GPU with a VM; requires a GPU-enabled build and Vulkan renderer.
-    #[arg(
-        long = "gpu",
-        alias = "vm-gpu",
-        requires = "rootfs",
-        help_heading = "Resources"
-    )]
-    vm_gpu: bool,
-
-    /// Stable account-local identifier [default: docker or vm, matching the backend].
-    #[arg(long, help_heading = "Identity")]
-    machine_id: Option<String>,
-
-    /// Display name [default: Nanocodex Docker Hand or Nanocodex VM].
-    #[arg(long, help_heading = "Identity")]
-    machine_name: Option<String>,
-
-    /// VM factory hosted by this native computer (managed separately, e.g. systemd).
-    #[arg(long, conflicts_with_all = ["rootfs", "docker"], help_heading = "Identity")]
-    vm_provider: Option<String>,
-
-    /// Legacy option (disabled); use the Hand's CUA tools for browser interactions.
-    #[arg(long, help_heading = "Browser")]
-    browser: bool,
-
-    /// Legacy browser executable option (disabled); use the Hand's CUA tools.
-    #[arg(
-        long,
-        value_name = "PATH",
-        env = "NANOCODEX_BROWSER_EXECUTABLE",
-        requires = "browser",
-        help_heading = "Browser"
-    )]
-    browser_executable: Option<PathBuf>,
-
-    /// Static Linux guest executable for an ext4 VM (or NANOCODEX_VM_GUEST_RUNTIME).
-    #[arg(
-        long = "guest-runtime",
-        alias = "vm-guest-runtime",
-        value_name = "ELF",
-        requires = "rootfs",
-        help_heading = "VM setup"
-    )]
-    vm_guest_runtime: Option<PathBuf>,
-
-    /// Installed Docker OCI runtime, e.g. runsc; fails if unavailable.
-    #[arg(
-        long = "runtime",
-        alias = "docker-runtime",
-        value_name = "RUNTIME",
-        requires = "docker",
-        help_heading = "Advanced"
-    )]
-    docker_runtime: Option<String>,
-
-    /// Prepared VM guest disk cache.
-    #[arg(
-        long = "cache",
-        alias = "vm-cache",
-        value_name = "PATH",
-        default_value = ".cache/vm",
-        requires = "rootfs",
-        help_heading = "Advanced"
-    )]
-    vm_cache: PathBuf,
-
-    /// libkrun firmware directory (or NANOCODEX_KRUNFW_DIR).
-    #[arg(
-        long = "firmware",
-        alias = "vm-firmware",
-        value_name = "PATH",
-        requires = "rootfs",
-        help_heading = "Advanced"
-    )]
-    vm_firmware: Option<PathBuf>,
-
-    /// Shell described to the managed brain.
-    #[arg(
-        long = "shell",
-        alias = "vm-shell",
-        value_name = "SHELL",
-        default_value = "sh",
-        help_heading = "Advanced"
-    )]
-    vm_shell: String,
-
-    #[command(flatten, next_help_heading = "Logging")]
-    observability: HandObservabilityArgs,
-}
-
-impl Hand {
-    fn machine_id(&self) -> &str {
-        self.machine_id
-            .as_deref()
-            .unwrap_or(if self.docker.is_some() {
-                "docker"
-            } else {
-                "vm"
-            })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum HostScope {
-    User,
-    Agent,
-    System,
-}
-
-#[derive(Args)]
-struct Host {
     #[command(flatten)]
-    observability: HandObservabilityArgs,
-
-    /// Authority scope that may provision VMs from this host.
-    #[arg(long, value_enum, default_value_t = HostScope::User)]
-    scope: HostScope,
-
-    /// Exact /mount provider selector, unique within the selected scope.
-    #[arg(long, value_name = "FACTORY_NAME")]
-    factory_name: String,
-
-    /// Managed agent ID. Required only with --scope agent.
-    #[arg(long, value_name = "AGENT_ID", required_if_eq("scope", "agent"))]
-    agent: Option<String>,
-
-    /// Immutable raw ext4 image cloned privately for every allocation.
-    #[arg(long, value_name = "ROOTFS")]
-    vm_template: PathBuf,
-
-    /// Durable private host state and per-allocation VM roots.
-    #[arg(long, value_name = "PATH")]
-    state_dir: PathBuf,
-
-    /// Maximum number of provisioning, live, or releasing VMs.
-    #[arg(long, value_name = "COUNT", default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
-    max_vms: u16,
-
-    /// Keep one never-assigned VM ready within --max-vms capacity.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    warm_spare: bool,
-
-    /// Stable host UUID. Generated and persisted under --state-dir when omitted.
-    #[arg(long, value_name = "UUID")]
-    host_id: Option<uuid::Uuid>,
-
-    /// Statically linked Linux guest executable used with the raw ext4 roots.
-    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
-    vm_guest_runtime: PathBuf,
-
-    /// Cache for the prepared read-only guest runtime disk.
-    #[arg(long, value_name = "PATH", default_value = ".cache/vm")]
-    vm_cache: PathBuf,
-
-    /// Directory containing the platform libkrun firmware library.
-    #[arg(long, value_name = "PATH", env = "NANOCODEX_KRUNFW_DIR")]
-    vm_firmware: Option<PathBuf>,
-
-    /// Absolute working directory inside every provisioned VM.
-    #[arg(long, value_name = "PATH", default_value = "/app")]
-    vm_workspace: String,
-
-    /// Number of virtual CPUs assigned to each VM.
-    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=64))]
-    vm_cpus: u8,
-
-    /// Guest memory in mebibytes assigned to each VM.
-    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(128..=262_144))]
-    vm_memory_mib: u32,
-
-    /// Expose shared host Vulkan through virtio-gpu Venus.
-    #[arg(long)]
-    vm_gpu: bool,
-
-    /// Shell name described to the managed brain.
-    #[arg(long, value_name = "SHELL", default_value = "sh")]
-    vm_shell: String,
-
-    /// Disable guest internet socket proxying.
-    #[arg(long)]
-    vm_no_network: bool,
-}
-
-#[derive(Args)]
-struct VmRunConfig {
-    /// Mode-0600 launch record prepared by nanocodex-vm.
-    #[arg(long)]
-    config: PathBuf,
-}
-
-impl Host {
-    fn validate(&self) -> Result<(), ManagedError> {
-        validate_vm_factory_name(&self.factory_name)?;
-        if self.host_id.is_some_and(|id| {
-            id.get_version_num() != 4 || id.get_variant() != uuid::Variant::RFC4122
-        }) {
-            return Err(ManagedError::Configuration(
-                "--host-id must be a UUID v4".to_owned(),
-            ));
-        }
-        match (self.scope, self.agent.as_deref()) {
-            (HostScope::Agent, Some(agent)) if valid_managed_agent_id(agent) => Ok(()),
-            (HostScope::Agent, Some(_)) => Err(ManagedError::Configuration(
-                "--agent must be a safe managed agent identifier".to_owned(),
-            )),
-            (HostScope::Agent, None) => Err(ManagedError::Configuration(
-                "--agent is required with --scope agent".to_owned(),
-            )),
-            (HostScope::User | HostScope::System, Some(_)) => Err(ManagedError::Configuration(
-                "--agent is only valid with --scope agent".to_owned(),
-            )),
-            (HostScope::User | HostScope::System, None) => Ok(()),
-        }
-    }
+    serve: HandServe,
 }
 
 #[derive(Args)]
@@ -603,7 +228,9 @@ pub(crate) fn command() -> clap::Command {
 /// than by its command line; it bypasses command-tree selection.
 pub(crate) fn is_helper_process() -> bool {
     #[cfg(target_os = "linux")]
-    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
+    if std::env::var(nanocodex_bin_shared::hand_executable::SCREEN_ENCODER_HELPER_ENV).as_deref()
+        == Ok("1")
+    {
         return true;
     }
     false
@@ -621,15 +248,7 @@ pub(crate) fn main(arguments: Vec<OsString>) -> ExitCode {
     match try_main(arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            if matches!(&error, ManagedError::Configuration(message) if message == "local recording control failed")
-            {
-                println!(
-                    "{}",
-                    serde_json::json!({"ok": false, "error": "local_recording_control_failed"})
-                );
-            } else {
-                eprintln!("Error: {error}");
-            }
+            eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
     }
@@ -639,73 +258,28 @@ fn try_main(arguments: Vec<OsString>) -> Result<(), ManagedError> {
     let _startup = startup_timing::Stage::new("process");
     launcher::initialize_install_root();
     let _ = dotenvy::dotenv();
-    #[cfg(target_os = "linux")]
-    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
-        return run_with_runtime(async {
-            screen_wayland_encoder::run(std::env::args().skip(1).collect())
-                .await
-                .map_err(|error| ManagedError::Configuration(error.to_string()))
-        });
-    }
     let cli = parse(arguments);
-    #[cfg(target_os = "linux")]
-    let (cli, prepared) = {
-        let mut cli = cli;
-        let host = match cli.command.take() {
-            Some(Command::WaylandHost(args)) => Some(args.prepare(screen_host::Mode::Wayland)?),
-            Some(Command::DesktopHost(args)) => Some(args.prepare(screen_host::Mode::Desktop)?),
-            Some(Command::ServerHost(args)) => Some(args.prepare(screen_host::Mode::Server)?),
-            other => {
-                cli.command = other;
-                None
-            }
-        };
-        let prepared = if let Some((prepared, environment)) = host {
-            // SAFETY: only standalone process startup reaches this point. No
-            // Tokio, capture, audio, or provider threads have been started yet.
-            for (key, value) in environment {
-                #[allow(unsafe_code)]
-                unsafe {
-                    std::env::set_var(key, value);
-                }
-            }
-            Some(prepared)
-        } else {
-            None
-        };
-        (cli, prepared)
-    };
-    run_with_runtime(async move {
-        #[cfg(target_os = "linux")]
-        if let Some(prepared) = prepared {
-            return screen_host::serve(prepared).await;
-        }
-        run(cli).await
-    })
+    run_with_runtime(run(cli))
 }
 
-fn run_with_runtime(
-    future: impl std::future::Future<Output = Result<(), ManagedError>>,
-) -> Result<(), ManagedError> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?;
-    let result = runtime.block_on(future);
-    // Application cleanup has completed. Optional presentation discovery or DNS
-    // can still own blocking work that Tokio cannot cancel. Foreground work and
-    // its owned cleanup were awaited above; give no extra exit grace period to
-    // these disposable background tasks.
-    runtime.shutdown_background();
-    result
-}
+use nanocodex_bin_shared::run_with_runtime;
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
-    if let Some(Command::HandRecording(command)) = &cli.command {
-        return command
-            .run()
-            .await
-            .map_err(|_| ManagedError::Configuration("local recording control failed".into()));
+    if matches!(
+        &cli.command,
+        Some(
+            Command::HandRecording(_)
+                | Command::Host(_)
+                | Command::Hand(Hand {
+                    management: None,
+                    ..
+                })
+        )
+    ) {
+        // cli_main forwards these to the Hand executable before parsing.
+        return Err(ManagedError::Configuration(
+            "this command is served by the Nanocodex Hand executable".into(),
+        ));
     }
     // Shared links carry their own narrowly scoped authority. Never load an
     // account credential or start a local Hand for a guest attachment.
@@ -724,12 +298,6 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .run()
                 .await
                 .map_err(|error| ManagedError::Configuration(error.to_string()));
-        }
-        #[cfg(target_os = "linux")]
-        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
-            return Err(ManagedError::Configuration(
-                "standalone host must initialize before runtime startup".into(),
-            ));
         }
         Some(Command::ContinueAttach(command)) => return continue_auth::attach(command).await,
         Some(Command::Computer(command)) => {
@@ -758,19 +326,6 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             }
             return Ok(());
         }
-        Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
-        Some(Command::VmCloneImage {
-            source,
-            destination,
-        }) => {
-            return vm_hand::clone_image(&source, &destination);
-        }
-        #[cfg(target_os = "linux")]
-        Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
-        #[cfg(any(target_os = "linux", test))]
-        Some(Command::InstallHand) => return linux_hand_install::run().await,
-        #[cfg(any(target_os = "linux", target_os = "macos", test))]
-        Some(Command::UpdateHand) => return linux_hand_update::run().await,
         Some(Command::Hand(Hand {
             management: Some(management),
             ..
@@ -781,18 +336,6 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .run()
                 .await
                 .map_err(|error| ManagedError::Configuration(format!("{error:#}")));
-        }
-        Some(Command::Hand(command)) if command.rootfs.is_none() && command.docker.is_none() => {
-            return native_hand::serve_hand(command).await;
-        }
-        Some(Command::DeviceHand(command)) => return device_hand::serve(command).await,
-        Some(Command::Hand(command)) => return serve_isolated_hand(command).await,
-        Some(Command::Host(command)) => {
-            let _observability = command
-                .observability
-                .install()
-                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-            return vm_host::serve(command).await;
         }
         command => command,
     };
@@ -809,7 +352,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         &command,
         None | Some(Command::Attach(_) | Command::Run(_) | Command::Voice(_))
     )
-    .then(|| device_hand::BackgroundHandTask::start(client.clone()));
+    .then(|| nanocodex_bin_shared::hand_client::BackgroundHandTask::start(client.clone()));
     let result = match command {
         Some(
             Command::Tui(_)
@@ -829,15 +372,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         Some(Command::ContinueAttach(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Computer(_)) => unreachable!("handled before managed client setup"),
-        Some(Command::DeviceHand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
-        Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
-        #[cfg(target_os = "linux")]
-        Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
-        #[cfg(any(target_os = "linux", test))]
-        Some(Command::InstallHand) => unreachable!("handled before managed client setup"),
-        #[cfg(any(target_os = "linux", target_os = "macos", test))]
-        Some(Command::UpdateHand) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New(settings)) if !settings.is_explicit() => {
             // Omitted settings let the service choose its default (Claude Opus
@@ -895,12 +430,6 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Cancel(command)) => {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
         }
-        #[cfg(target_os = "linux")]
-        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
-            unreachable!("handled before runtime startup")
-        }
-        Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
-        Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),
         None => new_tui(&client).await,
     };
     if let Some(device) = device {
@@ -909,208 +438,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     result
 }
 
-/// Serve a VM or Docker Hand: the Hand daemon and the managed tree share this path.
-async fn serve_isolated_hand(command: Hand) -> Result<(), ManagedError> {
-    let _observability = command
-        .observability
-        .install()
-        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-    tracing::info!(target: "nanocodex2", stage = "hand.preflight",
-        machine.id = command.machine_id(),
-        hand.backend = if command.docker.is_some() { "docker" } else { "vm" },
-        vm.cpu.count = command.vm_cpus,
-        vm.memory.limit_mib = command.vm_memory_mib,
-        vm.root.kind = command.rootfs.as_ref().map_or("container", |root| if root.exists() { "existing" } else { "missing" }),
-        "checking Hand backend support");
-    if let Err(error) = vm_hand::VmHand::preflight(&command).await {
-        tracing::error!(target: "nanocodex2", stage = "hand.preflight.failed", "Hand backend preflight failed");
-        return Err(error);
-    }
-    let client = client_from_environment(None)?;
-    serve_vm_hand(&client, command).await
-}
-
-async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
-    let (root_kind, root_bytes) = match command.rootfs.as_ref().map(std::fs::metadata) {
-        Some(Ok(metadata)) if metadata.is_file() => ("file", metadata.len()),
-        Some(Ok(metadata)) if metadata.is_dir() => ("directory", 0),
-        Some(Ok(_)) => ("other", 0),
-        Some(Err(_)) => ("missing", 0),
-        None => ("docker", 0),
-    };
-    let span = tracing::info_span!(
-        target: "nanocodex2",
-        "vm.launch",
-        otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        machine.id = command.machine_id(),
-        vm.cpu.count = command.vm_cpus,
-        vm.memory.limit_mib = command.vm_memory_mib,
-        vm.root.kind = root_kind,
-        vm.root.bytes = root_bytes,
-        network.enabled = command.network.map_or(if command.docker.is_some() { command.docker_internet } else { !command.vm_no_network }, |network| network == HandNetwork::Internet),
-        hand.backend = if command.docker.is_some() { "docker" } else { "libkrun" },
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
-    );
-    let started = Instant::now();
-    async {
-        tracing::info!(
-            target: "nanocodex2",
-            stage = "vm.launch.starting",
-            "starting Hand workspace"
-        );
-        let result = vm_hand::VmHand::start(command).await;
-        span.record(
-            "duration_ns",
-            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
-        );
-        match &result {
-            Ok(_) => {
-                span.record("status", "ready");
-                span.record("otel.status_code", "OK");
-                tracing::info!(
-                    target: "nanocodex2",
-                    stage = "vm.launch.ready",
-                    "Hand guest is ready"
-                );
-            }
-            Err(_) => {
-                span.record("status", "failed");
-                span.record("otel.status_code", "ERROR");
-                tracing::error!(
-                    target: "nanocodex2",
-                    stage = "vm.launch.failed",
-                    "Hand guest failed to start"
-                );
-            }
-        }
-        result
-    }
-    .instrument(span.clone())
-    .await
-}
-
-async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
-    let target = client.account_attachment_target()?;
-    let mut hand = launch_vm_hand(&command).await?;
-    drop(command);
-    let connected = async {
-        hand.start_desktop(&target).await?;
-        connect_vm_hand(&hand, target).await
-    }
-    .await;
-    let attachment = match connected {
-        Ok(Some(attachment)) => attachment,
-        Ok(None) => {
-            shutdown_vm_hand(hand).await?;
-            return Ok(());
-        }
-        Err(error) => {
-            return match shutdown_vm_hand(hand).await {
-                Ok(()) => Err(error),
-                Err(shutdown) => Err(ManagedError::Configuration(format!(
-                    "{error}; VM shutdown also failed: {shutdown}"
-                ))),
-            };
-        }
-    };
-    tracing::info!(
-        target: "nanocodex2",
-        stage = "vm.hand.ready",
-        "Hand is ready; press Ctrl-C to detach"
-    );
-    let closed = attachment.clone();
-    let attachment_result = tokio::select! {
-        signal = service::shutdown_signal() => {
-            signal?;
-            attachment.clone().detach().await
-        }
-        result = closed.closed() => result,
-    };
-    drop(attachment);
-    drop(closed);
-    let shutdown = shutdown_vm_hand(hand).await;
-    match (attachment_result, shutdown) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(ManagedError::Configuration(error.to_string())),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(shutdown)) => Err(ManagedError::Configuration(format!(
-            "{error}; VM shutdown also failed: {shutdown}"
-        ))),
-    }
-}
-
-async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
-    let span = tracing::info_span!(
-        target: "nanocodex2",
-        "vm.shutdown",
-        otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
-    );
-    let started = Instant::now();
-    async {
-        tracing::info!(
-            target: "nanocodex2",
-            stage = "vm.shutdown.starting",
-            "stopping Hand guest"
-        );
-        let result = hand.shutdown().await;
-        span.record(
-            "duration_ns",
-            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
-        );
-        if result.is_ok() {
-            span.record("status", "completed");
-            span.record("otel.status_code", "OK");
-            tracing::info!(
-                target: "nanocodex2",
-                stage = "vm.shutdown.completed",
-                "Hand guest stopped"
-            );
-        } else {
-            span.record("status", "failed");
-            span.record("otel.status_code", "ERROR");
-            tracing::error!(
-                target: "nanocodex2",
-                stage = "vm.shutdown.failed",
-                "Hand guest failed to stop cleanly"
-            );
-        }
-        result
-    }
-    .instrument(span.clone())
-    .await
-}
-
-async fn connect_vm_hand(
-    hand: &vm_hand::VmHand,
-    target: AttachmentTarget,
-) -> Result<Option<Attachment>, ManagedError> {
-    let connector = hand
-        .tools()
-        .attach(target)
-        .metadata(AttachmentMetadata::machine(hand.machine().clone()));
-    let connected = tokio::select! {
-        signal = service::shutdown_signal() => {
-            signal?;
-            Ok(None)
-        }
-        connected = connector.connect() => connected
-            .map(Some)
-            .map_err(|error| ManagedError::Configuration(error.to_string())),
-    };
-    connected.map(|connected| connected.map(|(attachment, _events)| attachment))
-}
-
 fn auth_error(error: nanocodex_cli_auth::Error) -> ManagedError {
     ManagedError::Configuration(error.to_string())
-}
-
-fn managed_url_from_environment(fallback: Option<&str>) -> Result<String, ManagedError> {
-    nanocodex_cli_auth::managed_url_from_environment(fallback).map_err(auth_error)
 }
 
 fn parse_agent_reference(value: &str) -> Result<AgentReference, String> {
@@ -1146,14 +475,6 @@ fn parse_agent_reference(value: &str) -> Result<AgentReference, String> {
         agent_id: agent_id.into_owned(),
         managed_origin: Some(url.origin().ascii_serialization()),
     })
-}
-
-fn valid_managed_agent_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn supported_agent_page_origin(url: &Url) -> bool {
@@ -1303,7 +624,8 @@ async fn build_workspace_agent_with_settings(
     let workspace = config.workspace().to_path_buf();
     // A terminal is a client of the account's persistent computer Hand. Its
     // directory is turn context, never another machine or tool publisher.
-    let client = device_hand::with_client_context(client.clone(), &workspace)?;
+    let client =
+        nanocodex_bin_shared::hand_client::with_client_context(client.clone(), &workspace)?;
     let backend = match (agent_id, state) {
         (None, None) if initial_prompt.is_some() => {
             Managed::create(client.clone()).with_settings(settings)
@@ -1417,6 +739,7 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nanocodex_bin_shared::hand_args::HostScope;
 
     #[test]
     fn version_reports_full_source_revision_for_local_updates() {
@@ -1426,11 +749,7 @@ mod tests {
             .try_get_matches_from(["nanocodex2", "--version"])
             .unwrap_err();
         assert_eq!(output.kind(), clap::error::ErrorKind::DisplayVersion);
-        assert!(
-            output
-                .to_string()
-                .contains(concat!("Commit SHA: ", env!("VERGEN_GIT_SHA"),))
-        );
+        assert!(output.to_string().contains(crate::version::long()));
         assert!(output.to_string().contains("Build Profile: "));
     }
 

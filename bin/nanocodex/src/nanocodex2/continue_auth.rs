@@ -224,7 +224,7 @@ mod unix {
             &credentials.origin,
             ManagedApiKey::parse(credentials.api_key)?,
         )?;
-        let device = super::super::device_hand::BackgroundHandTask::start(client.clone());
+        let device = nanocodex_bin_shared::hand_client::BackgroundHandTask::start(client.clone());
         let result = super::super::attach_tui(&client, Some(args.agent_id)).await;
         device.stop().await;
         result

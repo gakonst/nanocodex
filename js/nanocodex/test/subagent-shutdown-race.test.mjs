@@ -246,6 +246,97 @@ test('shutdown during every automatic child resume stops at the durable recovery
   }
 });
 
+test('restarts during a progressing child turn do not exhaust the consecutive recovery budget', { timeout: 60_000 }, async () => {
+  // Hosted regression (session 01a120c9, 2026-10-09): runtime resets every
+  // minute or two interrupted long delegated turns that kept making progress
+  // between resets; three resets in one turn failed every child with
+  // "subagent recovery exhausted". Only resumes without committed progress
+  // may consume the budget.
+  const module = await readFile(new URL('../pkg-web/nanocodex_bg.wasm', import.meta.url));
+  const trace = [], errors = [];
+  let calls = 0, steps = 0, holds = 0, finishing = false, held = Promise.withResolvers();
+  const server = createServer(async (request, response) => {
+    try {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks));
+      const last = body.input.at(-1);
+      const output = last?.type === 'custom_tool_call_output' ? JSON.stringify(last.output) : '';
+      trace.push({ type: 'model_request', finishing, last: last?.type, output });
+      const exec = input => [{ type: 'custom_tool_call', call_id: 'call-' + calls, name: 'exec', input }];
+      const items = finishing
+        ? (output.includes('accepted') ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CHILD_DONE' }] }]
+          : exec('text(await tools.submit_result(' + JSON.stringify({ output: 'PROGRESS_KEPT' }) + '));'))
+        // Each resume completes one tool (committed progress), then holds the turn open.
+        : output.includes('STEP_DONE') ? exec('text(await tools.hold({}));') : exec('text(await tools.step({}));');
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: ' + JSON.stringify({ type: 'response.completed', response: { id: 'response-' + (++calls), status: 'completed', output: items,
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }) + '\n\n');
+    } catch (error) { errors.push(String(error)); response.destroy(error); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const durabilityId = 'durable-resume-progress';
+  const empty = { type: 'object', properties: {}, additionalProperties: false };
+  const options = { module, durabilityId, durability: createMemoryDurabilityStore(durabilityId),
+    model: 'gpt-6.1-sol', thinking: 'low', codeEvaluator,
+    transport: Transport.openAi({ apiKey: 'synthetic', apiBaseUrl: 'http://127.0.0.1:' + server.address().port + '/v1', stateless: true }),
+    tools: [
+      { name: 'step', description: 'Complete one unit of work', parameters: empty,
+        handler() { trace.push({ type: 'step', step: ++steps }); return 'STEP_DONE'; } },
+      { name: 'hold', description: 'Hold until runtime shutdown', parameters: empty,
+        handler(_input, context) {
+          trace.push({ type: 'hold', hold: ++holds });
+          held.resolve();
+          return new Promise(resolve => context.signal.addEventListener('abort', () => resolve('ABORTED'), { once: true }));
+        } },
+    ] };
+  const nextHold = async () => {
+    await Promise.race([held.promise, new Promise((_, reject) => setTimeout(() => reject(new Error('no hold after ' + holds)), 10_000))]);
+    held = Promise.withResolvers();
+  };
+  let root, child, restored = [], completed;
+  const reopen = async () => {
+    await root.session.shutdown();
+    await new Promise(resolve => setImmediate(resolve));
+    root = await Agent.create(options);
+    const listed = await Subagents.list(root, { includeCompleted: true });
+    trace.push({ type: 'restored', listed });
+    restored.push(listed.agents.find(agent => agent.agent_id === child.agent_id).status);
+  };
+  try {
+    root = await Agent.create(options);
+    child = await Subagents.spawn(root, { role: 'progressing', task: 'Call step, then hold.', outputSchema: { type: 'string' } });
+    await nextHold();
+    // Twice the budget: every reset lands after the resumed turn finished a tool.
+    for (let restart = 1; restart <= 6; restart++) {
+      await reopen();
+      await nextHold();
+    }
+    assert.ok(restored.every(status => status.state !== 'failed'), JSON.stringify(restored));
+    assert.equal(holds, 7, 'the original turn plus one resume per restart');
+    assert.equal(steps, 7, 'every resume committed new work before the next restart');
+    finishing = true;
+    await reopen();
+    // Waiting right after reconstruction must not report the child, whose
+    // automatic resume is still pending, as interrupted (lazy restore made
+    // that window wide enough for a parent to re-delegate the same work).
+    completed = await Subagents.wait(root, { agentIds: [child.agent_id], timeoutMs: 10_000 });
+    assert.deepEqual(completed.agents[0].status, { state: 'completed', output: 'PROGRESS_KEPT' });
+    assert.deepEqual(errors, []);
+  } finally {
+    await root?.session.shutdown();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    const output = new URL('../../../output/subagent-shutdown-race/', import.meta.url);
+    await mkdir(output, { recursive: true });
+    await writeFile(new URL('resume-progress.json', output), JSON.stringify({
+      command: 'node --test js/nanocodex/test/subagent-shutdown-race.test.mjs',
+      expected: 'child that completes a tool after each of six restarts keeps resuming (never recovery exhausted) and completes its original turn',
+      steps, holds, calls, restored, completed, trace, errors,
+    }, null, 2));
+  }
+});
+
 test('a failed final journal flush cannot let shutdown cleanup persist closed children', { timeout: 30_000 }, async () => {
   const module = await readFile(new URL('../pkg-web/nanocodex_bg.wasm', import.meta.url));
   const errors = [], saves = [];

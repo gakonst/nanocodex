@@ -177,6 +177,7 @@ fn real_decoder_renders_current_rtp_and_rejects_pre_epoch_arrivals() {
 }
 
 #[test]
+#[ignore = "quarantined: 80-83% audible on hosted macOS, https://github.com/gakonst/nanocodex/issues/942"]
 fn continuous_speech_survives_device_cadence_and_packet_jitter() {
     gst::init().unwrap();
     let mut encoder =

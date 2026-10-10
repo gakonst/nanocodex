@@ -4,7 +4,7 @@ use crate::{
     MessagesRequest, Role, ServerToolDefinition, StopReason, StreamEvent, ToolDefinition,
     ToolResultContent, Usage, collect_stream,
 };
-use futures_util::StreamExt;
+use futures_util::{FutureExt as _, StreamExt};
 use nanocodex_agent::{
     AgentEvents, AgentHandle, AgentSessionContext, Capabilities, CostStatus, ForkPoint,
     ForkRequest, HarnessFamily, HarnessModel, Lineage, Mutability, Nanocodex, NanocodexError,
@@ -23,6 +23,7 @@ mod durable;
 mod images;
 #[cfg(not(target_family = "wasm"))]
 mod rollout;
+mod shared;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
 pub use durable::{
     ClaudeCheckpointView, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
@@ -32,6 +33,7 @@ use durable::{Cursor, Effect, Snapshot};
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
         Arc, Weak,
@@ -48,6 +50,68 @@ use web_time::Instant;
 
 fn estimate_text_tokens(text: &str) -> u64 {
     (text.encode_utf16().count() as u64).div_ceil(4)
+}
+
+// Per-receipt history bound shared with the OpenAI session history. Without it,
+// one oversized receipt can exceed the model window, and compaction cannot
+// shrink it because the latest tool round is retained verbatim.
+const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
+
+/// Keeps the head and tail of `text` within `max_tokens` of the local estimate.
+fn truncate_middle(text: &str, max_tokens: u64) -> String {
+    let total = estimate_text_tokens(text);
+    if total <= max_tokens {
+        return text.to_owned();
+    }
+    let side = usize::try_from(max_tokens.saturating_mul(2)).unwrap_or(usize::MAX);
+    let mut units = 0;
+    let head = text
+        .char_indices()
+        .find(|(_, c)| {
+            units += c.len_utf16();
+            units > side
+        })
+        .map_or(text.len(), |(end, _)| end);
+    units = 0;
+    let tail = text
+        .char_indices()
+        .rev()
+        .find(|(_, c)| {
+            units += c.len_utf16();
+            units > side
+        })
+        .map_or(0, |(start, c)| start + c.len_utf8())
+        .max(head);
+    format!(
+        "{}…{} tokens truncated…{}",
+        &text[..head],
+        total - max_tokens,
+        &text[tail..]
+    )
+}
+
+/// Text shares one budget across a receipt; media and protocol blocks are kept.
+fn bound_tool_result(content: ToolResultContent) -> ToolResultContent {
+    match content {
+        ToolResultContent::Text(text) => {
+            ToolResultContent::Text(truncate_middle(&text, TOOL_RESULT_TOKEN_LIMIT))
+        }
+        ToolResultContent::Blocks(mut blocks) => {
+            let mut remaining = TOOL_RESULT_TOKEN_LIMIT;
+            for block in &mut blocks {
+                if block["type"] != "text" {
+                    continue;
+                }
+                let Some(text) = block["text"].as_str() else {
+                    continue;
+                };
+                let bounded = truncate_middle(text, remaining);
+                remaining = remaining.saturating_sub(estimate_text_tokens(text));
+                block["text"] = bounded.into();
+            }
+            ToolResultContent::Blocks(blocks)
+        }
+    }
 }
 
 const fn add_usage(total: &mut Usage, usage: &Usage) {
@@ -83,6 +147,39 @@ pub struct ClaudeToolInvocation {
     pub instruction_revision: Option<u64>,
     /// Embedding-private inherited tool context; never serialized to the model.
     pub host_context: Option<Arc<str>>,
+    /// Live nested Code Mode progress for `exec`/`wait` observations. Other
+    /// tools receive `None`; hosts without live updates may ignore it.
+    pub progress: Option<ClaudeToolProgress>,
+}
+/// One live nested Code Mode update reported while `exec`/`wait` runs.
+#[derive(Clone, Debug)]
+pub enum ClaudeNestedToolUpdate {
+    /// A nested call was admitted and may now run.
+    Started {
+        call_id: String,
+        name: String,
+        input: Value,
+    },
+    /// A nested call reached its terminal result. The value uses the fields
+    /// of a `_nanocodex_code.calls` receipt: `call_id`, `name`, `input`,
+    /// `output`, `structured_result`, `success`, `started_after_ns`,
+    /// `duration_ns` and `metadata`.
+    Completed(Value),
+}
+/// Ordered sink for live nested Code Mode updates. Delivery is best effort;
+/// the final `_nanocodex_code` receipt still settles any call it reports.
+#[derive(Clone)]
+pub struct ClaudeToolProgress(tokio::sync::mpsc::UnboundedSender<ClaudeNestedToolUpdate>);
+impl ClaudeToolProgress {
+    /// Publishes one update; a finished observation silently drops it.
+    pub fn update(&self, update: ClaudeNestedToolUpdate) {
+        let _ = self.0.send(update);
+    }
+}
+impl std::fmt::Debug for ClaudeToolProgress {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ClaudeToolProgress")
+    }
 }
 #[cfg(all(feature = "tools", not(target_family = "wasm")))]
 impl ClaudeToolInvocation {
@@ -220,6 +317,25 @@ impl ClaudeTools {
             Arc::new(move |input, context| Box::pin(function(input, context))),
         ));
         self
+    }
+    /// Registers a tool written against the shared nanocodex [`Tool`] contract,
+    /// the same implementation a Responses agent installs in its `Tools`
+    /// registry.
+    ///
+    /// The tool receives this call's session, turn, call and host-context
+    /// identities, but no Responses history. Its output schema is appended to
+    /// the description because Claude definitions have no field for it, and
+    /// multimodal output reaches Claude as serialized JSON text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for freeform, namespace and other non-function tools,
+    /// which Claude cannot call.
+    ///
+    /// [`Tool`]: nanocodex_oai_tools::Tool
+    pub fn shared_tool<T: nanocodex_oai_tools::Tool>(mut self, tool: T) -> Result<Self> {
+        self.tools.push(shared::bridge(tool)?);
+        Ok(self)
     }
 }
 type DynamicToolsFactory = Arc<dyn Fn() -> ClaudeTools + Send + Sync>;
@@ -531,9 +647,9 @@ impl ClaudeBuilder {
     }
     /// Applies the shared catalog's validated effort to native Claude policy.
     pub fn thinking(mut self, thinking: Thinking) -> Result<Self> {
-        let model: HarnessModel = self.claude.model.parse().map_err(invalid)?;
+        let model: HarnessModel = self.claude.model.parse().map_err(unsupported)?;
         if model.family() != HarnessFamily::Claude || !model.supports_thinking(thinking) {
-            return Err(invalid("Claude model does not support selected thinking"));
+            return Err(unsupported("Claude model does not support selected thinking"));
         }
         self.adaptive_thinking = thinking != Thinking::None;
         self.effort = match thinking {
@@ -1126,10 +1242,10 @@ impl ClaudeBuilder {
             || self.context_window_tokens == 0
             || self.auto_compact_window_tokens == Some(0)
         {
-            return Err(invalid("Claude model and max_tokens must be nonempty"));
+            return Err(unsupported("Claude model and max_tokens must be nonempty"));
         }
         if self.max_tokens.is_none() && model_max_tokens(&self.claude.model).is_none() {
-            return Err(invalid(
+            return Err(unsupported(
                 "Unknown Claude model: configure max_tokens explicitly",
             ));
         }
@@ -1140,7 +1256,7 @@ impl ClaudeBuilder {
                         || block.get("text").and_then(Value::as_str).is_none()
                 })
         }) {
-            return Err(invalid("system_blocks must be nonempty Claude text blocks"));
+            return Err(unsupported("system_blocks must be nonempty Claude text blocks"));
         }
         let mut handlers = HashMap::new();
         let mut definitions = Vec::new();
@@ -1152,24 +1268,24 @@ impl ClaudeBuilder {
                     .iter()
                     .any(|tool| tool.kind.starts_with("tool_search_tool_"))
             {
-                return Err(invalid("deferred Claude tool needs client_tool_search"));
+                return Err(unsupported("deferred Claude tool needs client_tool_search"));
             }
             if definition.name.trim().is_empty()
                 || handlers.insert(definition.name.clone(), handler).is_some()
             {
-                return Err(invalid("duplicate or empty Claude tool name"));
+                return Err(unsupported("duplicate or empty Claude tool name"));
             }
             definitions.push(definition);
         }
         let discovered = Arc::new(Mutex::new(HashSet::<String>::new()));
         if custom_tool_search && !handlers.contains_key("ToolSearch") {
-            return Err(invalid("custom_tool_search requires a ToolSearch handler"));
+            return Err(unsupported("custom_tool_search requires a ToolSearch handler"));
         }
         if self.client_tool_search && !custom_tool_search {
             if handlers.contains_key("ToolSearch")
                 || handlers.contains_key("DeferredToolPlaceholder")
             {
-                return Err(invalid("reserved Claude discovery tool name"));
+                return Err(unsupported("reserved Claude discovery tool name"));
             }
             let catalog = definitions.clone();
             handlers.insert(
@@ -1198,9 +1314,9 @@ impl ClaudeBuilder {
                             None => 5,
                             Some(value) => value
                                 .as_u64()
-                                .filter(|n| (1..=8).contains(n))
-                                .ok_or("max_results must be 1–8")?
-                                as usize,
+                                .filter(|n| *n >= 1)
+                                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                                .ok_or("max_results must be a positive integer")?,
                         };
                         let selected = query.strip_prefix("select:");
                         let matches = catalog
@@ -1246,7 +1362,7 @@ impl ClaudeBuilder {
             definitions.push(ToolDefinition {
                 name: "ToolSearch".into(),
                 description: "Find deferred tools by name or purpose; use select:ToolName for an exact match.".into(),
-                input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":8}},"required":["query"],"additionalProperties":false}),
+                input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}),
                 strict: None, defer_loading: false,
             });
             definitions.push(ToolDefinition {
@@ -1265,7 +1381,7 @@ impl ClaudeBuilder {
         let mut adapter_cleanup = Vec::new();
         if let Some(adapter) = &self.tools_adapter {
             if !self.server_tools.is_empty() {
-                return Err(invalid("client tool adapters cannot wrap server tools"));
+                return Err(unsupported("client tool adapters cannot wrap server tools"));
             }
             let dynamic = std::mem::take(&mut self.dynamic_tools)
                 .into_iter()
@@ -1304,7 +1420,7 @@ impl ClaudeBuilder {
                     || !definition.input_schema.is_object()
                     || handlers.insert(definition.name.clone(), handler).is_some()
                 {
-                    return Err(invalid("invalid or duplicate adapted Claude tool"));
+                    return Err(unsupported("invalid or duplicate adapted Claude tool"));
                 }
                 definitions.push(definition);
             }
@@ -1315,7 +1431,7 @@ impl ClaudeBuilder {
         let mut names = handlers.keys().map(String::as_str).collect::<HashSet<_>>();
         for tool in &self.server_tools {
             if tool.kind.is_empty() || tool.name.is_empty() || !names.insert(&tool.name) {
-                return Err(invalid("duplicate or empty Claude server tool name/type"));
+                return Err(unsupported("duplicate or empty Claude server tool name/type"));
             }
         }
         if self
@@ -1323,12 +1439,12 @@ impl ClaudeBuilder {
             .as_ref()
             .is_some_and(|id| id.trim().is_empty())
         {
-            return Err(invalid("Claude session ID must not be empty"));
+            return Err(unsupported("Claude session ID must not be empty"));
         }
         if let (Some(session_id), Some(policy)) = (&self.session_id, &self.policy)
             && session_id != policy.state_id()
         {
-            return Err(invalid(
+            return Err(unsupported(
                 "durable Claude session ID must equal the policy state ID",
             ));
         }
@@ -1346,13 +1462,13 @@ impl ClaudeBuilder {
         if let Some(tasks) = &restored.tasks {
             self.task_board
                 .as_ref()
-                .ok_or_else(|| invalid("restoring Claude task state requires the task board"))?
+                .ok_or_else(|| unsupported("restoring Claude task state requires the task board"))?
                 .restore(tasks.clone())
                 .map_err(provider_error)?;
         }
         #[cfg(not(all(feature = "tools", not(target_family = "wasm"))))]
         if restored.tasks.is_some() {
-            return Err(invalid(
+            return Err(unsupported(
                 "Claude task restoration requires a native target with tools and a task board",
             ));
         }
@@ -1451,15 +1567,20 @@ impl ClaudeBuilder {
             policy: self.policy,
             admission: Mutex::new(()),
             idle: Notify::new(),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+            admission_order: AtomicU64::new(0),
+            waiters: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             compaction_cancel: Mutex::new(None),
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             task_board: self.task_board,
             cancellations: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
             released: AtomicBool::new(false),
-            sequence: AtomicU64::new(1),
+            sequence: std::sync::Mutex::new(1),
             accepted_turns: AtomicU64::new(accepted_turns),
             steering: Mutex::new(HashMap::new()),
+            live_nested_starts: std::sync::Mutex::new(LiveNestedStarts::default()),
+            code_call_summaries: std::sync::Mutex::new(HashMap::new()),
         });
         *native_factory
             .state
@@ -1526,6 +1647,68 @@ fn event_image_reference(value: Option<&Value>) -> Value {
     } else {
         Value::Object(reference)
     }
+}
+
+/// Persisted presentation summary of one nested call: identity, tool, status
+/// and timing plus a small input. Outputs are never retained here.
+fn nested_call_summary(call: &Value) -> Option<Value> {
+    const INPUT_BYTES: usize = 512;
+    let call_id = call.get("call_id")?.as_str()?;
+    let name = call.get("name")?.as_str()?;
+    let input = call.get("input").filter(|input| !input.is_null());
+    let retained = input.filter(|input| bounded_json_len(input, INPUT_BYTES) <= INPUT_BYTES);
+    let parent = call_id.split_once("/code-").map(|(parent, _)| parent);
+    let mut summary = json!({
+        "call_id": call_id, "parent_call_id": parent, "name": name, "input": retained,
+        "status": if call.get("success").and_then(Value::as_bool) == Some(true) { "completed" } else { "failed" },
+        "duration_ns": call.get("duration_ns"),
+    });
+    if input.is_some() && retained.is_none() {
+        summary["input_truncated"] = Value::Bool(true);
+    }
+    Some(summary)
+}
+
+/// Approximate encoded JSON size that stops counting once it exceeds `limit`,
+/// so a large Write/Edit payload is never serialized just to be rejected.
+fn bounded_json_len(value: &Value, limit: usize) -> usize {
+    fn walk(value: &Value, total: &mut usize, limit: usize) {
+        if *total > limit {
+            return;
+        }
+        match value {
+            Value::Null | Value::Bool(_) => *total += 5,
+            Value::Number(_) => *total += 20,
+            Value::String(text) => *total += text.len() + 2,
+            Value::Array(items) => {
+                *total += 2;
+                for item in items {
+                    walk(item, total, limit);
+                    *total += 1;
+                    if *total > limit {
+                        return;
+                    }
+                }
+            }
+            Value::Object(fields) => {
+                *total += 2;
+                for (key, item) in fields {
+                    *total += key.len() + 4;
+                    walk(item, total, limit);
+                    if *total > limit {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    let mut total = 0;
+    walk(value, &mut total, limit);
+    total
+}
+
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Bounded nested Code Mode tool.result payload fields.
@@ -1662,14 +1845,16 @@ fn host_reply(
                 blocks.push(match item {
                     ToolResultBlock::Text { text } => json!({"type":"text","text":text}),
                     ToolResultBlock::Image { source } => {
-                        let image_url = match source {
+                        let source = match source {
                             ImageSource::Base64 { media_type, data } => {
-                                format!("data:{media_type};base64,{data}")
+                                crate::prompt::image_source(&format!(
+                                    "data:{media_type};base64,{data}"
+                                ))
+                                .map_err(|error| error.to_string())?
+                                .0
                             }
-                            ImageSource::Url { url } => url,
+                            ImageSource::Url { url } => json!({"type":"url","url":url}),
                         };
-                        let (source, _) = crate::prompt::image_source(&image_url)
-                            .map_err(|error| error.to_string())?;
                         json!({"type":"image","source":source})
                     }
                     ToolResultBlock::Document { file_data } => {
@@ -1696,40 +1881,25 @@ fn host_reply(
 }
 
 /// A separate, narrow provider request for one client WebSearch call. The
-/// response is converted to bounded, source-attributed text, not inserted as
-/// a server tool result into the main conversation. This intentionally uses
-/// only caller-approved ClaudeClient authentication, never CLI identity.
+/// response is converted to source-attributed text, not inserted as a server
+/// tool result into the main conversation. The complete answer and every
+/// deduplicated source are returned; the per-receipt history bound applies when
+/// the result is recorded. This intentionally uses only caller-approved
+/// ClaudeClient authentication, never CLI identity.
 async fn nested_web_search(
     client: &ClaudeClient,
     model: &str,
     max_tokens: Option<u32>,
     input: Value,
 ) -> std::result::Result<String, String> {
-    const MAX_OUTPUT: usize = 32 * 1024;
-    const MAX_SOURCES: usize = 8 * 1024;
-    fn bounded(text: &str, max: usize) -> &str {
-        let mut end = text.len().min(max);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        &text[..end]
-    }
     fn add_source(
         sources: &mut String,
         seen: &mut HashSet<String>,
         url: &str,
         title: Option<&str>,
-    ) -> std::result::Result<(), String> {
-        if seen.contains(url) {
-            return Ok(());
-        }
-        // Keep complete URLs, cap optional decoration, and fail explicitly if
-        // citations themselves cannot fit rather than returning unattributed text.
-        let title = title.map(|text| bounded(text, 256));
-        let size =
-            "\nSource: ".len() + url.len() + title.map_or(0, |text| " — ".len() + text.len());
-        if size > MAX_SOURCES.saturating_sub(sources.len()) {
-            return Err("nested search sources exceed 8 KiB output budget".into());
+    ) {
+        if !seen.insert(url.to_owned()) {
+            return;
         }
         sources.push_str("\nSource: ");
         sources.push_str(url);
@@ -1737,8 +1907,6 @@ async fn nested_web_search(
             sources.push_str(" — ");
             sources.push_str(title);
         }
-        seen.insert(url.to_owned());
-        Ok(())
     }
     let fields = input
         .as_object()
@@ -1758,7 +1926,13 @@ async fn nested_web_search(
     if query.trim().len() < 2 || query.len() > 8192 || query.chars().any(char::is_control) {
         return Err("invalid WebSearch query".into());
     }
-    let mut tool = ServerToolDefinition::web_search_basic(3);
+    // No max_uses: the provider's own server-tool loop and pause_turn decide
+    // how many searches one query needs.
+    let mut tool = ServerToolDefinition {
+        kind: "web_search_20250305".into(),
+        name: "web_search".into(),
+        options: std::collections::BTreeMap::new(),
+    };
     for key in ["allowed_domains", "blocked_domains"] {
         if let Some(value) = fields.get(key) {
             let domains = value.as_array().ok_or("WebSearch domains must be arrays")?;
@@ -1786,13 +1960,15 @@ async fn nested_web_search(
     }
     let mut messages = vec![Message::text(Role::User, query)];
     // A paused response can already contain findings and source receipts.
-    // Accumulate one bounded answer across the whole nested operation.
+    // Accumulate one answer across the whole nested operation.
     let mut out = String::new();
     let mut sources = String::new();
     let mut source_urls = HashSet::new();
     // API server tools can pause mid-operation; replay their opaque blocks
-    // without fabricating client tool_result messages.
-    for _ in 0..4 {
+    // without fabricating client tool_result messages. The provider's stop
+    // reason terminates the loop: end_turn finishes, any other non-pause stop
+    // fails, and a pause that carries no content is treated as no progress.
+    loop {
         let mut request = MessagesRequest {
             model: model.into(), max_tokens: max_tokens.or_else(|| model_max_tokens(model))
                 .ok_or("Unknown Claude model: configure max_tokens explicitly")?, cache_control: None,
@@ -1828,11 +2004,11 @@ async fn nested_web_search(
         for block in &response.content {
             match block {
                 ContentBlock::Text { text, extra } => {
-                    out.push_str(bounded(text, MAX_OUTPUT - out.len()));
+                    out.push_str(text);
                     if let Some(Value::Array(citations)) = extra.get("citations") {
                         for citation in citations {
                             if let Some(url) = citation.get("url").and_then(Value::as_str) {
-                                add_source(&mut sources, &mut source_urls, url, None)?;
+                                add_source(&mut sources, &mut source_urls, url, None);
                             }
                         }
                     }
@@ -1846,7 +2022,7 @@ async fn nested_web_search(
                                     &mut source_urls,
                                     url,
                                     result.get("title").and_then(Value::as_str),
-                                )?;
+                                );
                             }
                         }
                     }
@@ -1855,6 +2031,9 @@ async fn nested_web_search(
             }
         }
         if response.stop_reason == Some(StopReason::PauseTurn) {
+            if response.content.is_empty() {
+                return Err("nested search paused without progress".into());
+            }
             messages.push(Message {
                 role: Role::Assistant,
                 content: response.content,
@@ -1864,13 +2043,9 @@ async fn nested_web_search(
         if out.trim().is_empty() && sources.is_empty() {
             return Err("nested search returned no readable result".into());
         }
-        // Sources have their own budget, independent of answer/block ordering.
-        // Reserve their complete text before truncating a potentially long answer.
-        out.truncate(bounded(&out, MAX_OUTPUT - sources.len()).len());
         out.push_str(&sources);
         return Ok(out);
     }
-    Err("nested search exceeded pause limit".into())
 }
 
 #[cfg(all(feature = "tools", not(target_family = "wasm")))]
@@ -1879,7 +2054,7 @@ async fn web_fetch_with_source<P: nanocodex_claude_tools::web::ApprovedWebFetchS
     source: &P,
     input: Value,
 ) -> std::result::Result<String, String> {
-    use nanocodex_claude_tools::web::{MAX_WEB_OUTPUT_BYTES, WebFetchRequest};
+    use nanocodex_claude_tools::web::WebFetchRequest;
     let fields = input
         .as_object()
         .ok_or("WebFetch input must be an object")?;
@@ -1978,18 +2153,13 @@ async fn web_fetch_with_source<P: nanocodex_claude_tools::web::ApprovedWebFetchS
     if response.role != Role::Assistant || response.stop_reason != Some(StopReason::EndTurn) {
         return Err("WebFetch summary did not end normally".into());
     }
+    // The summary is already bounded by the auxiliary request's output budget;
+    // return it whole. The per-receipt history bound applies when recorded.
     let citation = format!("\nSource: {}", page.final_url);
-    let answer_budget = MAX_WEB_OUTPUT_BYTES - citation.len();
     let mut out = String::new();
     for block in response.content {
         match block {
-            ContentBlock::Text { text, .. } => {
-                let mut end = text.len().min(answer_budget - out.len());
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                out.push_str(&text[..end]);
-            }
+            ContentBlock::Text { text, .. } => out.push_str(&text),
             ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
             _ => return Err("WebFetch summary returned a tool block".into()),
         }
@@ -2038,6 +2208,14 @@ struct Conversation {
     admitted_tool_ids: HashSet<String>,
     #[serde(default)]
     recovery_notices: Vec<String>,
+    // Non-secret presentation summaries of nested Code Mode calls per committed
+    // exec/wait tool_use, so resumed transcripts can rebuild their child cards.
+    // Never sent to the provider; bounded to the newest rounds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    code_calls: Vec<Value>,
+    // Older rounds evicted from `code_calls` by its round/byte budget.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    code_calls_omitted_rounds: u64,
     messages: Vec<Message>,
     summary: String,
     active_context_tokens: u64,
@@ -2051,6 +2229,32 @@ struct Conversation {
     container: Option<String>,
 }
 impl Conversation {
+    const CODE_CALL_ROUNDS: usize = 256;
+    const CODE_CALLS_PER_ROUND: usize = 64;
+    // Explicit history budget for all retained rounds (~1 MiB of JSON).
+    const CODE_CALL_BYTES: usize = 1024 * 1024;
+
+    /// Retains one round's nested-call summaries within explicit call, round
+    /// and byte budgets. Truncation is recorded (`omitted_calls` per round,
+    /// `code_calls_omitted_rounds` overall) so a resumed view stays honest.
+    fn retain_code_calls(&mut self, tool_use_id: &str, mut calls: Vec<Value>) {
+        let omitted = calls.len().saturating_sub(Self::CODE_CALLS_PER_ROUND);
+        calls.truncate(Self::CODE_CALLS_PER_ROUND);
+        let mut round = json!({"tool_use_id": tool_use_id, "calls": calls});
+        if omitted > 0 {
+            round["omitted_calls"] = json!(omitted);
+        }
+        self.code_calls.push(round);
+        let size = |round: &Value| bounded_json_len(round, usize::MAX);
+        let mut total = self.code_calls.iter().map(size).sum::<usize>();
+        while self.code_calls.len() > Self::CODE_CALL_ROUNDS
+            || (total > Self::CODE_CALL_BYTES && !self.code_calls.is_empty())
+        {
+            total = total.saturating_sub(size(&self.code_calls.remove(0)));
+            self.code_calls_omitted_rounds = self.code_calls_omitted_rounds.saturating_add(1);
+        }
+    }
+
     const fn allows_auto_compaction(&self) -> bool {
         !self.auto_compaction_suppressed
             && (self.rapid_compactions < 2 || self.rounds_since_compaction >= 3)
@@ -2304,7 +2508,7 @@ impl ClaudeNativeFactory {
         let state = self
             .state
             .lock()
-            .map_err(|_| invalid("Claude capability lock poisoned"))?
+            .map_err(|_| unsupported("Claude capability lock poisoned"))?
             .upgrade()
             .ok_or(NanocodexError::AgentStopped)?;
         if state.stopped.load(Ordering::SeqCst) {
@@ -2407,7 +2611,7 @@ impl AgentFactory for ClaudeNativeFactory {
         let state = self.owner();
         Box::pin(async move {
             let state = state?;
-            let model: HarnessModel = state.model().parse().map_err(invalid)?;
+            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             let thinking = if state.effort().is_none() {
                 model.default_thinking()
             } else {
@@ -2451,7 +2655,7 @@ impl AgentFactory for ClaudeNativeFactory {
                 state.initialize_child_workspace(&mut recipe)?;
                 return recipe.host_context(host_context).build();
             }
-            let model: HarnessModel = state.model().parse().map_err(invalid)?;
+            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             let thinking = if state.effort().is_none() {
                 model.default_thinking()
             } else {
@@ -2548,6 +2752,11 @@ struct TurnSteering {
     next_index: u32,
     revision: Option<u64>,
     accepting: bool,
+    /// The native image resolution of the model this turn's requests name.
+    ///
+    /// Steers are prepared with it when accepted, so it is fixed at admission.
+    images: crate::prompt::ImageResolution,
+    events: AgentEventPublisher,
 }
 
 struct State {
@@ -2605,6 +2814,13 @@ struct State {
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     admission: Mutex<()>,
     idle: Notify,
+    /// Turns of this process whose durable attempt began and has not retired.
+    /// An automatic admission blocked only by such a turn waits for it.
+    attempts: std::sync::atomic::AtomicUsize,
+    /// Process-local admission order, taken under admission like the durable order.
+    admission_order: AtomicU64,
+    /// Orders of automatic admissions of this process still waiting to begin.
+    waiters: std::sync::Mutex<std::collections::BTreeSet<u64>>,
     compaction_cancel: Mutex<Option<Arc<Cancellation>>>,
     #[cfg(all(feature = "tools", not(target_family = "wasm")))]
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
@@ -2613,9 +2829,144 @@ struct State {
     // Local persistence handles (rollout writer, durable owner) are closed once,
     // by shutdown or by the background release after disconnect.
     released: AtomicBool,
-    sequence: AtomicU64,
+    /// The sequence number of the next published event.
+    sequence: std::sync::Mutex<u64>,
     accepted_turns: AtomicU64,
     steering: Mutex<HashMap<BackendTurnKey, TurnSteering>>,
+    // Nested Code Mode calls whose start was published live but whose result
+    // has not been published yet. A yielded exec can finish them in a later wait.
+    live_nested_starts: std::sync::Mutex<LiveNestedStarts>,
+    // Nested-call summaries of finished exec/wait calls awaiting their round commit.
+    code_call_summaries: std::sync::Mutex<HashMap<String, Vec<Value>>>,
+}
+/// Bounded set of open live nested starts, oldest evicted first.
+#[derive(Default)]
+struct LiveNestedStarts {
+    open: HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+impl LiveNestedStarts {
+    const LIMIT: usize = 4096;
+    fn insert(&mut self, call_id: &str) -> bool {
+        if self.open.contains(call_id) {
+            return false;
+        }
+        while self.open.len() >= Self::LIMIT {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.open.remove(&oldest);
+        }
+        if self.order.len() >= Self::LIMIT * 2 {
+            let open = &self.open;
+            self.order.retain(|id| open.contains(id));
+        }
+        self.open.insert(call_id.to_owned());
+        self.order.push_back(call_id.to_owned());
+        true
+    }
+    fn remove(&mut self, call_id: &str) -> bool {
+        self.open.remove(call_id)
+    }
+}
+/// Live nested calls started by one exec/wait observation. Calls that a
+/// yielded cell still runs are released for a later wait; any other open call
+/// is settled as outcome-unknown when the observation fails or is dropped.
+struct LiveNestedCalls<'a> {
+    state: &'a State,
+    events: &'a AgentEventPublisher,
+    model_call_index: u32,
+    fallback_parent: &'a str,
+    open: Vec<(String, String, Instant)>,
+    completed: HashSet<String>,
+    // Summaries of calls settled as unknown, for the persisted round summary.
+    unknown: Vec<Value>,
+}
+impl LiveNestedCalls<'_> {
+    const UNKNOWN: &'static str = "Code Mode observation ended before this nested call reported a result; it may still be running or may have finished. Outcome unknown: do not assume it did not run or automatically repeat it.";
+    fn parent(&self, call_id: &str) -> String {
+        call_id
+            .split_once("/code-")
+            .map_or(self.fallback_parent, |(parent, _)| parent)
+            .to_owned()
+    }
+    fn publish(&mut self, update: ClaudeNestedToolUpdate) {
+        match update {
+            ClaudeNestedToolUpdate::Started {
+                call_id,
+                name,
+                input,
+            } => {
+                if self.completed.contains(&call_id)
+                    || !self
+                        .state
+                        .live_nested_starts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(&call_id)
+                {
+                    return;
+                }
+                let parent = self.parent(&call_id);
+                self.state.emit(
+                    self.events,
+                    AgentEventKind::ToolCall,
+                    json!({
+                        "call_id": call_id, "tool": name, "arguments": input,
+                        "model_call_index": self.model_call_index, "parent_call_id": parent,
+                    }),
+                );
+                self.open.push((call_id, name, Instant::now()));
+            }
+            ClaudeNestedToolUpdate::Completed(call) => {
+                let Some(call_id) = call.get("call_id").and_then(Value::as_str) else {
+                    return;
+                };
+                if self.completed.contains(call_id) {
+                    return;
+                }
+                let parent = json!(self.parent(call_id));
+                self.state.publish_nested_receipt(
+                    self.events,
+                    self.model_call_index,
+                    &call,
+                    &parent,
+                );
+                self.open.retain(|(open, _, _)| open != call_id);
+                self.completed.insert(call_id.to_owned());
+            }
+        }
+    }
+    /// The cell still runs: its open calls finish in a later observation.
+    fn release_running(&mut self) {
+        self.open.clear();
+    }
+    /// The observation ended without this call's receipt. The nested
+    /// operation may still run or may have finished: report that truthfully,
+    /// and keep its start open so a later wait can still publish the result.
+    fn settle_unknown(&mut self) {
+        for (call_id, tool, began) in std::mem::take(&mut self.open) {
+            let parent = self.parent(&call_id);
+            self.state.emit(
+                self.events,
+                AgentEventKind::ToolResult,
+                json!({
+                    "call_id": call_id, "tool": tool, "status": "unknown",
+                    "duration_ns": began.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+                    "started_after_ns": null, "result": {"text": Self::UNKNOWN},
+                    "outcome_unknown": true, "parent_call_id": parent,
+                }),
+            );
+            self.unknown.push(json!({
+                "call_id": call_id, "parent_call_id": parent, "name": tool, "status": "unknown",
+            }));
+        }
+    }
+}
+impl Drop for LiveNestedCalls<'_> {
+    fn drop(&mut self) {
+        self.settle_unknown();
+    }
 }
 #[derive(Default)]
 struct Cancellation {
@@ -2626,6 +2977,9 @@ impl Cancellation {
     fn cancel(&self) {
         self.flag.store(true, Ordering::SeqCst);
         self.notify.notify_waiters();
+    }
+    fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
     }
     async fn cancelled(&self) {
         if self.flag.load(Ordering::SeqCst) {
@@ -2644,11 +2998,307 @@ struct Driver {
     state: Arc<State>,
     handle: AgentHandle,
 }
-fn invalid(message: &str) -> NanocodexError {
+/// A durable attempt of this process. Retiring it wakes queued admissions.
+struct AttemptGuard(Arc<State>);
+impl AttemptGuard {
+    fn begin(state: Arc<State>) -> Self {
+        state.attempts.fetch_add(1, Ordering::SeqCst);
+        Self(state)
+    }
+}
+impl Drop for AttemptGuard {
+    fn drop(&mut self) {
+        self.0.attempts.fetch_sub(1, Ordering::SeqCst);
+        self.0.idle.notify_waiters();
+    }
+}
+impl State {
+    /// Whether an automatic admission taken at order is blocked only by work of
+    /// this process: a running attempt or an earlier admission still waiting.
+    fn local_blocker(&self, order: u64) -> bool {
+        !self.stopped.load(Ordering::SeqCst)
+            && (self.attempts.load(Ordering::SeqCst) > 0
+                || self
+                    .waiters
+                    .lock()
+                    .expect("waiters lock")
+                    .first()
+                    .is_some_and(|first| *first < order))
+    }
+}
+/// Settles an operation whose attempt began but whose prompt was rejected
+/// before any model request (for example an over-limit prompt), so it can never
+/// block a later prompt (#968). Its checkpoint is the unchanged conversation.
+/// A durability or store failure is not a rejection of the prompt: that
+/// operation is released and stays recoverable, as is one whose terminal
+/// cannot be written.
+async fn fail_begun(
+    state: &State,
+    policy: &dyn ClaudeExecutionPolicy,
+    id: String,
+    error: &NanocodexError,
+) {
+    if error.execution_policy_disposition().is_some() {
+        let _ = policy.release(id).await;
+        return;
+    }
+    let checkpoint = {
+        let conversation = state.conversation.lock().await;
+        state
+            .snapshot(&conversation)
+            .await
+            .ok()
+            .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+    };
+    let settled = match checkpoint {
+        Some(checkpoint) => policy
+            .fail(id.clone(), checkpoint, error.to_string())
+            .await
+            .is_ok(),
+        None => false,
+    };
+    if !settled {
+        let _ = policy.release(id).await;
+    }
+}
+/// Retires an automatic operation that never began, so it cannot block later
+/// prompts. An operation whose attempt may have begun stays recoverable.
+async fn retire_unstarted(policy: &dyn ClaudeExecutionPolicy, id: String) {
+    if !policy.cancel_unstarted(id.clone()).await.unwrap_or(false) {
+        let _ = policy.release(id).await;
+    }
+}
+async fn start_turn(
+    state: &Arc<State>,
+    request: BackendPrompt,
+    resolution: crate::prompt::ImageResolution,
+    attempt: Option<AttemptGuard>,
+    cancellation: Arc<Cancellation>,
+) -> BackendTurn {
+    let state = state.clone();
+    // Code Mode effects resolve their durable identity from trusted
+    // accepted input and tool-call events, including ephemeral children.
+    let turn_id = request
+        .events
+        .turn_id()
+        .unwrap_or(request.events.request_id());
+    state.emit(
+        &request.events,
+        AgentEventKind::InputAccepted,
+        json!({
+            "session_id": state.session_id,
+            "turn_id": turn_id,
+            "item_id": format!("{turn_id}:prompt"),
+            "kind": "prompt",
+            "request_id": request.request_id,
+            "input": request.prompt.instruction,
+        }),
+    );
+    state.accepted_turns.fetch_add(1, Ordering::SeqCst);
+    let request_id = request.request_id.clone();
+    let key = request.key;
+    state.steering.lock().await.insert(
+        key,
+        TurnSteering {
+            pending: std::collections::VecDeque::new(),
+            receipts: HashMap::new(),
+            operation: request_id.clone(),
+            model_call_index: 1,
+            next_index: 0,
+            revision: request.prompt.instruction_revision(),
+            accepting: true,
+            images: resolution,
+            events: request.events.clone(),
+        },
+    );
+    state
+        .cancellations
+        .lock()
+        .await
+        .insert(key, cancellation.clone());
+    let (sender, receiver) = oneshot::channel();
+    let running = state.clone();
+    // Queued turns keep the speed selected when they were accepted.
+    let speed = state.speed();
+    let task = async move {
+        // The steering entry's publisher keeps the turn's event stream
+        // open, and shutdown waits until no turn remains, so the turn
+        // retires even when its run panics.
+        let result = AssertUnwindSafe(running.run(request, speed, cancellation))
+            .catch_unwind()
+            .await;
+        running.steering.lock().await.remove(&key);
+        running.cancellations.lock().await.remove(&key);
+        drop(attempt);
+        running.idle.notify_waiters();
+        let _ = sender.send(result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+    };
+    #[cfg(not(target_family = "wasm"))]
+    tokio::spawn(task);
+    #[cfg(target_family = "wasm")]
+    wasm_bindgen_futures::spawn_local(task);
+    BackendTurn {
+        request_id,
+        result: Box::pin(async move { receiver.await.unwrap_or(Err(NanocodexError::TurnStopped)) }),
+    }
+}
+/// Waits for local work ahead of an admitted automatic turn, then begins the same
+/// operation. Cancellation or stop retires it without an attempt (#968).
+async fn defer_turn(
+    state: Arc<State>,
+    policy: Arc<dyn ClaudeExecutionPolicy>,
+    mut request: BackendPrompt,
+    resolution: crate::prompt::ImageResolution,
+    id: String,
+    order: u64,
+) -> BackendTurn {
+    // Registered while admission is held, before any later admission looks.
+    state.waiters.lock().expect("waiters lock").insert(order);
+    let key = request.key;
+    let cancellation = Arc::new(Cancellation::default());
+    state
+        .cancellations
+        .lock()
+        .await
+        .insert(key, cancellation.clone());
+    let events = request.events.clone();
+    let request_id = Some(id.clone());
+    let (sender, receiver) = oneshot::channel();
+    let task = async move {
+        let started = loop {
+            // Register for retirement before re-checking, so no wake is lost.
+            let mut retired = std::pin::pin!(state.idle.notified());
+            retired.as_mut().enable();
+            if cancellation.is_cancelled() {
+                break Err((NanocodexError::TurnCancelled, false));
+            }
+            // Shutdown holds admission while it waits for every cancel handle to
+            // retire, so waiting for admission must also observe cancellation.
+            let admission = tokio::select! {
+                admission = state.admission.lock() => admission,
+                () = cancellation.cancelled() => break Err((NanocodexError::TurnCancelled, false)),
+            };
+            if state.stopped.load(Ordering::SeqCst) {
+                break Err((NanocodexError::AgentStopped, false));
+            }
+            match policy.begin_attempt(id.clone()).await {
+                Ok(()) => {
+                    let attempt = AttemptGuard::begin(state.clone());
+                    state.waiters.lock().expect("waiters lock").remove(&order);
+                    let frozen = crate::prompt::freeze_admitted(
+                        request.prompt,
+                        policy.as_ref(),
+                        &id,
+                        resolution,
+                    )
+                    .await;
+                    let (prompt, resolution) = match frozen {
+                        Ok(admitted) => admitted,
+                        Err(error) => {
+                            fail_begun(&state, policy.as_ref(), id.clone(), &error).await;
+                            drop(attempt);
+                            break Err((error, true));
+                        }
+                    };
+                    request.prompt = prompt;
+                    let turn =
+                        start_turn(&state, request, resolution, Some(attempt), cancellation).await;
+                    drop(admission);
+                    break Ok(turn);
+                }
+                Err(error) => {
+                    drop(admission);
+                    let blocked = error.execution_policy_disposition()
+                        == Some(nanocodex_agent::ExecutionPolicyDisposition::Retry);
+                    if blocked && state.local_blocker(order) {
+                        tokio::select! {
+                            () = retired.as_mut() => {}
+                            () = cancellation.cancelled() => {}
+                        }
+                        continue;
+                    }
+                    break Err((error, false));
+                }
+            }
+        };
+        let result = match started {
+            Ok(turn) => turn.result.await,
+            Err((error, begun)) => Err(abandon_deferred(
+                &state,
+                policy.as_ref(),
+                &events,
+                key,
+                id,
+                order,
+                error,
+                begun,
+            )
+            .await),
+        };
+        let _ = sender.send(result);
+    };
+    #[cfg(not(target_family = "wasm"))]
+    tokio::spawn(task);
+    #[cfg(target_family = "wasm")]
+    wasm_bindgen_futures::spawn_local(task);
+    BackendTurn {
+        request_id,
+        result: Box::pin(async move { receiver.await.unwrap_or(Err(NanocodexError::TurnStopped)) }),
+    }
+}
+/// Settles a deferred turn that will never run: no admitted operation is left
+/// pending, its cancel handle is released, and event consumers see a terminal.
+#[allow(clippy::too_many_arguments)]
+async fn abandon_deferred(
+    state: &Arc<State>,
+    policy: &dyn ClaudeExecutionPolicy,
+    events: &AgentEventPublisher,
+    key: BackendTurnKey,
+    id: String,
+    order: u64,
+    error: NanocodexError,
+    begun: bool,
+) -> NanocodexError {
+    state.waiters.lock().expect("waiters lock").remove(&order);
+    if !begun {
+        retire_unstarted(policy, id).await;
+    }
+    state.cancellations.lock().await.remove(&key);
+    let cancelled = matches!(error, NanocodexError::TurnCancelled);
+    if !cancelled {
+        state.emit(
+            events,
+            AgentEventKind::RunError,
+            json!({"message": error.to_string()}),
+        );
+    }
+    state.emit(
+        events,
+        AgentEventKind::RunFailed,
+        json!({
+            "status": if cancelled { "cancelled" } else { "failed" },
+            "model": state.model(),
+            "effort": state.thinking().as_str(),
+            "transport": "messages_sse",
+            "orchestration": "claude",
+            "model_calls": 0,
+            "tool_calls": 0,
+            "duration_ms": 0,
+            "duration_ns": 0,
+            "error": error.to_string(),
+            "estimated_cost": null,
+            "cost_usd": null,
+            "cost_status": "other"
+        }),
+    );
+    state.idle.notify_waiters();
+    error
+}
+fn unsupported(message: &str) -> NanocodexError {
     NanocodexError::InvalidRequest(message.into())
 }
 fn provider_error(error: impl std::fmt::Display) -> NanocodexError {
-    invalid(&format!("Claude Messages: {error}"))
+    unsupported(&format!("Claude Messages: {error}"))
 }
 
 /// Lifecycle operations supported by the native Claude driver.
@@ -2803,7 +3453,7 @@ impl State {
             &*self
                 .round_boundary
                 .read()
-                .map_err(|_| invalid("Claude boundary lock poisoned"))?,
+                .map_err(|_| unsupported("Claude boundary lock poisoned"))?,
         );
         let mut snapshot = Snapshot::clone(&boundary);
         if self.stopped.load(Ordering::SeqCst) {
@@ -2923,6 +3573,10 @@ impl From<NanocodexError> for ResponseFailure {
 struct ResponseOutcome {
     message: crate::MessageResponse,
     upgrade: Option<durable::CodeOnlyUpgrade>,
+    /// The response came from a settled durable receipt. Its tool calls may
+    /// have been dispatched before an owner loss; a fresh response's calls
+    /// cannot have been.
+    replayed: bool,
 }
 struct ResponseContext<'a> {
     disable_tools: bool,
@@ -2991,6 +3645,59 @@ impl State {
             .or_else(|| self.system_blocks.as_ref().map(|blocks| json!(blocks)))
             .or_else(|| (!self.system.is_empty()).then(|| json!(self.system)))
     }
+    /// Publishes one nested Code Mode receipt, adding its start first unless
+    /// a live update already published it.
+    fn publish_nested_receipt(
+        &self,
+        events: &AgentEventPublisher,
+        model_call_index: u32,
+        call: &Value,
+        parent: &Value,
+    ) {
+        let (Some(call_id), Some(tool)) = (
+            call.get("call_id").and_then(Value::as_str),
+            call.get("name").and_then(Value::as_str),
+        ) else {
+            return;
+        };
+        let started = self
+            .live_nested_starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(call_id);
+        if !started {
+            self.emit(
+                events,
+                AgentEventKind::ToolCall,
+                json!({
+                    "call_id": call_id, "tool": tool, "arguments": call.get("input"),
+                    "model_call_index": model_call_index, "parent_call_id": parent,
+                }),
+            );
+        }
+        let mut payload = nested_event_result(call);
+        payload.extend([
+            ("call_id".to_owned(), json!(call_id)),
+            ("tool".to_owned(), json!(tool)),
+            (
+                "status".to_owned(),
+                json!(
+                    if call.get("success").and_then(Value::as_bool) == Some(true) {
+                        "completed"
+                    } else {
+                        "failed"
+                    }
+                ),
+            ),
+            ("duration_ns".to_owned(), json!(call.get("duration_ns"))),
+            (
+                "started_after_ns".to_owned(),
+                json!(call.get("started_after_ns")),
+            ),
+            ("parent_call_id".to_owned(), parent.clone()),
+        ]);
+        self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
+    }
     fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, mut payload: Value) {
         if let Some(payload) = payload.as_object_mut() {
             payload.insert(
@@ -3001,13 +3708,24 @@ impl State {
         let Ok(payload) = serde_json::value::to_raw_value(&payload) else {
             return;
         };
-        let _ = events.publish(AgentEvent {
+        let mut event = AgentEvent {
             protocol_version: 1,
             request_id: Arc::from(events.request_id()),
-            seq: self.sequence.fetch_add(1, Ordering::SeqCst),
+            seq: 0,
             kind,
             payload: Arc::from(payload),
-        });
+        };
+        // The publisher accepts only the next number in sequence, and turn runs
+        // and steering callers emit concurrently. Number and publish each event
+        // under one lock, and use a number only when its event is published.
+        let mut sequence = self
+            .sequence
+            .lock()
+            .expect("Claude event sequence lock poisoned");
+        event.seq = *sequence;
+        if events.publish(event).is_ok() {
+            *sequence += 1;
+        }
     }
     fn model(&self) -> String {
         self.model
@@ -3235,6 +3953,7 @@ impl State {
                 return Ok(ResponseOutcome {
                     message: response,
                     upgrade: None,
+                    replayed: true,
                 });
             }
             Step::Execute if needs_upgrade => {
@@ -3283,6 +4002,7 @@ impl State {
                 return Ok(ResponseOutcome {
                     message: response,
                     upgrade: Some(upgrade.clone()),
+                    replayed: true,
                 });
             }
         }
@@ -3404,6 +4124,7 @@ impl State {
                     return Ok(ResponseOutcome {
                         message: response,
                         upgrade,
+                        replayed: false,
                     });
                 }
                 Err(error) => error,
@@ -3509,6 +4230,10 @@ impl State {
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
+        // A steer accepted after the model loop could never reach the model.
+        if let Some(turn) = self.steering.lock().await.get_mut(&request.key) {
+            turn.accepting = false;
+        }
         // run_locked has dropped any active exec/wait observation future. Drain
         // cells even if cancellation arrived while the model request was pending.
         // Keep the conversation lock until cleanup completes, fencing the next turn.
@@ -3714,7 +4439,7 @@ impl State {
     ) -> Result<Usage> {
         let mut messages = context.packed_messages();
         if messages.is_empty() {
-            return Err(invalid("Claude cannot compact empty history"));
+            return Err(unsupported("Claude cannot compact empty history"));
         }
         let trigger = match mode {
             CompactionMode::Manual => "manual",
@@ -3735,7 +4460,7 @@ impl State {
         match outcome.decision {
             crate::ClaudeLifecycleDecision::Block(reason)
             | crate::ClaudeLifecycleDecision::Stop(reason) => {
-                return Err(invalid(&format!(
+                return Err(unsupported(&format!(
                     "PreCompact hook blocked compaction: {reason}"
                 )));
             }
@@ -3940,23 +4665,27 @@ impl State {
         {
             return Err(NanocodexError::InvalidRequest("durable Claude steering requires inline images; local image paths cannot be retained safely".into()));
         }
-        let frozen = crate::prompt::freeze(prompt)?;
+        let frozen = crate::prompt::freeze(prompt, turn.images).await?;
         let capacity = turn.pending.len() < 8;
         let local_index = || {
             turn.next_index
                 .checked_add(1)
-                .ok_or_else(|| invalid("Claude steer counter exhausted"))
+                .ok_or_else(|| unsupported("Claude steer counter exhausted"))
         };
         let (index, durable) = if let (Some(policy), Some(operation)) =
             (&self.policy, &turn.operation)
             && policy.supports_steering()
         {
+            // Journaling the prepared steer keeps images the model never
+            // receives, such as URLs that may carry credentials, out of the
+            // journal. Recovery prepares it again without change.
+            let journaled = serde_json::to_string(&frozen).map_err(provider_error)?;
             let Some(index) = policy
                 .accept_steer(
                     operation.clone(),
                     id.clone(),
                     turn.model_call_index,
-                    input_json.clone(),
+                    journaled,
                     capacity,
                 )
                 .await?
@@ -3979,6 +4708,26 @@ impl State {
         if let Some(id) = &id {
             turn.receipts.insert(id.clone(), (input_json, false));
         }
+        let turn_id = turn
+            .events
+            .turn_id()
+            .unwrap_or(turn.events.request_id())
+            .to_owned();
+        let item = id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        self.emit(
+            &turn.events,
+            AgentEventKind::InputAccepted,
+            json!({
+                "session_id": self.session_id,
+                "turn_id": turn_id,
+                "item_id": format!("{turn_id}:steer:{item}"),
+                "kind": "steer",
+                "request_id": id,
+                "input": frozen.instruction,
+            }),
+        );
         turn.pending.push_back(PendingSteer {
             prompt: frozen,
             message_id: id,
@@ -4073,22 +4822,58 @@ impl State {
             call_id: id.to_owned(),
             instruction_revision: cursor.instruction_revision,
             host_context: self.host_context.clone(),
+            progress: None,
         };
-        let (content, is_error, metadata, structured_result) =
-            match handler(input.clone(), invocation).await {
-                Ok(reply) => (
-                    reply.content,
-                    reply.is_error,
-                    reply.metadata,
-                    reply.structured_result,
-                ),
-                Err(reason) if reason == ClaudeTools::HOST_INTERRUPTED => {
-                    return Err(durable::recovery_error(
-                        "Claude tool host execution interrupted",
-                    ));
+        // Code Mode observations stream nested starts and results while the
+        // cell runs, exactly like the Codex driver. The final receipt below
+        // remains authoritative for anything the host did not report live.
+        let mut live = LiveNestedCalls {
+            state: self,
+            events,
+            model_call_index: index,
+            fallback_parent: id,
+            open: Vec::new(),
+            completed: HashSet::new(),
+            unknown: Vec::new(),
+        };
+        let outcome = if matches!(name, "exec" | "wait") {
+            let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+            let mut invocation = invocation;
+            invocation.progress = Some(ClaudeToolProgress(sender));
+            let call = handler(input.clone(), invocation);
+            tokio::pin!(call);
+            let outcome = loop {
+                tokio::select! {
+                    biased;
+                    Some(update) = updates.recv() => live.publish(update),
+                    outcome = &mut call => break outcome,
                 }
-                Err(reason) => (ToolResultContent::Text(reason), true, None, None),
             };
+            while let Ok(update) = updates.try_recv() {
+                live.publish(update);
+            }
+            outcome
+        } else {
+            handler(input.clone(), invocation).await
+        };
+        let (content, is_error, metadata, structured_result) = match outcome {
+            Ok(reply) => (
+                reply.content,
+                reply.is_error,
+                reply.metadata,
+                reply.structured_result,
+            ),
+            Err(reason) if reason == ClaudeTools::HOST_INTERRUPTED => {
+                live.settle_unknown();
+                return Err(durable::recovery_error(
+                    "Claude tool host execution interrupted",
+                ));
+            }
+            Err(reason) => {
+                live.settle_unknown();
+                (ToolResultContent::Text(reason), true, None, None)
+            }
+        };
         // The handler returned a settled result; the normal event below is the
         // terminal one. A host interruption above leaves the guard open.
         started.open = false;
@@ -4101,46 +4886,49 @@ impl State {
                 .and_then(|value| value.get("_nanocodex_code"))
             && let Some(calls) = code.get("calls").and_then(Value::as_array)
         {
+            let parent = json!(code.get("origin_call_id"));
             for call in calls {
-                let (Some(call_id), Some(tool)) = (
-                    call.get("call_id").and_then(Value::as_str),
-                    call.get("name").and_then(Value::as_str),
-                ) else {
+                // Live updates already published this receipt.
+                if call
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|call_id| live.completed.contains(call_id))
+                {
                     continue;
-                };
-                self.emit(
-                    events,
-                    AgentEventKind::ToolCall,
-                    json!({
-                        "call_id": call_id, "tool": tool, "arguments": call.get("input"),
-                        "model_call_index": index, "parent_call_id": code.get("origin_call_id"),
-                    }),
-                );
-                let mut payload = nested_event_result(call);
-                payload.extend([
-                    ("call_id".to_owned(), json!(call_id)),
-                    ("tool".to_owned(), json!(tool)),
-                    (
-                        "status".to_owned(),
-                        json!(
-                            if call.get("success").and_then(Value::as_bool) == Some(true) {
-                                "completed"
-                            } else {
-                                "failed"
-                            }
-                        ),
-                    ),
-                    ("duration_ns".to_owned(), json!(call.get("duration_ns"))),
-                    (
-                        "started_after_ns".to_owned(),
-                        json!(call.get("started_after_ns")),
-                    ),
-                    (
-                        "parent_call_id".to_owned(),
-                        json!(code.get("origin_call_id")),
-                    ),
-                ]);
-                self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
+                }
+                self.publish_nested_receipt(events, index, call, &parent);
+            }
+        }
+        // A yielded cell keeps its open calls for a later wait (hosts that omit
+        // `running` are treated as still running). A finished cell, or a reply
+        // without a Code Mode receipt, cannot report them any more.
+        if metadata
+            .as_ref()
+            .and_then(|value| value.get("_nanocodex_code"))
+            .is_some_and(|code| code.get("running").and_then(Value::as_bool) != Some(false))
+        {
+            live.release_running();
+        }
+        live.settle_unknown();
+        if matches!(name, "exec" | "wait") {
+            let mut calls = metadata
+                .as_ref()
+                .and_then(|value| value.get("_nanocodex_code"))
+                .and_then(|code| code.get("calls"))
+                .and_then(Value::as_array)
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(nested_call_summary)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            calls.append(&mut live.unknown);
+            if !calls.is_empty() {
+                self.code_call_summaries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(id.to_owned(), calls);
             }
         }
         let mut payload =
@@ -4159,7 +4947,11 @@ impl State {
             ("started_after_ns".to_owned(), Value::Null),
         ]);
         self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
-        Ok(ContentBlock::tool_result_content(id, content, is_error))
+        Ok(ContentBlock::tool_result_content(
+            id,
+            bound_tool_result(content),
+            is_error,
+        ))
     }
     async fn lifecycle(
         &self,
@@ -4241,7 +5033,7 @@ impl State {
                 let prompt =
                     serde_json::from_str(&steer.input_json).map_err(durable::recovery_error)?;
                 turn.pending.push_back(PendingSteer {
-                    prompt: crate::prompt::freeze(prompt)?,
+                    prompt: crate::prompt::freeze(prompt, turn.images).await?,
                     message_id: steer.message_id,
                     index: steer.index,
                     after: steer.accepted_after_model_call_index,
@@ -4329,7 +5121,7 @@ impl State {
             match outcome.decision {
                 crate::ClaudeLifecycleDecision::Block(reason)
                 | crate::ClaudeLifecycleDecision::Stop(reason) => {
-                    return Err(invalid(&format!(
+                    return Err(unsupported(&format!(
                         "UserPromptSubmit hook blocked prompt: {reason}"
                     )));
                 }
@@ -4477,6 +5269,12 @@ impl State {
                     return Err(failure.error);
                 }
             };
+            // Only a replayed response can carry Code Mode calls admitted by a
+            // lost owner. A response generated in this execution starts a
+            // fresh round whose exec cells have never run anywhere.
+            if !response.replayed && cursor.recovered_code_index == Some(index) {
+                cursor.recovered_code_index = None;
+            }
             if let Some(upgrade) = response.upgrade {
                 cursor.template.tools = upgrade.code_only_tools;
                 self.classify_code_only_tools(&mut cursor);
@@ -4814,18 +5612,37 @@ impl State {
                 }
             }
             let has_tool_calls = !tool_calls.is_empty();
+            let code_call_ids = tool_calls
+                .iter()
+                .map(|(id, _, _, _)| id.to_string())
+                .collect::<Vec<_>>();
             pending.push(Message {
                 role: Role::Assistant,
                 content: response.content,
             });
             if has_tool_calls {
                 let mut results: Vec<_> = results.into_iter().map(Option::unwrap).collect();
-                images::prepare_tool_images(&mut results).await;
+                images::prepare_tool_images(
+                    &mut results,
+                    crate::prompt::ImageResolution::of(&cursor.template.model),
+                )
+                .await;
                 pending.push(Message::tool_results(results));
                 // Commit completed effects and explicit unknown-outcome receipts
                 // before returning cancellation or making another provider call.
                 // Process-restart durability still belongs to the embedding host.
                 conversation.messages = pending.clone();
+                {
+                    let mut summaries = self
+                        .code_call_summaries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for id in &code_call_ids {
+                        if let Some(calls) = summaries.remove(id) {
+                            conversation.retain_code_calls(id, calls);
+                        }
+                    }
+                }
                 conversation.previous_message_id = previous_message_id.clone();
                 conversation.summary.clear();
                 conversation.pending_continuation = true;
@@ -5024,7 +5841,7 @@ impl State {
             let hook_stopped = matches!(&outcome.decision, crate::ClaudeLifecycleDecision::Stop(_));
             if let crate::ClaudeLifecycleDecision::Block(reason) = outcome.decision {
                 if cursor.stop_hook_active {
-                    return Err(invalid(&format!(
+                    return Err(unsupported(&format!(
                         "Stop hook blocked again after one continuation: {reason}; completed assistant content retained"
                     )));
                 }
@@ -5218,25 +6035,25 @@ impl LifecycleBackend for Driver {
                 return Err(NanocodexError::AgentStopped);
             }
             if model.family() != HarnessFamily::Claude {
-                return Err(invalid("model belongs to another harness family"));
+                return Err(unsupported("model belongs to another harness family"));
             }
             // Signed thinking and server-tool history are model-bound, so the
             // model is pinned once a conversation exists (as for Codex).
             if state.accepted_turns.load(Ordering::SeqCst) != 0 {
-                return Err(invalid(
+                return Err(unsupported(
                     "the model can only be changed before the first turn is accepted",
                 ));
             }
             *state
                 .model
                 .write()
-                .map_err(|_| invalid("Claude model lock poisoned"))? = model.as_str().into();
+                .map_err(|_| unsupported("Claude model lock poisoned"))? = model.as_str().into();
             if !model.supports_thinking(state.thinking()) {
                 let thinking = model.default_thinking();
                 *state
                     .effort
                     .write()
-                    .map_err(|_| invalid("Claude effort lock poisoned"))? =
+                    .map_err(|_| unsupported("Claude effort lock poisoned"))? =
                     thinking_effort(thinking);
                 state
                     .adaptive_thinking
@@ -5255,132 +6072,132 @@ impl LifecycleBackend for Driver {
                     if state.stopped.load(Ordering::SeqCst) {
                         return Err(NanocodexError::AgentStopped);
                     }
-                    if let Some(policy) = &state.policy {
-                        let automatic = request.request_id.is_none();
-                        let candidate = request
-                            .request_id
-                            .clone()
-                            .unwrap_or_else(|| durable::candidate_id("turn"));
-                        let input =
-                            json!({"provider":"claude","kind":"prompt","prompt":request.prompt});
-                        let (id, admission) = policy.admit(candidate, input, automatic).await?;
-                        request.request_id = Some(id.clone());
-                        request.events = request.events.with_turn_id(id.clone());
-                        let terminal = match admission {
-                            Admission::Completed { output, checkpoint } => Some(
-                                durable::replay(id.clone(), output)
-                                    .map(|completed| state.replayed_boundary(completed, checkpoint)),
-                            ),
-                            Admission::Failed { error, .. } => {
-                                Some(Err(NanocodexError::ReplayedExecutionFailed(error)))
-                            }
-                            Admission::Cancelled => Some(Err(NanocodexError::TurnCancelled)),
-                            Admission::Execute | Admission::Resume => None,
-                        };
-                        if let Some(result) = terminal {
-                            state.accepted_turns.fetch_add(1, Ordering::SeqCst);
-                            let (status, kind) = match &result {
-                                Ok(_) => ("completed", AgentEventKind::RunCompleted),
-                                Err(NanocodexError::TurnCancelled) => ("cancelled", AgentEventKind::RunFailed),
-                                Err(_) => ("failed", AgentEventKind::RunFailed),
-                            };
-                            // Cached terminals settle both public event streams
-                            // without claiming a fresh generation or tool effect.
-                            state.emit(
-                                &request.events,
-                                kind,
-                                json!({
-                                    "status":status,"model":state.model(),
-                                    "effort":state.thinking().as_str(),
-                                    "transport":"messages_sse","orchestration":"claude",
-                                    "replayed":true,"model_calls":0,"tool_calls":0,
-                                    "duration_ms":0,"duration_ns":0,
-                                    "final_message":result.as_ref().ok().map(TurnResult::final_message),
-                                    "usage":result.as_ref().ok().and_then(TurnResult::usage),
-                                    "error":result.as_ref().err().map(ToString::to_string),
-                                    "estimated_cost":null,"cost_usd":null,"cost_status":"other"
-                                }),
-                            );
-                            return Ok(BackendTurn {
-                                request_id: Some(id),
-                                result: Box::pin(async move { result }),
-                            });
+                    let resolution = crate::prompt::ImageResolution::of(&state.model());
+                    let Some(policy) = state.policy.clone() else {
+                        if request.request_id.is_some() {
+                            return Err(unsupported(
+                                "Claude request_id requires an attached durability policy",
+                            ));
                         }
-                        if let Err(error) = policy.begin_attempt(id.clone()).await {
-                            let _ = policy.release(id).await;
+                        request.prompt = crate::prompt::freeze(request.prompt, resolution).await?;
+                        let cancellation = Arc::new(Cancellation::default());
+                        return Ok(
+                            start_turn(&state, request, resolution, None, cancellation).await
+                        );
+                    };
+                    let automatic = request.request_id.is_none();
+                    let candidate = request
+                        .request_id
+                        .clone()
+                        .unwrap_or_else(|| durable::candidate_id("turn"));
+                    let input =
+                        json!({"provider":"claude","kind":"prompt","prompt":request.prompt});
+                    let (id, admission) = policy.admit(candidate, input, automatic).await?;
+                    // Process-local order; equals the durable accepted order of this
+                    // process because both are taken while admission is held.
+                    let order = state.admission_order.fetch_add(1, Ordering::SeqCst);
+                    request.request_id = Some(id.clone());
+                    request.events = request.events.with_turn_id(id.clone());
+                    let mut terminal = match admission {
+                        Admission::Completed { output, checkpoint } => Some(
+                            durable::replay(id.clone(), output)
+                                .map(|completed| state.replayed_boundary(completed, checkpoint)),
+                        ),
+                        Admission::Failed { error, .. } => {
+                            Some(Err(NanocodexError::ReplayedExecutionFailed(error)))
+                        }
+                        Admission::Cancelled => Some(Err(NanocodexError::TurnCancelled)),
+                        Admission::Execute | Admission::Resume => None,
+                    };
+                    let mut attempt = None;
+                    if terminal.is_none() {
+                        match policy.begin_attempt(id.clone()).await {
+                            Ok(()) => attempt = Some(AttemptGuard::begin(state.clone())),
+                            Err(error) => {
+                                let blocked = error.execution_policy_disposition()
+                                    == Some(nanocodex_agent::ExecutionPolicyDisposition::Retry);
+                                // A queued turn admitted behind an unfinished earlier
+                                // operation cannot start until that one settles. Its
+                                // cancellation must not wait for it: no attempt began,
+                                // so the durable state can retire it without a checkpoint.
+                                if blocked
+                                    && request.cancel_on_admission
+                                    && policy.cancel_unstarted(id.clone()).await.unwrap_or(false)
+                                {
+                                    terminal = Some(Err(NanocodexError::TurnCancelled));
+                                } else if blocked && automatic && state.local_blocker(order) {
+                                    // An automatic identity is never returned on failure,
+                                    // so no caller could retry or cancel it (#968). Behind
+                                    // local work, hand back a cancellable turn that begins
+                                    // this same operation once it is first in line.
+                                    return Ok(defer_turn(
+                                        state.clone(),
+                                        policy,
+                                        request,
+                                        resolution,
+                                        id,
+                                        order,
+                                    )
+                                    .await);
+                                } else {
+                                    if automatic {
+                                        retire_unstarted(policy.as_ref(), id).await;
+                                    } else {
+                                        let _ = policy.release(id).await;
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(result) = terminal {
+                        state.accepted_turns.fetch_add(1, Ordering::SeqCst);
+                        let (status, kind) = match &result {
+                            Ok(_) => ("completed", AgentEventKind::RunCompleted),
+                            Err(NanocodexError::TurnCancelled) => {
+                                ("cancelled", AgentEventKind::RunFailed)
+                            }
+                            Err(_) => ("failed", AgentEventKind::RunFailed),
+                        };
+                        // Cached terminals settle both public event streams
+                        // without claiming a fresh generation or tool effect.
+                        state.emit(
+                            &request.events,
+                            kind,
+                            json!({
+                                "status":status,"model":state.model(),
+                                "effort":state.thinking().as_str(),
+                                "transport":"messages_sse","orchestration":"claude",
+                                "replayed":true,"model_calls":0,"tool_calls":0,
+                                "duration_ms":0,"duration_ns":0,
+                                "final_message":result.as_ref().ok().map(TurnResult::final_message),
+                                "usage":result.as_ref().ok().and_then(TurnResult::usage),
+                                "error":result.as_ref().err().map(ToString::to_string),
+                                "estimated_cost":null,"cost_usd":null,"cost_status":"other"
+                            }),
+                        );
+                        return Ok(BackendTurn {
+                            request_id: Some(id),
+                            result: Box::pin(async move { result }),
+                        });
+                    }
+                    let (prompt, resolution) = match crate::prompt::freeze_admitted(
+                        request.prompt,
+                        policy.as_ref(),
+                        &id,
+                        resolution,
+                    )
+                    .await
+                    {
+                        Ok(admitted) => admitted,
+                        Err(error) => {
+                            fail_begun(&state, policy.as_ref(), id, &error).await;
                             return Err(error);
                         }
-                        request.prompt = match crate::prompt::freeze_admitted(request.prompt, policy.as_ref(), &id).await {
-                            Ok(prompt) => prompt,
-                            Err(error) => {
-                                let _ = policy.release(id).await;
-                                return Err(error);
-                            }
-                        };
-                    } else if request.request_id.is_some() {
-                        return Err(invalid(
-                            "Claude request_id requires an attached durability policy",
-                        ));
-                    } else {
-                        request.prompt = crate::prompt::freeze(request.prompt)?;
-                    }
-                    // Code Mode effects resolve their durable identity from trusted
-                    // accepted input and tool-call events, including ephemeral children.
-                    let turn_id = request.events.turn_id().unwrap_or(request.events.request_id());
-                    state.emit(
-                        &request.events,
-                        AgentEventKind::InputAccepted,
-                        json!({
-                            "session_id": state.session_id,
-                            "turn_id": turn_id,
-                            "item_id": format!("{turn_id}:prompt"),
-                            "kind": "prompt",
-                            "request_id": request.request_id,
-                            "input": request.prompt.instruction,
-                        }),
-                    );
-                    state.accepted_turns.fetch_add(1, Ordering::SeqCst);
-                    let request_id = request.request_id.clone();
-                    let key = request.key;
-                    state.steering.lock().await.insert(
-                        key,
-                        TurnSteering {
-                            pending: std::collections::VecDeque::new(),
-                            receipts: HashMap::new(),
-                            operation: request_id.clone(),
-                            model_call_index: 1,
-                            next_index: 0,
-                            revision: request.prompt.instruction_revision(),
-                            accepting: true,
-                        },
-                    );
-                    let cancellation = Arc::new(Cancellation::default());
-                    state
-                        .cancellations
-                        .lock()
-                        .await
-                        .insert(key, cancellation.clone());
-                    let (sender, receiver) = oneshot::channel();
-                    let running = state.clone();
-                    // Queued turns keep the speed selected when they were accepted.
-                    let speed = state.speed();
-                    let task = async move {
-                        let result = running.run(request, speed, cancellation).await;
-                        running.steering.lock().await.remove(&key);
-                        running.cancellations.lock().await.remove(&key);
-                        running.idle.notify_waiters();
-                        let _ = sender.send(result);
                     };
-                    #[cfg(not(target_family = "wasm"))]
-                    tokio::spawn(task);
-                    #[cfg(target_family = "wasm")]
-                    wasm_bindgen_futures::spawn_local(task);
-                    Ok(BackendTurn {
-                        request_id,
-                        result: Box::pin(async move {
-                            receiver.await.unwrap_or(Err(NanocodexError::TurnStopped))
-                        }),
-                    })
+                    request.prompt = prompt;
+                    let cancellation = Arc::new(Cancellation::default());
+                    Ok(start_turn(&state, request, resolution, attempt, cancellation).await)
                 }
                 .await;
                 let _ = accepted.send(result);
@@ -5412,7 +6229,7 @@ impl LifecycleBackend for Driver {
                     .min_by_key(|(key, _)| key.0)
                 {
                     if turn.pending.len() >= 8 {
-                        return Err(invalid("Claude steering queue is full"));
+                        return Err(unsupported("Claude steering queue is full"));
                     }
                     state.accept_steer(turn, None, prompt).await?;
                     return Ok(BackendPromptRoute::Steered);
@@ -5493,14 +6310,14 @@ impl LifecycleBackend for Driver {
             // Messages carries effort and adaptive thinking per request, and
             // each admitted turn freezes its own request template, so a change
             // applies to every subsequently accepted turn.
-            let model: HarnessModel = state.model().parse().map_err(invalid)?;
+            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             if !model.supports_thinking(thinking) {
-                return Err(invalid("Claude model does not support selected thinking"));
+                return Err(unsupported("Claude model does not support selected thinking"));
             }
             *state
                 .effort
                 .write()
-                .map_err(|_| invalid("Claude effort lock poisoned"))? = thinking_effort(thinking);
+                .map_err(|_| unsupported("Claude effort lock poisoned"))? = thinking_effort(thinking);
             state
                 .adaptive_thinking
                 .store(thinking != Thinking::None, Ordering::SeqCst);
@@ -5538,6 +6355,7 @@ impl LifecycleBackend for Driver {
                     }
                     let mut context = state.conversation.lock().await;
                     let mut operation = None;
+                    let mut _compaction_attempt = None;
                     if let Some(policy) = &state.policy {
                         let (id, admission) = policy
                             .admit(
@@ -5553,7 +6371,8 @@ impl LifecycleBackend for Driver {
                             }
                             Admission::Cancelled => return Err(NanocodexError::TurnCancelled),
                             Admission::Execute | Admission::Resume => {
-                                policy.begin_attempt(id.clone()).await?
+                                policy.begin_attempt(id.clone()).await?;
+                                _compaction_attempt = Some(AttemptGuard::begin(state.clone()));
                             }
                         }
                         operation = Some(id);

@@ -36,19 +36,3 @@ test('legacy live probe fails before opening cached receipts or spawning provide
   assert.equal(child.stdout, '');
   assert.doesNotMatch(readFileSync(filename, 'utf8'), /node:fs|node:child_process|provider\.json/);
 });
-
-test('Windows managed discovery is refused while explicit custom MCP transport remains enabled', () => {
-  const lib = source('lib.rs');
-  const selection = lib.slice(lib.indexOf('fn discover_for_platform('));
-  const explicit = selection.indexOf('if let Some(path) = explicit');
-  const windows = selection.indexOf('if platform == "windows"');
-  const managed = selection.indexOf('provision::managed_provider_path()');
-  assert.ok(explicit >= 0 && explicit < windows && windows < managed);
-  const setup = lib.slice(lib.indexOf('pub async fn discover_or_install()'));
-  assert.ok(setup.indexOf('std::env::var_os("NANOCODEX_COMPUTER")') < setup.indexOf('cfg!(target_os = "windows")'));
-  assert.ok(setup.indexOf('cfg!(target_os = "windows")') < setup.indexOf('provision::provision_upstream(false)'));
-  assert.doesNotMatch(lib, /windows_local_provider_blocker|windows_legacy_provider_tests/);
-  const provision = source('provision.rs');
-  const provider = provision.slice(provision.indexOf('pub fn managed_provider_path()'));
-  assert.ok(provider.indexOf('target_os = "macos", target_os = "linux"') < provider.indexOf('runtime_root()'));
-});

@@ -140,6 +140,12 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     fn complete(&self, id: String, checkpoint: Value, output: Value) -> PolicyFuture<'_, ()>;
     fn fail(&self, id: String, checkpoint: Value, error: String) -> PolicyFuture<'_, ()>;
     fn cancel(&self, id: String, checkpoint: Value) -> PolicyFuture<'_, ()>;
+    /// Cancels a claimed operation whose attempt never started, without a
+    /// checkpoint. Returns false when the policy cannot prove that no attempt
+    /// began, so the caller keeps its ordinary retry path.
+    fn cancel_unstarted(&self, _id: String) -> PolicyFuture<'_, bool> {
+        Box::pin(async { Ok(false) })
+    }
     fn release(&self, id: String) -> PolicyFuture<'_, ()>;
     fn shutdown(&self) -> PolicyFuture<'_, ()>;
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()>;

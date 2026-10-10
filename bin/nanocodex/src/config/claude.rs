@@ -412,7 +412,6 @@ impl AgentArgs {
             subagent_updates,
             mpp_adapter: None,
             mcp: mcp_handle,
-            browser: None,
             vm: None,
             model,
         })
@@ -846,12 +845,7 @@ fn output_reply(
                                 }
                                 json!({"type":"base64","media_type":media_type,"data":data})
                             }
-                            ImageSource::Url { url } => {
-                                if !url.starts_with("https://") {
-                                    return Err("host image URL must be HTTPS".into());
-                                }
-                                json!({"type":"url","url":url})
-                            }
+                            ImageSource::Url { url } => json!({"type":"url","url":url}),
                         };
                         json!({"type":"image","source":source})
                     }

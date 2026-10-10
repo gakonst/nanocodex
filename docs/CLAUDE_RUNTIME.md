@@ -86,37 +86,55 @@ prompt differences are research context, not evidence of improved model performa
 
 ## Prompt images and documents
 
-The shared `Prompt` API preserves ordered text and image inputs as native Messages
-blocks. HTTPS image URLs and base64 PNG/JPEG/GIF/WebP data URLs are supported;
-native `LocalImage` inputs are read with a bounded regular-file check and frozen
-into bytes before execution. Local-image receipts survive durable reopen and do
-not reread a changed or deleted file after commit. Opaque OpenAI file IDs and
-audio prompts fail explicitly before HTTP. WASM callers use URLs or data URLs;
-local filesystem images require a native host. Image detail hints are not sent
-as a Claude field. Limits are 100 content items, 20 images, 5 MiB per inline/local
-image, and 20 MiB of combined media per prompt. Inline `UserInput::File`
-documents become native `document` blocks: base64 `application/pdf` (requiring
-`%PDF-` magic bytes) or UTF-8 `text/plain`. Each document is bounded to 10 MiB,
-with at most five documents; optional filenames are validated and used as titles.
-The managed Rust HTTP client preserves these inline files for Claude prompts and
-steering, while retaining the explicit GPT document-input rejection.
+The shared `Prompt` API preserves ordered text and image inputs as native
+Messages blocks. Base64 data URLs are supported. Native `LocalImage` inputs are
+read with a bounded regular-file check and frozen into bytes before execution.
+Local-image receipts survive durable reopen and do not reread a changed or
+deleted file after commit. WASM callers use data URLs. Local filesystem images
+require a native host. Image detail hints are not sent as a Claude field. Inline
+and local images are prepared before acceptance like tool-result images. They
+are decoded, converted to PNG unless they are PNG, JPEG, or WebP, labelled by
+their bytes, and reduced to the model's native resolution, the size the Messages
+API would otherwise reduce them to. That is a 2576 px long edge and 4,784 visual
+tokens of 28×28 px on Claude 4.7 and later models, and 1568 px and 1,568 tokens
+on other models. A prepared image must fit 5 MiB, so a larger encoding is shrunk
+further. Originals of up to 64 MiB are read. An image Claude cannot use is
+replaced in place by a short note that tells the model why, and the rest of the
+prompt is sent. Such images include an opaque OpenAI file ID, an unreadable or
+undecodable image, one that cannot fit 5 MiB, a remote image URL, and a local
+image on WASM. Audio prompts fail explicitly before HTTP. Limits are 100 content
+items, 20 images, and 20 MiB of combined prepared media per prompt. Durable
+steers are journaled in this prepared form. A resumed durable operation prepares
+its prompt and steers for the model its continuation names, even when the agent
+reopens with another model. An operation that has no continuation yet runs on
+the reopened agent's model. Inline `UserInput::File` documents become native
+`document` blocks: base64 `application/pdf` (requiring `%PDF-` magic bytes) or
+UTF-8 `text/plain`. Each document is bounded to 10 MiB, with at most five
+documents; optional filenames are validated and used as titles. The managed Rust
+HTTP client preserves these inline files for Claude prompts and steering, while
+retaining the explicit GPT document-input rejection.
 
 Reproduce the public API and SQLite media journeys with
 `cargo test -p nanocodex-durability --features claude,sqlite --test claude_prompt_media -- --nocapture`.
-They exercise native request ordering, invalid-input rejection, queued image
-freezing and replay after local file changes. These are transport/storage checks,
-not a measurement of model vision quality.
+They exercise native request ordering, notes for unusable images, audio and
+limit rejection, queued image freezing and replay after local file changes, and
+steers of a turn resumed by an agent reopened with another model. These are
+transport/storage checks, not a measurement of model vision quality.
 
-Base64 images in client tool results are decoded with bounded memory and scaled
-so neither edge exceeds 3000 pixels before the result joins request history. The
-direct Messages API applies that limit once a request carries more than twenty
-images; preparing each image when it first arrives keeps earlier request bytes
-stable as the conversation grows. An image that cannot be decoded becomes a text
-omission inside the same result, which keeps its success status. URL and file
-sources pass through unchanged. Durable tool receipts keep the handler's original
-output, and a replayed receipt is prepared the same way. The low-level
-`ClaudeClient` sends caller-supplied images as given. Reproduce these journeys
-with `cargo test -p nanocodex-claude --test agent_loop tool_images` and
+Base64 images in client tool results are decoded with bounded memory and
+prepared the same way, for the native resolution of the model the turn's
+requests name and within 5 MiB, before the result joins request history. Native
+sizes stay within the 3000 px long edge the direct Messages API enforces once a
+request carries more than twenty images, and preparing each image when it first
+arrives keeps earlier request bytes stable as the conversation grows. An image
+that cannot be decoded or reduced becomes a text omission inside the same
+result, which keeps its success status. Host tool images are validated first, so
+an invalid host image, or one over 5 MiB, fails the call. A URL source becomes
+the same note as a remote prompt image, and file sources pass through unchanged.
+Durable tool receipts keep the handler's original output, and a replayed receipt
+is prepared the same way. The low-level `ClaudeClient` sends caller-supplied
+images as given. Reproduce these journeys with
+`cargo test -p nanocodex-claude --test agent_loop tool_images` and
 `cargo test -p nanocodex-durability --features claude,sqlite --test claude image_receipt`.
 
 ## Native harness composition
@@ -146,6 +164,12 @@ bridge to those authorized lifecycle capabilities. Mixed-family children start
 clean conversations. `fork` remains native to the owning backend and does not
 translate history into another family.
 
+One implementation of the shared nanocodex `Tool` contract serves both
+families: install it in Codex's `Tools` and pass the same value to
+`ClaudeTools::shared_tool`. Claude receives a function definition with the
+tool's output schema appended to its description, and the tool receives the
+invocation's identities and host context but no Responses history.
+
 The registry can unload idle children at its residency limit. Rehydration sends
 the family's in-memory `ChildSnapshot` to the current construction recipe;
 the recipe reattaches authentication, host context and freshly authorized tools,
@@ -173,14 +197,17 @@ the native speed field and matching beta header. Unsupported models omit both.
 This controls request encoding, not a promise of live provider eligibility or
 latency.
 
-`ModelCallCompleted` publishes response usage before client tools finish, including
-cache-read/write details. Compaction calls are excluded from active-response
-events; their usage still participates in the turn totals described below.
-Steering is acknowledged with `RunSteered` when the runtime consumes the queued
-instruction at a tool or terminal response boundary, rather than when it is
-submitted. Multiple instructions retain their order as separate native messages.
-Cancelling a queued ephemeral turn retires that turn without cancelling the
-currently active model call or tool effect.
+`ModelCallCompleted` publishes response usage before client tools finish,
+including cache-read/write details. Compaction calls are excluded from
+active-response events; their usage still participates in the turn totals
+described below. Each admitted steer is reported by an `InputAccepted` event of
+kind `steer`. Like the prompt's event, it carries the prepared input the model
+receives, with a note in place of each unusable image. Steering is acknowledged
+with `RunSteered` when the runtime consumes the queued instruction at a tool or
+terminal response boundary, rather than when it is submitted. Multiple
+instructions retain their order as separate native messages. Cancelling a queued
+ephemeral turn retires that turn without cancelling the currently active model
+call or tool effect.
 
 The public Messages/SSE journeys in
 [`agent_loop.rs`](../crates/nanocodex-claude/tests/agent_loop.rs) exercise these
@@ -580,7 +607,7 @@ The optional workspace adapters support bounded UTF-8 files, exact edits, globse
 
 `.host_tools(...)` installs only the explicitly enabled subset of eight `ClaudeHostTools` adapters: `Agent`, `TaskOutput`, `TaskStop`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree` and `ExitWorktree`. They pass validated inputs and real session/turn/call identity to an injected `ClaudeHost`. The host must actually own child/task execution, pending user answers, plan approval and workspace transitions; the adapters supply no default implementation or synthetic acknowledgement. Background agents require installed output and stop capabilities.
 
-Bash requires an injected sandbox executor; web tools require explicit provider/page-source capabilities. Nested WebSearch preserves bounded findings and complete, deduplicated source URLs across server pause/continuation responses. Auxiliary WebFetch accepts multiline prompts. WebSearch/WebFetch bound output while reserving source attribution; an oversized source set fails explicitly rather than silently dropping citations.
+Bash requires an injected sandbox executor; web tools require explicit provider/page-source capabilities. Nested WebSearch sends the server web search tool without a max_uses cap and follows provider pause_turn continuations until end_turn; a paused response with no content fails as no progress instead of being replayed. It returns the complete answer and every deduplicated source URL and title. Auxiliary WebFetch accepts multiline prompts and returns its whole summary with the source URL. Both results are subject only to the per-receipt history bound applied to every recorded tool result.
 
 ## Coverage and limits
 

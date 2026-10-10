@@ -19,6 +19,29 @@ export type AgentScreenResult = {
   status: "ok" | "busy" | "invalid" | "unavailable" | "cancelled";
   jpeg?: string; width?: number; height?: number; observation?: ScreenObservation; recording?: Record<string, unknown>;
 };
+/** The result an admitted action must return; retained with its ledger identity so a late result meets the same rules. */
+export type ScreenResultShape = Readonly<{ expectsImage: boolean; recording: boolean }>;
+export function screenResultShape(action: ScreenAction): ScreenResultShape {
+  return { expectsImage: action.action !== "release" && action.action !== "recording", recording: action.action === "recording" };
+}
+const RECORDING_STATUSES: readonly unknown[] = ["ok", "error", "busy", "invalid", "unavailable", "cancelled"];
+/**
+ * Action-dependent agent_result rules, after the broker's frame checks (exact
+ * fields, status, JPEG encoding). A recording response belongs only to a
+ * recording call, excludes image and observation, and is ok only with an ok
+ * result; an ok input/observe result carries its JPEG and an ok recording call
+ * its recording.
+ */
+export function screenResultMatches(result: AgentScreenResult, shape: ScreenResultShape): boolean {
+  const recording: unknown = result.recording;
+  if (recording !== undefined && (!shape.recording || !recording || typeof recording !== "object" || Array.isArray(recording)
+    || !RECORDING_STATUSES.includes((recording as Record<string, unknown>).status)
+    || (result.status === "ok" && (recording as Record<string, unknown>).status !== "ok")
+    || new TextEncoder().encode(JSON.stringify(recording)).length > 740_000
+    || result.jpeg !== undefined || result.observation !== undefined)) return false;
+  if (shape.recording && result.status === "ok" && recording === undefined) return false;
+  return !(shape.expectsImage && result.status === "ok" && result.jpeg === undefined);
+}
 export type ScreenTool = HostedToolsCatalogCandidate & { route_token: string };
 export type ScreenTarget = { machine_id: string; machine_name: string; id: string; name: string;
   kind: string; generation: string; width: number; height: number; controllable: boolean; agent_tools?: boolean; recording?: boolean | Record<string, unknown>; recordingCapabilities?: Record<string, unknown> };

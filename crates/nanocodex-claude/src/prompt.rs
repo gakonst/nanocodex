@@ -1,23 +1,189 @@
-//! Portable, bounded Claude prompt media. Native files are frozen before acceptance.
+//! Portable, bounded Claude prompt media, prepared for the model's native image
+//! resolution. Native files are frozen before acceptance.
 use crate::{ContentBlock, Message, Role};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::ImageReader;
 use nanocodex_agent::{
     NanocodexError, Result,
     input::{Prompt, PromptInput, PromptMessageRole, UserInput},
 };
+use nanocodex_oai_tools::image::prepare_base64_images;
 use serde_json::json;
+use std::io::Cursor;
 
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// Bounds an inline or local image before it is decoded and prepared
+/// within [`MAX_IMAGE_BYTES`].
+const MAX_SOURCE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Claude views images in square patches of this many pixels, one visual token each.
+const IMAGE_PATCH: u32 = 28;
 const MAX_IMAGES: usize = 20;
 const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
 /// Anthropic accepts PDFs up to 32 MB per request; bound each decoded document
-/// and every prompt's combined media below that after base64 expansion.
+/// and every prompt's combined media below that after base64 expansion. The
+/// number of documents is bounded only by that combined media size.
 const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_DOCUMENTS: usize = 5;
 const MAX_FILENAME_BYTES: usize = 255;
 
 fn invalid(message: impl Into<String>) -> NanocodexError {
     NanocodexError::InvalidRequest(message.into())
+}
+
+/// The largest image a model processes without the Messages API reducing it,
+/// given as a long-edge limit and a visual-token budget. See
+/// <https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost>.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ImageResolution {
+    max_edge: u32,
+    max_tokens: u32,
+}
+
+impl ImageResolution {
+    /// Claude 4.7 and later models use the high-resolution tier. All other
+    /// models, including unknown ones, use the standard tier.
+    pub(crate) fn of(model: &str) -> Self {
+        match model {
+            "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+            | "claude-opus-5" | "claude-sonnet-5" => Self {
+                max_edge: 2576,
+                max_tokens: 4784,
+            },
+            _ => Self {
+                max_edge: 1568,
+                max_tokens: 1568,
+            },
+        }
+    }
+
+    fn fits(self, width: u32, height: u32) -> bool {
+        let (columns, rows) = (width.div_ceil(IMAGE_PATCH), height.div_ceil(IMAGE_PATCH));
+        columns.max(rows) <= self.max_edge / IMAGE_PATCH
+            && u64::from(columns) * u64::from(rows) <= u64::from(self.max_tokens)
+    }
+
+    /// The largest aspect-preserving size within both limits, which is the
+    /// size the Messages API reduces an image to. It follows Anthropic's
+    /// reference implementation, including its rounding. See
+    /// <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#resize-your-image-before-uploading>.
+    fn fit(self, width: u32, height: u32) -> (u32, u32) {
+        if self.fits(width, height) {
+            return (width, height);
+        }
+        if height > width {
+            let (height, width) = self.fit(height, width);
+            return (width, height);
+        }
+        let aspect_ratio = f64::from(width) / f64::from(height);
+        let short_edge = |long_edge: u32| {
+            ((f64::from(long_edge) / aspect_ratio).round_ties_even() as u32).max(1)
+        };
+        // The lower bound always fits and the upper bound never does.
+        let (mut low, mut high) = (1, width);
+        while low + 1 < high {
+            let middle = low.midpoint(high);
+            if self.fits(middle, short_edge(middle)) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        (low, short_edge(low))
+    }
+}
+
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+// Model-visible notes that replace an image Claude cannot use. The first three
+// repeat the notes of the shared image preparation.
+const IMAGE_UNPROCESSABLE: &str = "image content omitted because it could not be processed";
+const IMAGE_TOO_LARGE: &str =
+    "image content omitted because it exceeded the supported size limit; use a smaller image";
+pub(crate) const IMAGE_URL_UNSUPPORTED: &str =
+    "image content omitted because remote image URLs are not supported";
+const IMAGE_FILE_UNSUPPORTED: &str =
+    "image content omitted because Claude cannot use OpenAI image file references";
+
+/// Prepares base64 image data for the model's native resolution and the
+/// per-image byte limit, returning the prepared data and its media type, or
+/// the note that replaces an image that cannot be prepared. The shared image
+/// preparation decodes the image and re-encodes it when it is resized or is
+/// not PNG, JPEG, or WebP. It rounds sizes its own way, so its output is
+/// checked against both limits, and an encoding over the byte limit is shrunk
+/// until it fits.
+pub(crate) async fn prepare_base64(
+    payload: &str,
+    resolution: ImageResolution,
+) -> std::result::Result<(String, &'static str), &'static str> {
+    let mut long_edge = STANDARD
+        .decode(payload)
+        .ok()
+        .and_then(|bytes| image_dimensions(&bytes))
+        .map_or(resolution.max_edge, |(width, height)| {
+            let (width, height) = resolution.fit(width, height);
+            width.max(height)
+        });
+    let mut previous_len = usize::MAX;
+    loop {
+        let (data, media_type) = prepare_base64_images(vec![payload.to_owned()], long_edge)
+            .await
+            .pop()
+            .expect("each image has a preparation result")?;
+        let bytes = STANDARD
+            .decode(&data)
+            .expect("prepared image data is base64");
+        let next = match image_dimensions(&bytes) {
+            Some((width, height)) if !resolution.fits(width, height) => long_edge - 1,
+            _ if bytes.len() <= MAX_IMAGE_BYTES => return Ok((data, media_type)),
+            // A step drops nearly half of the pixels, so an encoding that barely
+            // shrinks is dominated by data that resizing keeps, such as metadata.
+            _ if bytes.len() > previous_len / 10 * 9 => return Err(IMAGE_TOO_LARGE),
+            _ => {
+                previous_len = bytes.len();
+                long_edge * 3 / 4
+            }
+        };
+        if next == 0 {
+            return Err(IMAGE_TOO_LARGE);
+        }
+        long_edge = next;
+    }
+}
+
+/// Prepares a prompt image the way tool-result images are prepared. An inline
+/// image is decoded, converted to a format Claude accepts, and reduced to the
+/// model's native resolution and the per-image byte limit. An image Claude
+/// cannot use, including any remote URL, yields the note that replaces it.
+async fn prepare_image(
+    image_url: String,
+    resolution: ImageResolution,
+) -> std::result::Result<String, &'static str> {
+    let Some(data) = image_url
+        .get(..5)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("data:"))
+        .map(|_| &image_url[5..])
+    else {
+        return Err(IMAGE_URL_UNSUPPORTED);
+    };
+    let Some((header, payload)) = data.split_once(',') else {
+        return Err(IMAGE_UNPROCESSABLE);
+    };
+    if !header
+        .split(';')
+        .any(|parameter| parameter.eq_ignore_ascii_case("base64"))
+    {
+        return Err(IMAGE_UNPROCESSABLE);
+    }
+    if payload.len() > MAX_SOURCE_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(IMAGE_TOO_LARGE);
+    }
+    let (data, media_type) = prepare_base64(payload, resolution).await?;
+    Ok(format!("data:{media_type};base64,{data}"))
 }
 
 fn image_type(bytes: &[u8]) -> Result<&'static str> {
@@ -154,17 +320,18 @@ pub(crate) fn document_block(
     Ok((ContentBlock::Document { source, extra }, bytes.len()))
 }
 
+/// Reads a local image as a data URL for preparation, which identifies its
+/// format from the bytes, or returns why it cannot be read.
 #[cfg(not(target_family = "wasm"))]
-fn local_image(path: &std::path::Path) -> Result<String> {
+fn local_image(path: &std::path::Path) -> std::result::Result<String, &'static str> {
     use std::io::Read as _;
+    const NOT_A_FILE: &str = "is not a regular file of at most 64 MiB";
+    const UNREADABLE: &str = "could not be read";
     // Reject nonregular paths before opening (in particular FIFOs). Check again
     // on the opened handle, and bound the actual read even if the file grows.
-    let metadata =
-        std::fs::metadata(path).map_err(|_| invalid("cannot inspect Claude local image"))?;
-    if !metadata.is_file() || metadata.len() > MAX_IMAGE_BYTES as u64 {
-        return Err(invalid(
-            "Claude local image must be a regular file no larger than 5 MiB",
-        ));
+    let metadata = std::fs::metadata(path).map_err(|_| UNREADABLE)?;
+    if !metadata.is_file() || metadata.len() > MAX_SOURCE_IMAGE_BYTES as u64 {
+        return Err(NOT_A_FILE);
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -173,85 +340,97 @@ fn local_image(path: &std::path::Path) -> Result<String> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options
-        .open(path)
-        .map_err(|_| invalid("cannot open Claude local image"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| invalid("cannot inspect opened Claude local image"))?;
-    if !metadata.is_file() || metadata.len() > MAX_IMAGE_BYTES as u64 {
-        return Err(invalid(
-            "Claude local image must be a regular file no larger than 5 MiB",
-        ));
+    let file = options.open(path).map_err(|_| UNREADABLE)?;
+    let metadata = file.metadata().map_err(|_| UNREADABLE)?;
+    if !metadata.is_file() || metadata.len() > MAX_SOURCE_IMAGE_BYTES as u64 {
+        return Err(NOT_A_FILE);
     }
     let mut bytes = Vec::new();
-    file.take(MAX_IMAGE_BYTES as u64 + 1)
+    file.take(MAX_SOURCE_IMAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| invalid("cannot read Claude local image"))?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(invalid("Claude local image exceeds 5 MiB"));
+        .map_err(|_| UNREADABLE)?;
+    if bytes.len() > MAX_SOURCE_IMAGE_BYTES {
+        return Err(NOT_A_FILE);
     }
-    let media_type = image_type(&bytes)?;
     Ok(format!(
-        "data:{media_type};base64,{}",
+        "data:application/octet-stream;base64,{}",
         STANDARD.encode(bytes)
     ))
 }
 
-/// Freeze local paths exactly once; portable images need no host capability.
-/// Claude has no OpenAI image-detail field, so detail hints are not forwarded.
-pub(crate) fn freeze(mut prompt: Prompt) -> Result<Prompt> {
+#[cfg(target_family = "wasm")]
+fn local_image(_path: &std::path::Path) -> std::result::Result<String, &'static str> {
+    Err("requires a native filesystem")
+}
+
+/// Freeze local paths exactly once and prepare inline images for the model's
+/// native resolution. Portable images need no host capability. An image Claude
+/// cannot use is replaced by a note that tells the model why, and the rest of
+/// the prompt is kept. Claude has no OpenAI image-detail field, so detail
+/// hints are not forwarded.
+pub(crate) async fn freeze(mut prompt: Prompt, resolution: ImageResolution) -> Result<Prompt> {
     if let PromptInput::Content(items) = &mut prompt.instruction {
         if items.len() > 100 {
             return Err(invalid("Claude prompt exceeds 100 content items"));
         }
-        let mut images = 0;
-        let mut documents = 0;
+        let images = items
+            .iter()
+            .filter(|item| matches!(item, UserInput::Image { .. } | UserInput::LocalImage { .. }))
+            .count();
+        if images > MAX_IMAGES {
+            return Err(invalid("Claude prompt exceeds 20 images"));
+        }
         let mut total = 0;
         for item in items {
-            if let UserInput::File {
-                file_data,
-                filename,
-            } = item
-            {
-                documents += 1;
-                if documents > MAX_DOCUMENTS {
-                    return Err(invalid("Claude prompt exceeds 5 documents"));
+            let (image_url, detail, local) = match item {
+                UserInput::File {
+                    file_data,
+                    filename,
+                } => {
+                    total += document_block(file_data, filename.as_deref())?.1;
+                    if total > MAX_TOTAL_BYTES {
+                        return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
+                    }
+                    continue;
                 }
-                total += document_block(file_data, filename.as_deref())?.1;
-                if total > MAX_TOTAL_BYTES {
-                    return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
-                }
-                continue;
-            }
-            if matches!(item, UserInput::Image { .. } | UserInput::LocalImage { .. }) {
-                images += 1;
-                if images > MAX_IMAGES {
-                    return Err(invalid("Claude prompt exceeds 20 images"));
-                }
-            }
-            if let UserInput::LocalImage { path, detail } = item {
-                #[cfg(not(target_family = "wasm"))]
-                {
-                    *item = UserInput::Image {
-                        image_url: local_image(path)?,
-                        detail: *detail,
+                UserInput::ImageFile { .. } => {
+                    *item = UserInput::Text {
+                        text: IMAGE_FILE_UNSUPPORTED.into(),
                     };
+                    continue;
                 }
-                #[cfg(target_family = "wasm")]
-                {
-                    let _ = (path, detail);
-                    return Err(invalid(
-                        "Claude local images require a native filesystem; use an image URL or data URL",
-                    ));
+                UserInput::Image { image_url, detail } => {
+                    (std::mem::take(image_url), *detail, None)
                 }
-            }
-            if let UserInput::Image { image_url, .. } = item {
-                total += image_source(image_url)?.1;
-                if total > MAX_TOTAL_BYTES {
-                    return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
+                UserInput::LocalImage { path, detail } => match local_image(path) {
+                    Ok(image_url) => (image_url, *detail, Some(path.display().to_string())),
+                    Err(reason) => {
+                        *item = UserInput::Text {
+                            text: format!(
+                                "image content omitted because the local image at `{}` {reason}",
+                                path.display()
+                            ),
+                        };
+                        continue;
+                    }
+                },
+                _ => continue,
+            };
+            *item = match prepare_image(image_url, resolution).await {
+                Ok(image_url) => {
+                    total += image_source(&image_url)?.1;
+                    if total > MAX_TOTAL_BYTES {
+                        return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
+                    }
+                    UserInput::Image { image_url, detail }
                 }
-            }
+                Err(note) => UserInput::Text {
+                    text: match local {
+                        Some(path) => format!("{note} (local image at `{path}`)"),
+                        None => note.into(),
+                    },
+                },
+            };
         }
     }
     messages(&prompt)?;
@@ -279,7 +458,6 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
                 return Err(invalid("Claude prompt exceeds 100 content items"));
             }
             let mut images = 0;
-            let mut documents = 0;
             let mut bytes = 0;
             let mut content = Vec::with_capacity(items.len());
             for item in items {
@@ -293,14 +471,13 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
                         ContentBlock::Image { source, extra: Default::default() }
                     }
                     UserInput::File { file_data, filename } => {
-                        documents += 1;
                         let (block, size) = document_block(file_data, filename.as_deref())?;
                         bytes += size;
-                        if documents > MAX_DOCUMENTS || bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 5 documents or 20 MiB of media data")); }
+                        if bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 20 MiB of media data")); }
                         block
                     }
                     UserInput::LocalImage { .. } => return Err(invalid("Claude local image was not frozen before execution")),
-                    UserInput::ImageFile { .. } => return Err(invalid("Claude cannot use opaque OpenAI image file IDs; supply an image URL or local image")),
+                    UserInput::ImageFile { .. } => return Err(invalid("Claude cannot use opaque OpenAI image file IDs; supply a data URL or local image")),
                     UserInput::Audio { .. } | UserInput::LocalAudio { .. } => return Err(invalid("Claude audio prompts are unsupported")),
                 });
             }
@@ -317,28 +494,39 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
 /// Admission identity retains paths, while its settled media receipt retains bytes.
 /// A terminal replay never calls this function, and a resume never reopens a
 /// local image after its receipt has committed.
+///
+/// Returns the prompt with the image resolution of the model the operation's
+/// requests name, `resolution` unless a continuation names another. An agent
+/// reopened with another model resumes a continued operation on the model its
+/// continuation names, while an operation without one starts on the agent's.
 pub(crate) async fn freeze_admitted(
     prompt: Prompt,
     policy: &dyn crate::execution::ClaudeExecutionPolicy,
     id: &str,
-) -> Result<Prompt> {
+    resolution: ImageResolution,
+) -> Result<(Prompt, ImageResolution)> {
+    let continuation = policy.continuation(id.into()).await?;
+    let resolution = continuation
+        .as_ref()
+        .and_then(|cursor| cursor["template"]["model"].as_str())
+        .map_or(resolution, ImageResolution::of);
     let has_local = matches!(&prompt.instruction, PromptInput::Content(items) if items.iter().any(|item| matches!(item, UserInput::LocalImage { .. })));
     if !has_local {
-        return freeze(prompt);
+        return Ok((freeze(prompt, resolution).await?, resolution));
     }
     // A cursor advance incorporates and retires settled step receipts. Its
     // admitted media must therefore survive in the continuation itself.
-    if let Some(cursor) = policy.continuation(id.into()).await? {
+    if let Some(cursor) = continuation {
         let frozen: Prompt = serde_json::from_value(
             cursor.get("frozen_prompt").filter(|value| !value.is_null()).cloned()
                 .ok_or_else(|| invalid("Claude media recovery is missing its frozen prompt; local files were not reopened"))?
         ).map_err(|_| invalid("invalid frozen Claude prompt continuation"))?;
         messages(&frozen)?;
-        return Ok(frozen);
+        return Ok((frozen, resolution));
     }
     let input =
         serde_json::to_value(&prompt).map_err(|_| invalid("cannot encode Claude prompt"))?;
-    match policy
+    let frozen = match policy
         .begin_step(
             id.into(),
             "prompt-media".into(),
@@ -347,16 +535,22 @@ pub(crate) async fn freeze_admitted(
         )
         .await?
     {
-        crate::execution::Step::Replay(value) => serde_json::from_value(value)
-            .map_err(|_| invalid("invalid frozen Claude prompt receipt")),
+        // The receipt was prepared for the model at its first admission, which
+        // a reopened agent may have changed before any request was sent.
+        crate::execution::Step::Replay(value) => {
+            let receipt = serde_json::from_value(value)
+                .map_err(|_| invalid("invalid frozen Claude prompt receipt"))?;
+            freeze(receipt, resolution).await?
+        }
         crate::execution::Step::Execute => {
-            let frozen = freeze(prompt)?;
+            let frozen = freeze(prompt, resolution).await?;
             let value = serde_json::to_value(&frozen)
                 .map_err(|_| invalid("cannot encode frozen Claude prompt"))?;
             policy
                 .complete_step(id.into(), "prompt-media".into(), value)
                 .await?;
-            Ok(frozen)
+            frozen
         }
-    }
+    };
+    Ok((frozen, resolution))
 }

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { failureClassifier, previewConfig, runWrangler } from './preview-workers.mjs';
+import { createServer } from 'node:http';
+import { failureClassifier, previewConfig, providerClient, retryAfterMs, runWrangler } from './preview-workers.mjs';
 
 const revision = 'a'.repeat(40);
 // Shape of the built js/account/dist/nanocodex/wrangler.json (synthetic identifiers).
@@ -80,4 +81,71 @@ test('the classifier keeps a bounded window and caps codes', () => {
   for (let i = 0; i < 1000; i++) classifier.push('filler '.repeat(100));
   classifier.push('[code: 3] [code: 1] [code: 2]');
   assert.deepEqual(classifier.summary(), { codes: [1, 3], categories: [] });
+});
+
+test('provider metadata reads survive a transient timeout; mutations are sent once', async () => {
+  const account = '0'.repeat(32);
+  const replies = [];
+  const calls = [];
+  const request = async (url, init) => {
+    calls.push(init.method);
+    const next = replies.shift();
+    if (next instanceof Error) throw next;
+    return { status: next, ok: next < 400, json: async () => ({ success: true, result: { ok: next } }) };
+  };
+  const get = providerClient({ account, token: 't', request, retryDelay: async () => {} });
+  const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+
+  replies.push(timeout, 503, 200);
+  assert.deepEqual(await get('workers/workers/w'), { ok: 200 });
+  assert.deepEqual(calls.splice(0), ['GET', 'GET', 'GET']);
+
+  replies.push(timeout, timeout, timeout);
+  await assert.rejects(get('workers/workers/w'), /lookup failed \(HTTP unavailable\)/);
+  assert.equal(calls.splice(0).length, 3);
+
+  replies.push(403);
+  await assert.rejects(get('workers/workers/w'), /lookup failed \(HTTP 403\)/);
+  assert.equal(calls.splice(0).length, 1);
+
+  replies.push(404);
+  assert.equal(await get('workers/workers/w/previews/p', { optional: true }), null);
+  calls.splice(0);
+
+  replies.push(503);
+  await assert.rejects(get('workers/workers/w', { method: 'DELETE' }), /lookup failed \(HTTP 503\)/);
+  assert.deepEqual(calls.splice(0), ['DELETE']);
+});
+
+test('a throttled metadata read waits for the bounded Retry-After over real HTTP', async () => {
+  const account = '0'.repeat(32);
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, at: Date.now() });
+    if (seen.length === 1) {
+      res.writeHead(429, { 'Retry-After': '1', 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'rate limited' }] }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, result: { name: 'nanocodex' } }));
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address();
+  // Only the provider origin is replaced: path, headers and timeout signal go over a real socket.
+  const request = (url, init) => fetch(url.replace('https://api.cloudflare.com', `http://127.0.0.1:${port}`), init);
+  try {
+    const get = providerClient({ account, token: 'synthetic-token', request });
+    assert.deepEqual(await get('workers/workers/nanocodex'), { name: 'nanocodex' });
+  } finally {
+    await new Promise(done => server.close(done));
+  }
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen.map(({ method, url, authorization }) => [method, url, authorization]), Array(2).fill(
+    ['GET', `/client/v4/accounts/${account}/workers/workers/nanocodex`, 'Bearer synthetic-token'],
+  ));
+  assert.ok(seen[1].at - seen[0].at >= 950, 'second read honors Retry-After: 1');
+  assert.equal(retryAfterMs('3600'), 20_000);
+  assert.equal(retryAfterMs(new Date(5_000).toUTCString(), 0), 5_000);
+  assert.equal(retryAfterMs('soon'), undefined);
 });

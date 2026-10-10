@@ -30,6 +30,34 @@ export type DurableEventHistory<Message> = Readonly<{
   latest_cursor: string;
 }>;
 
+/**
+ * Opt-in bounds for model-facing history readers. maxBytes replaces the page
+ * byte budget. An event whose stored message exceeds maxEventBytes is never
+ * hydrated: it is returned as a TruncatedEventMessage stand-in that keeps its
+ * cursor, so cursor pagination neither skips nor stalls on it.
+ */
+export type HistoryBounds = Readonly<{ maxBytes?: number; maxEventBytes?: number }>;
+export type TruncatedEventMessage = { truncated: true; message_bytes: number; preview: string };
+/** Code points of the stored message JSON kept in a truncated stand-in. */
+export const TRUNCATED_EVENT_PREVIEW_CHARS = 2_048;
+const TRUNCATED_EVENT_COST = TRUNCATED_EVENT_PREVIEW_CHARS * 4 + 256;
+
+export function truncatedEventMessage(messageJson: string, bytes: number): TruncatedEventMessage {
+  let preview = messageJson.slice(0, TRUNCATED_EVENT_PREVIEW_CHARS);
+  if (/[\uD800-\uDBFF]$/.test(preview)) preview = preview.slice(0, -1);
+  return { truncated: true, message_bytes: bytes, preview };
+}
+
+/** Whether a stored message of this many bytes is returned as a stand-in. */
+export function isOversizedEvent(bytes: number, bounds: HistoryBounds | undefined): boolean {
+  return bounds?.maxEventBytes !== undefined && bytes > bounds.maxEventBytes;
+}
+
+/** Budgeted cost of one event on a bounded page. */
+export function boundedEventCost(bytes: number, bounds: HistoryBounds | undefined): number {
+  return isOversizedEvent(bytes, bounds) ? Math.min(bytes, TRUNCATED_EVENT_COST) : bytes;
+}
+
 export type DurableEventTail<Message> = Readonly<{
   events: readonly DurableEvent<Message>[];
   high_water_cursor: string;
@@ -322,16 +350,21 @@ export class DurableEventLog<Message extends { type: string }> {
     ).toArray()[0]?.total_bytes ?? 0;
   }
 
-  page(after: string, limit = REPLAY_PAGE_SIZE): DurableEvent<Message>[] {
-    return this.#readPage(after, limit, false).data;
+  page(after: string, limit = REPLAY_PAGE_SIZE, bounds?: HistoryBounds): DurableEvent<Message>[] {
+    return this.#readPage(after, limit, false, bounds).data;
   }
 
   /** Reads a bounded payload window in chronological presentation order. */
-  history(before: string | undefined, limit: number): DurableEventHistory<Message> {
-    return this.#readPage(before, limit, true);
+  history(before: string | undefined, limit: number, bounds?: HistoryBounds): DurableEventHistory<Message> {
+    return this.#readPage(before, limit, true, bounds);
   }
 
-  #readPage(cursor: string | undefined, limit: number, newestFirst: boolean): DurableEventHistory<Message> {
+  #readPage(
+    cursor: string | undefined,
+    limit: number,
+    newestFirst: boolean,
+    bounds?: HistoryBounds,
+  ): DurableEventHistory<Message> {
     const direction = newestFirst ? "DESC" : "ASC";
     const boundary = cursor === undefined ? "" : `WHERE events.cursor ${newestFirst ? "<" : ">"} CAST(? AS INTEGER)`;
     // Select sizes before crossing the SQLite/JS boundary. A row-count limit
@@ -346,27 +379,52 @@ export class DurableEventLog<Message extends { type: string }> {
        ORDER BY events.cursor ${direction} LIMIT ?`,
       ...(cursor === undefined ? [] : [cursor]), limit + 1,
     ).toArray();
+    const budget = bounds?.maxBytes ?? MAX_HISTORY_PAGE_BYTES;
     let count = 0, bytes = 0;
     for (const candidate of candidates) {
-      if (count >= limit || (count > 0 && bytes + candidate.bytes > MAX_HISTORY_PAGE_BYTES)) break;
-      count++; bytes += candidate.bytes;
+      const cost = boundedEventCost(candidate.bytes, bounds);
+      if (count >= limit || (count > 0 && bytes + cost > budget)) break;
+      count++; bytes += cost;
     }
     const selected = candidates.slice(0, count);
+    const oversized = new Map(selected.filter(({ bytes }) => isOversizedEvent(bytes, bounds))
+      .map(({ cursor, bytes }) => [cursor, bytes]));
     const first = selected[0]?.cursor, last = selected.at(-1)?.cursor;
+    // Oversized direct payloads stay inside SQLite; their chunks are never read.
+    // For a direct row its stored length is its whole size, so this predicate
+    // blanks exactly the oversized direct rows; chunked rows are already ''.
     const rows = first === undefined || last === undefined ? [] : this.#storage.sql.exec<ManagedEventRow>(
-      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
+      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, created_at,
+              CASE WHEN ? IS NOT NULL AND LENGTH(CAST(message_json AS BLOB)) > ? THEN '' ELSE message_json END AS message_json
        FROM managed_events WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER)
        ORDER BY managed_events.cursor`,
+      oversized.size > 0 ? 1 : null, bounds?.maxEventBytes ?? 0,
       newestFirst ? last : first, newestFirst ? first : last,
     ).toArray();
+    const hydrated = new Map(hydrateManagedEventRows(this.#storage, rows.filter(({ cursor }) => !oversized.has(cursor)))
+      .map((row) => [row.cursor, row]));
     return {
-      data: hydrateManagedEventRows(this.#storage, rows).map((row) => ({
-        cursor: row.cursor, created_at: row.created_at,
-        message: JSON.parse(row.message_json) as Message, turn_id: row.turn_id,
+      data: rows.map((row) => ({
+        cursor: row.cursor, created_at: row.created_at, turn_id: row.turn_id,
+        message: oversized.has(row.cursor)
+          ? truncatedEventMessage(this.#messagePrefix(row.cursor), oversized.get(row.cursor)!) as unknown as Message
+          : JSON.parse(hydrated.get(row.cursor)!.message_json) as Message,
       })),
       has_more: candidates.length > count,
       latest_cursor: this.latestCursor(),
     };
+  }
+
+  /** Leading code points of a stored message without hydrating its chunks. */
+  #messagePrefix(cursor: string): string {
+    return this.#storage.sql.exec<{ preview: string }>(
+      `SELECT SUBSTR(CASE WHEN events.message_json = '' THEN COALESCE((
+                SELECT chunks.message_json FROM managed_event_chunks chunks
+                WHERE chunks.cursor = events.cursor AND chunks.chunk_index = 0
+              ), '') ELSE events.message_json END, 1, ?) AS preview
+       FROM managed_events events WHERE events.cursor = CAST(? AS INTEGER)`,
+      TRUNCATED_EVENT_PREVIEW_CHARS, cursor,
+    ).toArray()[0]?.preview ?? "";
   }
 
   stream(after: string, signal?: AbortSignal): Response {

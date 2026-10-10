@@ -8,9 +8,10 @@ const sessions = () => (env as unknown as {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
 }).NANOCODEX_SESSIONS;
 
-function fixture(session: DurableAgentSession, state: DurableObjectState) {
+async function fixture(session: DurableAgentSession, state: DurableObjectState) {
   const owner = crypto.randomUUID(), organization = crypto.randomUUID(), team = crypto.randomUUID();
   const thread = crypto.randomUUID(), now = Date.now();
+  await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
   state.storage.sql.exec(`INSERT INTO session_state
     (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
      public_origin, runtime_profile, last_active)
@@ -64,7 +65,7 @@ function fixture(session: DurableAgentSession, state: DurableObjectState) {
 describe("goal HTTP admission", () => {
   it("completes creation and status without model dispatch, replays once, and retains continuation behind busy work", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      const f = fixture(session, state);
+      const f = await fixture(session, state);
       try {
         const busy = f.row("unrelated");
         const created = await f.post("create", "/goal Ship  the feature");
@@ -110,7 +111,7 @@ describe("goal HTTP admission", () => {
   for (const command of ["pause", "clear"]) {
     it(`${command} cancels only goal-bound work and leaves unrelated retained work intact`, async () => {
       await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-        const f = fixture(session, state);
+        const f = await fixture(session, state);
         try {
           expect((await f.post("create", "/goal Finish the task")).status).toBe(202);
           f.seedBusy("goal-work");
@@ -133,7 +134,7 @@ describe("goal HTTP admission", () => {
 
   it("rejects Connect-grant goal controls before creating a goal or durable turn", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      const f = fixture(session, state);
+      const f = await fixture(session, state);
       try {
         const response = await f.post("denied", "/goal Escalate privileges", {
           ...f.headers, "x-nanocodex-connect-grant-id": `0x${"a".repeat(64)}`,

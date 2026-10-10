@@ -30,8 +30,9 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+/// Wait used when the caller omits timeout_ms. An explicit timeout is honored
+/// as requested, without a ceiling.
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_WAIT_TIMEOUT: Duration = Duration::from_secs(3600);
 const SPAWN_AGENT_TOOL: &str = "spawn_agent";
 const SUBMIT_RESULT_TOOL: &str = "submit_result";
 const SEND_AGENT_MESSAGE_TOOL: &str = "send_agent_message";
@@ -955,8 +956,7 @@ impl Tool for WaitAgent {
                     "timeout_ms": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3600000,
-                        "description": "Bounded wait in milliseconds. Defaults to 30000."
+                        "description": "Wait in milliseconds. Defaults to 30000."
                     }
                 },
                 "required": ["agent_ids"],
@@ -977,8 +977,7 @@ impl Tool for WaitAgent {
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let duration = timeout_ms
             .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_WAIT_TIMEOUT)
-            .min(MAX_WAIT_TIMEOUT);
+            .unwrap_or(DEFAULT_WAIT_TIMEOUT);
         let (agents, timed_out) = registry
             .wait(context.session_id(), &agent_ids, duration)
             .await?;
@@ -1112,78 +1111,29 @@ pub fn install_claude_tools(
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> nanocodex_agent::Result<nanocodex_claude::ClaudeTools> {
-    use nanocodex_claude::{ClaudeToolReply, ToolResultContent};
     for tool in shared_tools(parent, &registry) {
-        let definition = serde_json::to_value(tool.definition())
-            .map_err(|error| nanocodex_agent::NanocodexError::InvalidRequest(error.to_string()))?;
-        // Claude definitions have no output-schema field, and code mode only
-        // shows nested tools through their description. Without the result
-        // shape, models guess field types and can spin on wait_agent forever.
-        let mut description = definition["description"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        if let Some(schema) = tool.definition().output_schema() {
-            description.push_str("\nOutput schema: ");
-            description.push_str(&schema.as_value().to_string());
-        }
-        let native = nanocodex_claude::ToolDefinition {
-            name: definition["name"].as_str().unwrap_or_default().to_owned(),
-            description,
-            input_schema: definition["parameters"].clone(),
-            strict: None,
-            defer_loading: false,
-        };
-        tools = tools.tool_with_context(native, move |input, invocation| {
-            let tool = tool.clone();
-            async move {
-                let raw =
-                    serde_json::value::to_raw_value(&input).map_err(|error| error.to_string())?;
-                let context = ToolContext::new(
-                    &invocation.model,
-                    &invocation.session_id,
-                    &invocation.call_id,
-                    &[],
-                    usize::MAX,
-                )
-                .with_turn_id(Some(&invocation.turn_id))
-                .with_host_context(
-                    invocation
-                        .host_context
-                        .as_deref()
-                        .or(Some(&invocation.turn_id)),
-                )
-                .with_instruction_revision(invocation.instruction_revision);
-                let output = tool
-                    .execute(ToolInput::Function(raw), context)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .into_wire()
-                    .map_err(|error| error.to_string())?;
-                let text = match output.output {
-                    nanocodex_oai_tools::contract::ToolOutputBody::Text(text) => text,
-                    nanocodex_oai_tools::contract::ToolOutputBody::Content(content) => {
-                        serde_json::to_string(&content).map_err(|error| error.to_string())?
-                    }
-                };
-                Ok(ClaudeToolReply {
-                    content: ToolResultContent::Text(text),
-                    is_error: !output.success,
-                    metadata: output
-                        .metadata
-                        .map(|value| serde_json::from_str(value.get()))
-                        .transpose()
-                        .map_err(|error| error.to_string())?,
-                    structured_result: output
-                        .structured_result
-                        .map(|value| serde_json::from_str(value.get()))
-                        .transpose()
-                        .map_err(|error| error.to_string())?,
-                })
-            }
-        });
+        tools = tools.shared_tool(TurnAuthority(tool))?;
     }
     Ok(tools)
+}
+
+/// Claude hosts may run without host context. A child spawned there retains
+/// its spawning turn as its authority instead.
+#[cfg(feature = "claude")]
+struct TurnAuthority(Arc<dyn Tool>);
+
+#[cfg(feature = "claude")]
+#[async_trait]
+impl Tool for TurnAuthority {
+    fn definition(&self) -> ToolDefinition {
+        self.0.definition()
+    }
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let host_context = context.host_context().or(context.turn_id());
+        self.0
+            .execute(input, context.with_host_context(host_context))
+            .await
+    }
 }
 
 fn spawn_agent_output_schema() -> Value {

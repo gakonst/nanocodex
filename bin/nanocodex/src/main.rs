@@ -2,5 +2,5 @@
 //! leading `--local` selects the local agent tree).
 
 fn main() -> std::process::ExitCode {
-    nanocodex_cli::cli_main()
+    nanocodex_cli::cli_main(nanocodex_bin_shared::build_info!())
 }

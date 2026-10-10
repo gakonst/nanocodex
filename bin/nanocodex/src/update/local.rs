@@ -11,7 +11,7 @@ use std::{path::Path, time::Duration};
 use eyre::{Context, Result, bail, eyre};
 use tokio::process::Command;
 
-const REBUILD_PAIR: &str = "Rebuild nanocodex-bin (cargo build -p nanocodex-bin --bins) from one checkout and pass target/<profile>/nanocodex with --path; the nanocodex-hand beside it (or --hand-binary) must come from the same checkout. Use a release update to install historical release bundles.";
+const REBUILD_PAIR: &str = "Rebuild both executables from one checkout (cargo build) and pass target/<profile>/nanocodex with --path; the nanocodex-hand beside it (or --hand-binary) must come from the same checkout. Use a release update to install historical release bundles.";
 
 /// A CLI installed without a Hand only needs to execute its version probe.
 pub(super) async fn verify_single(binary: &Path) -> Result<()> {
@@ -58,6 +58,24 @@ pub(super) async fn verify_pair(cli: &Path, companion: &Path) -> Result<Option<S
             ),
         }
     }
+    if source_revision(&cli_version).is_none() && source_revision(&companion_version).is_none() {
+        // Plain development builds record no release provenance. Verify the
+        // runtime contract the pair actually shares instead: one package
+        // version and the Hand service protocol. Without an identity, the
+        // store keeps the exact installed bytes as the Hand's receipt.
+        let version = package_version(&cli_version)
+            .filter(|version| package_version(&companion_version) == Some(*version))
+            .ok_or_else(|| {
+                eyre!("local CLI and Hand report different package versions. {REBUILD_PAIR}")
+            })?;
+        crate::hand_service::validate_candidate(&companion).await?;
+        eprintln!(
+            "Verified local development pair {version} with Hand service protocol 1 (no recorded source revision): CLI {}, Hand {}",
+            cli.display(),
+            companion.display(),
+        );
+        return Ok(None);
+    }
     let revision = matching_revision(&cli_version, &companion_version)?;
     eprintln!(
         "Verified local source revision {revision}: CLI {}, Hand {}",
@@ -65,6 +83,17 @@ pub(super) async fn verify_pair(cli: &Path, companion: &Path) -> Result<Option<S
         companion.display(),
     );
     Ok(None)
+}
+
+/// Package version (without channel suffix) from a `Version: X` line.
+fn package_version(version: &str) -> Option<&str> {
+    let value = version
+        .lines()
+        .find_map(|line| line.split_once("Version: ").map(|(_, value)| value.trim()))?;
+    value
+        .split(['-', '+', ' '])
+        .next()
+        .filter(|value| !value.is_empty())
 }
 
 /// The deterministic Hand identity an executable reports, if any. Probe
@@ -182,7 +211,7 @@ mod tests {
         );
         let error = matching_revision(&cli, &companion).unwrap_err().to_string();
         assert!(error.contains("differs from Hand"));
-        assert!(error.contains("Rebuild nanocodex-bin (cargo build -p nanocodex-bin --bins)"));
+        assert!(error.contains("Rebuild both executables from one checkout (cargo build)"));
     }
 
     #[test]

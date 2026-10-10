@@ -248,19 +248,17 @@ describe("account Hosted Tools provider", () => {
     }
   });
 
-  it.each(["transport", "truncated", "invalid", "stale", "missing", "server"])(
+  // Lost or undecodable responses are reconciled receipt-only; see the
+  // "Hand receipt reconciliation" journeys. HTTP rejections stay pinned.
+  it.each(["stale", "missing", "server"])(
     "retains call identity for %s failures where prior admission is unknown", async (mode) => {
       const calls: Record<string, unknown>[] = [];
-      const transportError = new Error("connection lost");
       const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
         if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
         calls.push(await request.json<Record<string, unknown>>());
         if (calls.length > 1) return Response.json({
           output: "retained receipt", structured_result: null, success: true, metadata: null, value: "retained receipt",
         });
-        if (mode === "transport") throw transportError;
-        if (mode === "truncated") return new Response("{");
-        if (mode === "invalid") return Response.json({ success: true });
         return new Response(null, { status: mode === "stale" ? 409 : mode === "missing" ? 404 : 503 });
       }]])), ACCOUNT_A, () => true);
       await provider.refresh();
@@ -268,9 +266,6 @@ describe("account Hosted Tools provider", () => {
       const tool = provider.machineTool("laptop", "exec_command")!;
       const failure = tool.handler({ cmd: "touch receipt" }, context);
       await expect(failure).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
-      if (mode === "truncated" || mode === "invalid") {
-        await expect(failure).resolves.toMatchObject({ output: expect.stringContaining("response could not be decoded") });
-      }
       expect(calls).toHaveLength(1);
       await expect(tool.handler({ cmd: "touch receipt" }, context)).resolves.toMatchObject({ output: "retained receipt" });
       expect(calls).toHaveLength(2);
@@ -444,7 +439,8 @@ describe("account Hosted Tools provider", () => {
             ...snapshot.tools[0], route_token: mode === "unchanged" ? "personal-1" : `personal-${discoveries}`,
           }] });
         }
-        calls.push(await request.json<Record<string, unknown>>());
+        // /invoke-receipt reads are not executions; only /invoke can dispatch.
+        if (new URL(request.url).pathname === "/invoke") calls.push(await request.json<Record<string, unknown>>());
         if (mode === "transport") throw new Error("connection lost");
         if (mode === "truncated") return new Response("{");
         return mode === "server" ? new Response(null, { status: 503 })
@@ -1028,5 +1024,175 @@ describe("process session transport recovery", () => {
       await f.finish(second, await frame, { exit_code: 0 });
       await expect(poll).resolves.toMatchObject({ success: true });
     } finally { await f.close(); }
+  });
+});
+
+describe("Hand receipt reconciliation after managed->account response loss", () => {
+  const LOST = "Network connection lost to https://account-tools.internal/invoke token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  type Drop = "after_delivery" | "before_delivery" | "truncated" | undefined;
+
+  async function journey(drop: Drop, loseReceipts = false) {
+    const namespace = (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
+    const owner = crypto.randomUUID();
+    const stub = namespace.getByName(owner);
+    const response = await stub.fetch("https://account-tools.internal/tool-host", {
+      headers: { upgrade: "websocket", "x-nanocodex-owner-id": owner },
+    });
+    const host = response.webSocket!;
+    acceptHostSocket(host);
+    // Every broker frame the synthetic Hand receives, in order.
+    const frames: Record<string, unknown>[] = [];
+    const waiters: Array<() => void> = [];
+    host.addEventListener("message", event => { frames.push(JSON.parse(String(event.data))); waiters.splice(0).forEach(wake => wake()); });
+    const frame = async (type: string, index = 0) => {
+      while (frames.filter(entry => entry.type === type).length <= index) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`no ${type} frame: ${JSON.stringify(frames)}`)), 5_000);
+          waiters.push(() => { clearTimeout(timer); resolve(); });
+        });
+      }
+      return frames.filter(entry => entry.type === type)[index]!;
+    };
+    host.send(JSON.stringify({
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "laptop", tools: [machineEntry()],
+      machines: [{ id: "laptop", name: "Laptop", workspace: "/work", capabilities: ["shell"] }],
+    }));
+    await frame("ready");
+    // Account RPC paths in order, and the transport that loses the first /invoke response.
+    const paths: string[] = [];
+    let pendingDrop = drop;
+    const lossy = { getByName: (name: string) => {
+      const target = namespace.getByName(name);
+      return { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        paths.push(path);
+        if (path === "/invoke-receipt" && loseReceipts) throw new TypeError(LOST);
+        if (path !== "/invoke" || pendingDrop === undefined) return target.fetch(input, init);
+        const mode = pendingDrop; pendingDrop = undefined;
+        if (mode === "before_delivery") throw new TypeError(LOST);
+        if (mode === "truncated") {
+          // The account answered, but its body was cut off in transit.
+          const answered = await target.fetch(input, init);
+          await answered.body?.cancel();
+          return new Response("{", { headers: { "content-type": "application/json" } });
+        }
+        // Deliver, wait until the Hand holds the call, then lose the connection.
+        const connection = new AbortController();
+        const forwarded = target.fetch(input, { ...init, signal: connection.signal });
+        forwarded.catch(() => {});
+        await frame("call");
+        connection.abort();
+        throw new TypeError(LOST);
+      } };
+    } } as unknown as DurableObjectNamespace<AccountHostedTools>;
+    const provider = new AccountHostedToolsProvider(lossy, owner, () => true);
+    await provider.refresh();
+    const complete = (callId: unknown, output: string) => host.send(JSON.stringify({
+      type: "result", call_id: callId, outcome: { status: "completed", output: {
+        output, success: true, structured_result: { output, exit_code: 0, wall_time_seconds: 0 }, metadata: null, process_trace: null,
+      } },
+    }));
+    return { stub, owner, host, frames, frame, paths, provider, complete };
+  }
+
+  it("recovers a completed result through a receipt-only read without cancelling or resending", async () => {
+    const { frame, frames, paths, provider, complete } = await journey("after_delivery");
+    const tool = provider.machineTool("laptop", "exec_command")!;
+    const result = tool.handler({ cmd: "echo once", workdir: "/laptop" }, { sessionId: "agent", callId: "completed-loss" });
+    const call = await frame("call");
+    complete(call.call_id, "ran once");
+    await expect(result).resolves.toMatchObject({ success: true, output: "ran once" });
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    expect(paths).toContain("/invoke-receipt");
+    expect(frames.filter(entry => entry.type === "call")).toHaveLength(1);
+    expect(frames.filter(entry => entry.type === "cancel")).toEqual([]);
+  });
+
+  it("waits on a still-running call's original runtime and returns its later result", async () => {
+    const { frame, frames, paths, provider, complete } = await journey("after_delivery");
+    const result = provider.machineTool("laptop", "exec_command")!.handler(
+      { cmd: "sleep 1; echo done", workdir: "/laptop" }, { sessionId: "agent", callId: "running-loss" });
+    const call = await frame("call");
+    await vi.waitFor(() => expect(paths).toContain("/invoke-receipt"), { timeout: 5_000 });
+    // The connection loss did not cancel the running command on the Hand.
+    expect(frames.filter(entry => entry.type === "cancel")).toEqual([]);
+    complete(call.call_id, "finished later");
+    await expect(result).resolves.toMatchObject({ success: true, output: "finished later" });
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    expect(frames.filter(entry => entry.type === "call")).toHaveLength(1);
+  });
+
+  it("delivers explicit cancellation to the Hand and never polls a receipt", async () => {
+    const { frame, frames, paths, provider } = await journey(undefined);
+    const turn = new AbortController();
+    const result = provider.machineTool("laptop", "exec_command")!.handler(
+      { cmd: "sleep 60", workdir: "/laptop" }, { sessionId: "agent", callId: "explicit-cancel", signal: turn.signal });
+    const call = await frame("call");
+    turn.abort();
+    await expect(result).resolves.toMatchObject({ success: false,
+      structuredResult: { status: "ambiguous", reason: "cancelled_after_dispatch", cancel: "requested", resent: false } });
+    await expect(frame("cancel")).resolves.toMatchObject({ type: "cancel", call_id: call.call_id });
+    expect(paths).toContain("/cancel-invocation");
+    expect(paths).not.toContain("/invoke-receipt");
+    expect(frames.filter(entry => entry.type === "call")).toHaveLength(1);
+  });
+
+  it("fences a never-delivered call so a late duplicate can never run, and explains a safe retry", async () => {
+    const { stub, owner, frames, paths, provider } = await journey("before_delivery");
+    const input = { cmd: "touch once", workdir: "/laptop" };
+    const result = await provider.machineTool("laptop", "exec_command")!.handler(input, { sessionId: "agent", callId: "lost-before-delivery" });
+    expect(result).toMatchObject({ success: false,
+      structuredResult: { status: "unavailable", admitted: false, resent: false, reason: "receipt_missing" } });
+    const message = (result as { output: string }).output;
+    expect(message).toContain("environment");
+    expect(message).toContain("TypeError/network_lost: Network connection lost to [url]");
+    expect(message).not.toContain("account-tools.internal");
+    expect(message).not.toContain("AAAAAAAAAAAAAAAAAAAAAAAA");
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    // A delayed delivery of the original request is refused without dispatch.
+    const late = await stub.fetch("https://account-tools.internal/invoke", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner_id: owner, name: "exec_command", input, session_id: "agent", call_id: "lost-before-delivery",
+        machine_id: "laptop", route_token: provider.machineTool("laptop", "exec_command")!.routeToken }) });
+    expect(late.status).toBe(200);
+    expect(await late.json()).toMatchObject({ success: false, structured_result: { status: "cancelled" } });
+    expect(frames.filter(entry => entry.type === "call")).toEqual([]);
+  });
+
+  it("recovers a result whose response body was truncated in transit", async () => {
+    const { frame, frames, paths, provider, complete } = await journey("truncated");
+    const result = provider.machineTool("laptop", "exec_command")!.handler(
+      { cmd: "echo decoded", workdir: "/laptop" }, { sessionId: "agent", callId: "decode-loss" });
+    complete((await frame("call")).call_id, "decoded once");
+    await expect(result).resolves.toMatchObject({ success: true, output: "decoded once" });
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    expect(paths).toContain("/invoke-receipt");
+    expect(frames.filter(entry => entry.type === "call")).toHaveLength(1);
+  });
+
+  it("gives up with outcome unknown, the sanitized cause and safe retry guidance when receipts stay unreachable", async () => {
+    const { frame, frames, paths, provider, complete } = await journey("after_delivery", true);
+    const tool = provider.machineTool("laptop", "exec_command")!;
+    const context = { sessionId: "agent", callId: "unreachable-receipt" };
+    const input = { cmd: "echo maybe", workdir: "/laptop" };
+    const result = tool.handler(input, context);
+    const call = await frame("call");
+    const settled = await result as { success: boolean; output: string; structuredResult: Record<string, unknown> };
+    expect(settled).toMatchObject({ success: false, structuredResult: { status: "ambiguous", admitted: "unknown", resent: false,
+      reason: "receipt_unrecoverable", recovery: "receipt_unreachable", error: "TypeError/network_lost: Network connection lost to [url] [redacted]" } });
+    expect(settled.output).toContain("Call environment to refresh Hand status");
+    expect(settled.output).toContain("before deciding whether to retry it on the same Hand");
+    expect(settled.output).toContain("Do not switch to SSH");
+    expect(settled.output).not.toContain("account-tools.internal");
+    expect(paths.filter(path => path === "/invoke-receipt")).toHaveLength(3);
+    expect(paths.filter(path => path === "/invoke")).toHaveLength(1);
+    // Transport loss never cancelled the command; it still finishes once.
+    expect(frames.filter(entry => entry.type === "cancel")).toEqual([]);
+    complete(call.call_id, "finished once");
+    // A later same-identity replay reads the retained receipt instead of running again.
+    await vi.waitFor(async () => {
+      await expect(provider.machineTool("laptop", "exec_command")!.handler(input, context))
+        .resolves.toMatchObject({ success: true, output: "finished once" });
+    }, { timeout: 5_000 });
+    expect(frames.filter(entry => entry.type === "call")).toHaveLength(1);
   });
 });

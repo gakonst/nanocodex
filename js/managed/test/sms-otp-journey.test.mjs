@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real HTTP, account routes, sessions and SQLite Durable Objects in workerd.
 // Only Twilio Verify and wallet provisioning are external service fixtures.

@@ -287,7 +287,7 @@ Native validation:
 - `swift test --package-path macos/secure-input-integration --jobs 3` exercises
   the production Swift client and helper together with a synthetic authenticated
   transport. It does not exercise the JavaScript backend or real sudo.
-- `cargo test -p nanocodex-bin --lib native_secure_input --jobs 3`
+- `cargo test -p nanocodex-hand-daemon --lib native_secure_input --jobs 3`
   on macOS or Linux verifies the native adapter's plaintext rejection and bounded framing.
 - Managed `native-secure-input`, `browser-vault-route`, and the native cases in
   `hosted-tools-broker` / `account-hosted-tools` cover private HTTP admission,

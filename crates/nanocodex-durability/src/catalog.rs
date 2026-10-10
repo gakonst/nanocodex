@@ -400,8 +400,12 @@ mod native {
                     });
                 }
             };
-            let transcript = checkpoint.as_ref().map(transcript).unwrap_or_default();
             let turns = self.state_turns(id, &state).await?;
+            let prompts = admitted_prompts(&turns, &state);
+            let transcript = checkpoint
+                .as_ref()
+                .map(|checkpoint| transcript(checkpoint, &prompts))
+                .unwrap_or_default();
             let preview = turns
                 .iter()
                 .find_map(|turn| turn.preview.clone())
@@ -796,17 +800,201 @@ mod native {
 
     /// Projects a provider-native checkpoint into the shared visible transcript.
     /// Signed thinking, images, and other binary payloads are never exposed.
-    fn transcript(checkpoint: &Value) -> Vec<TranscriptItem> {
+    fn transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<TranscriptItem> {
         if is_claude(checkpoint) {
-            claude_transcript(checkpoint)
+            claude_transcript(checkpoint, prompts)
         } else {
             codex_transcript(checkpoint)
         }
     }
 
-    fn claude_transcript(checkpoint: &Value) -> Vec<TranscriptItem> {
+    /// One ordered part of a user prompt, compared to recognize the checkpoint
+    /// message that an admitted prompt produced. Media bytes are never compared.
+    #[derive(Debug, PartialEq, Eq)]
+    enum PromptPart {
+        Text(String),
+        Media,
+    }
+
+    /// One admitted prompt and how many steering inputs its operation consumed.
+    struct AdmittedPrompt {
+        parts: Vec<PromptPart>,
+        steers: usize,
+    }
+
+    /// Claude prompt inputs admitted by a journal, in acceptance order. They are
+    /// the authority for real user turns: hook context, harness notices and
+    /// continuations share the user role in the checkpoint but are never admitted.
+    fn admitted_prompts(turns: &[StoredTurn], state: &DurableState) -> Vec<AdmittedPrompt> {
+        turns
+            .iter()
+            .filter_map(|turn| {
+                let input = &turn.input;
+                if input["provider"] != "claude" || input["kind"] != "prompt" {
+                    return None;
+                }
+                let parts = match &input["prompt"]["instruction"] {
+                    Value::String(text) => vec![PromptPart::Text(text.clone())],
+                    Value::Array(items) => items
+                        .iter()
+                        .map(|item| match item["type"].as_str() {
+                            Some("text") => PromptPart::Text(
+                                item["text"].as_str().unwrap_or_default().to_owned(),
+                            ),
+                            _ => PromptPart::Media,
+                        })
+                        .collect(),
+                    _ => return None,
+                };
+                // Consumed steering bodies are retired, but their count is kept.
+                let steers = state
+                    .operations()
+                    .iter()
+                    .find(|(id, _)| id.as_str() == turn.id)
+                    .map_or(0, |(_, operation)| {
+                        operation.retired_steers as usize + operation.steers.len()
+                    });
+                Some(AdmittedPrompt { parts, steers })
+            })
+            .collect()
+    }
+
+    fn blocks(message: &Value) -> impl Iterator<Item = &Value> {
+        message["content"].as_array().into_iter().flatten()
+    }
+
+    fn prompt_parts(message: &Value) -> Vec<PromptPart> {
+        blocks(message)
+            .filter_map(|block| match block["type"].as_str()? {
+                "text" => Some(PromptPart::Text(block["text"].as_str()?.to_owned())),
+                "image" | "document" => Some(PromptPart::Media),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The prompt as the composer displayed it: each image replaced its own
+    /// placeholder, numbered per prompt. Media bytes never enter the transcript.
+    fn prompt_display(message: &Value) -> String {
+        let (mut text, mut images, mut documents) = (String::new(), 0, 0);
+        for block in blocks(message) {
+            match block["type"].as_str() {
+                Some("text") => text.push_str(block["text"].as_str().unwrap_or_default()),
+                Some("image") => {
+                    images += 1;
+                    text.push_str(&format!("[Image #{images}]"));
+                }
+                Some("document") => {
+                    documents += 1;
+                    text.push_str(&format!("[Document #{documents}]"));
+                }
+                _ => {}
+            }
+        }
+        text
+    }
+
+    /// Recovery and catalog-upgrade notices are recorded verbatim in the checkpoint.
+    fn recovery_notice(message: &Value, notices: &[&str]) -> bool {
+        let mut text = String::new();
+        for block in blocks(message) {
+            match block["text"].as_str() {
+                Some(part) if block["type"] == "text" => text.push_str(part),
+                _ => return false,
+            }
+        }
+        notices.contains(&text.as_str())
+    }
+
+    fn tool_output(content: &Value) -> String {
+        match content {
+            Value::String(text) => text.clone(),
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| match item["type"].as_str()? {
+                    "text" => item["text"].as_str().map(str::to_owned),
+                    "image" => Some("[image]".to_owned()),
+                    "document" => Some("[document]".to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    fn user_rows(messages: &[&Value], notices: &[&str], items: &mut Vec<TranscriptItem>) {
+        for message in messages {
+            if recovery_notice(message, notices) {
+                continue;
+            }
+            let text = prompt_display(message);
+            if !text.is_empty() {
+                items.push(TranscriptItem::User(text));
+            }
+        }
+    }
+
+    /// Steering is appended after the prompt's hook context, so at most the last
+    /// `steers` messages can be steering input; earlier ones are hook context.
+    /// When later steers were consumed at a later boundary, the remaining tail
+    /// is ambiguous and is kept visible.
+    fn steer_rows(
+        segment: &[&Value],
+        steers: usize,
+        notices: &[&str],
+        items: &mut Vec<TranscriptItem>,
+    ) {
+        user_rows(
+            &segment[segment.len().saturating_sub(steers)..],
+            notices,
+            items,
+        );
+    }
+
+    fn claude_assistant_rows(message: &Value, items: &mut Vec<TranscriptItem>) {
+        for block in blocks(message) {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(text) = block["text"].as_str() {
+                        items.push(TranscriptItem::Assistant(text.into()));
+                    }
+                }
+                // Visible thinking only; signatures and redacted thinking
+                // stay model-bound, like Codex encrypted reasoning.
+                Some("thinking") => {
+                    if let Some(text) =
+                        block["thinking"].as_str().filter(|text| !text.trim().is_empty())
+                    {
+                        items.push(TranscriptItem::Reasoning(text.into()));
+                    }
+                }
+                Some("tool_use" | "server_tool_use") => items.push(TranscriptItem::Tool {
+                    call_id: block["id"].as_str().unwrap_or_default().into(),
+                    name: block["name"].as_str().unwrap_or_default().into(),
+                    arguments: block["input"].to_string(),
+                    parent_call_id: None,
+                }),
+                Some("mcp_tool_use") => items.push(TranscriptItem::Tool {
+                    call_id: block["id"].as_str().unwrap_or_default().into(),
+                    name: format!(
+                        "mcp__{}__{}",
+                        block["server_name"].as_str().unwrap_or_default(),
+                        block["name"].as_str().unwrap_or_default()
+                    ),
+                    arguments: block["input"].to_string(),
+                    parent_call_id: None,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    fn claude_transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<TranscriptItem> {
+        use nanocodex_agent::session::ToolOutcome;
         let mut items = Vec::new();
-        if let Some(summary) = checkpoint["conversation"]["summary"]
+        let conversation = &checkpoint["conversation"];
+        if let Some(summary) = conversation["summary"]
             .as_str()
             .filter(|summary| !summary.is_empty())
         {
@@ -814,48 +1002,128 @@ mod native {
                 "Retained conversation summary:\n{summary}"
             )));
         }
-        for message in checkpoint["conversation"]["messages"]
+        let notices = conversation["recovery_notices"]
             .as_array()
             .into_iter()
             .flatten()
-        {
-            let assistant = message["role"].as_str() == Some("assistant");
-            for block in message["content"].as_array().into_iter().flatten() {
-                match block["type"].as_str() {
-                    Some("text") => {
-                        if let Some(text) = block["text"].as_str() {
-                            items.push(if assistant {
-                                TranscriptItem::Assistant(text.into())
-                            } else {
-                                TranscriptItem::User(text.into())
-                            });
-                        }
-                    }
-                    // Visible thinking only; signatures and redacted thinking
-                    // stay model-bound, like Codex encrypted reasoning.
-                    Some("thinking") => {
-                        if let Some(text) =
-                            block["thinking"].as_str().filter(|text| !text.trim().is_empty())
-                        {
-                            items.push(TranscriptItem::Reasoning(text.into()));
-                        }
-                    }
-                    Some("tool_use" | "server_tool_use") => items.push(TranscriptItem::Tool {
-                        call_id: block["id"].as_str().unwrap_or_default().into(),
-                        name: block["name"].as_str().unwrap_or_default().into(),
-                        arguments: block["input"].to_string(),
-                    }),
-                    Some("mcp_tool_use") => items.push(TranscriptItem::Tool {
-                        call_id: block["id"].as_str().unwrap_or_default().into(),
-                        name: format!(
-                            "mcp__{}__{}",
-                            block["server_name"].as_str().unwrap_or_default(),
-                            block["name"].as_str().unwrap_or_default()
-                        ),
-                        arguments: block["input"].to_string(),
-                    }),
-                    _ => {}
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        let messages = conversation["messages"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let receipt =
+            |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
+        // Code Mode child calls retained by the engine without their results. A
+        // call started by exec and finished by a later wait keeps its final status.
+        let mut children = std::collections::HashMap::<&str, Vec<(&str, &Value)>>::new();
+        let mut outcomes = std::collections::HashMap::<&str, &str>::new();
+        for round in conversation["code_calls"].as_array().into_iter().flatten() {
+            let Some(receipt_id) = round["tool_use_id"].as_str() else {
+                continue;
+            };
+            let origin = round["origin_call_id"].as_str();
+            for call in round["calls"].as_array().into_iter().flatten() {
+                if let Some(call_id) = call["call_id"].as_str() {
+                    outcomes.insert(call_id, call["status"].as_str().unwrap_or("unknown"));
+                    let cell = call["parent_call_id"]
+                        .as_str()
+                        .or(origin)
+                        .unwrap_or(receipt_id);
+                    children.entry(receipt_id).or_default().push((cell, call));
                 }
+            }
+        }
+        let mut replayed_children = std::collections::HashSet::new();
+        let mut next_prompt = 0;
+        let mut index = 0;
+        while let Some(message) = messages.get(index) {
+            if message["role"].as_str() == Some("assistant") {
+                claude_assistant_rows(message, &mut items);
+                index += 1;
+                continue;
+            }
+            if receipt(message) {
+                for block in blocks(message).filter(|block| block["type"] == "tool_result") {
+                    let parent = block["tool_use_id"].as_str().unwrap_or_default();
+                    for (cell, call) in children.get(parent).into_iter().flatten() {
+                        let call_id = call["call_id"].as_str().unwrap_or_default();
+                        if !replayed_children.insert(call_id) {
+                            continue;
+                        }
+                        items.push(TranscriptItem::Tool {
+                            call_id: call_id.into(),
+                            name: call["name"].as_str().unwrap_or_default().into(),
+                            arguments: call["input"].to_string(),
+                            parent_call_id: Some((*cell).into()),
+                        });
+                        let outcome = match outcomes.get(call_id).copied() {
+                            Some("completed") => ToolOutcome::Completed,
+                            Some("failed") => ToolOutcome::Failed,
+                            _ => ToolOutcome::Unknown,
+                        };
+                        items.push(TranscriptItem::tool_result(call_id, "", outcome));
+                    }
+                    items.push(TranscriptItem::tool_result(
+                        parent,
+                        &tool_output(&block["content"]),
+                        if block["is_error"].as_bool() == Some(true) {
+                            ToolOutcome::Failed
+                        } else {
+                            ToolOutcome::Completed
+                        },
+                    ));
+                }
+                // User content sharing the receipt message has unknown provenance.
+                let content = blocks(message)
+                    .filter(|block| block["type"] != "tool_result")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !content.is_empty() {
+                    let shared = serde_json::json!({ "content": content });
+                    user_rows(&[&shared], &notices, &mut items);
+                }
+                index += 1;
+                continue;
+            }
+            // An admission writes its hook context and prompt as adjacent user
+            // messages, followed by steering consumed before its first model call.
+            // Several admissions are adjacent when earlier turns produced no
+            // assistant message; each matched prompt is its own user turn.
+            let end = messages[index..]
+                .iter()
+                .position(|message| message["role"].as_str() != Some("user") || receipt(message))
+                .map_or(messages.len(), |offset| index + offset);
+            let run = &messages[index..end];
+            index = end;
+            let mut segment = Vec::new();
+            let mut steers = None;
+            for message in run {
+                let parts = prompt_parts(message);
+                let Some(offset) = prompts
+                    .get(next_prompt..)
+                    .and_then(|rest| rest.iter().position(|prompt| prompt.parts == parts))
+                else {
+                    segment.push(message);
+                    continue;
+                };
+                match steers {
+                    Some(steers) => steer_rows(&segment, steers, &notices, &mut items),
+                    // Hook context of the first admission. A skipped journal prompt
+                    // leaves this text's provenance unknown, so it stays visible.
+                    None if offset == 0 => {}
+                    None => user_rows(&segment, &notices, &mut items),
+                }
+                segment.clear();
+                steers = Some(prompts[next_prompt + offset].steers);
+                next_prompt += offset + 1;
+                items.push(TranscriptItem::User(prompt_display(message)));
+            }
+            // Without a matched admission the provenance is unknown: steering
+            // input, or a prompt whose journal input was not retained. Show it
+            // rather than guess that it was harness text.
+            match steers {
+                Some(steers) => steer_rows(&segment, steers, &notices, &mut items),
+                None => user_rows(&segment, &notices, &mut items),
             }
         }
         items
@@ -895,11 +1163,13 @@ mod native {
                     call_id: item["call_id"].as_str().unwrap_or_default().into(),
                     name: item["name"].as_str().unwrap_or_default().into(),
                     arguments: item["arguments"].as_str().unwrap_or_default().into(),
+                    parent_call_id: None,
                 }),
                 Some("custom_tool_call") => items.push(TranscriptItem::Tool {
                     call_id: item["call_id"].as_str().unwrap_or_default().into(),
                     name: item["name"].as_str().unwrap_or_default().into(),
                     arguments: item["input"].as_str().unwrap_or_default().into(),
+                    parent_call_id: None,
                 }),
                 _ => {}
             }

@@ -160,35 +160,25 @@ impl ProjectHome {
         (files, diagnostics)
     }
 
-    /// Reads non-rule instruction files root-to-leaf within `max_total_bytes`
-    /// (Codex uses 32 KiB). Rules are path-scoped; read them via
-    /// [`Self::instruction_files`]. Identical texts are included once.
-    pub fn read_instructions(&self, max_total_bytes: usize) -> ProjectInstructions {
+    /// Reads non-rule instruction files root-to-leaf, each whole: the model's
+    /// context window, not a fixed byte budget, bounds what fits. Rules are
+    /// path-scoped; read them via [`Self::instruction_files`]. Identical
+    /// texts are included once.
+    pub fn read_instructions(&self) -> ProjectInstructions {
         let (files, mut diagnostics) = self.instruction_files();
         let mut sources = Vec::new();
-        let mut remaining = max_total_bytes;
         for file in files
             .into_iter()
             .filter(|f| f.kind != InstructionKind::Rule)
         {
-            if remaining == 0 {
-                diagnostics.push(Diagnostic::warning(
-                    &file.path,
-                    "instruction budget exhausted; omitted",
-                ));
-                continue;
-            }
             if let Loaded::Source(source) = load_candidate(
                 &file.path,
                 Scope::Project,
                 file.kind,
-                remaining,
+                usize::MAX,
                 &mut diagnostics,
             ) {
-                let len = source.text.len();
-                if push_unique(&mut sources, source, &mut diagnostics) {
-                    remaining = remaining.saturating_sub(len);
-                }
+                push_unique(&mut sources, source, &mut diagnostics);
             }
         }
         ProjectInstructions {

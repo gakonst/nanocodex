@@ -210,12 +210,11 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        # Temporarily disabled; re-enable when CI test coverage resumes.
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
+      # Release, preview and image policy tests use Wrangler and esbuild.
+      - name: Test Cloudflare release, preview and image boundaries
+        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install Astra trial package
         run: npm ci --prefix examples/astra-mpp-trial
       - name: Prepare managed evaluator asset
@@ -301,6 +300,13 @@ jobs:
           node-version: 24
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         id: builder
+        with:
+          # Pull the BuildKit bootstrap image from mirror.gcr.io by digest.
+          # Docker Hub build images try mirror.gcr.io before Docker Hub.
+          driver-opts: image=mirror.gcr.io/moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       # Keep CI_TESTS_ENABLED unset so the sandbox retains its default tests.
       - name: Build preview image without publication
         env:
@@ -338,18 +344,19 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      # Wrangler builds the account container with the runner's Docker daemon.
+      - uses: ./.github/actions/docker-hub-mirror
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        # Temporarily disabled; re-enable when CI test coverage resumes.
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
+      # Release, preview and image policy tests use Wrangler and esbuild.
+      - name: Test Cloudflare release, preview and image boundaries
+        run: node --test scripts/cloudflare/*.test.mjs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: cloudflare-worker-build
@@ -395,7 +402,7 @@ jobs:
         run: npx wrangler deploy --dry-run --env="" --outdir dist
       - name: Validate Chief of Staff Worker
         working-directory: js/chief-of-staff
-        run: npm run typecheck && npm run build
+        run: npm run typecheck && npm test && npm run build
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
@@ -588,7 +595,6 @@ jobs:
       matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
@@ -599,8 +605,18 @@ jobs:
         with:
           node-version: 24
       - name: Test image publication boundaries
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
+        # Synthetic fixtures only; never expose production credentials to tests.
+        env:
+          GH_TOKEN: ""
+          CLOUDFLARE_ACCOUNT_ID: ""
+          CLOUDFLARE_API_TOKEN: ""
+        run: >-
+          node --test
+          scripts/cloudflare/image-receipts.test.mjs scripts/cloudflare/managed-images.test.mjs
+          scripts/cloudflare/managed-images-preview.test.mjs scripts/cloudflare/plan-images.test.mjs
+          scripts/cloudflare/preview-images.test.mjs scripts/cloudflare/recover-images.test.mjs
+          scripts/cloudflare/released-images.test.mjs scripts/cloudflare/released-account-image.test.mjs
+          scripts/cloudflare/account-relay-image.test.mjs scripts/cloudflare/wrangler-docker.test.mjs
       - name: Fingerprint committed image inputs
         id: image-input
         env:
@@ -631,6 +647,13 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         if: steps.available.outputs.hit != 'true'
         id: builder
+        with:
+          # Pull the BuildKit bootstrap image from mirror.gcr.io by digest.
+          # Docker Hub build images try mirror.gcr.io before Docker Hub.
+          driver-opts: image=mirror.gcr.io/moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
       - name: Log in to the image cache registry
         id: cache-login
         if: >-
@@ -689,7 +712,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -724,7 +746,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -772,7 +793,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}

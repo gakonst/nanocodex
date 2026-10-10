@@ -2,7 +2,8 @@
 
 The `nanocodex` CLI serves two command trees, selected by the name it is
 invoked as. `nanocodex` and `nc` are the managed client documented here. The
-Hand daemon is the separate `nanocodex-hand` binary (installed as `nanocodex2`);
+Hand daemon is the separate `nanocodex-hand` binary (installed as `nanocodex2`
+and on PATH as `nanocodex-hand` and `nc-hand`, where it is the `hand` command);
 `nanocodex hand` and the daemon entrypoints run it, and it forwards any other
 command to the CLI. `ncl` (or `nanocodex --local ...`) is the local, non-durable
 agent: `ncl` opens the same terminal UI on a local agent, `ncl run` is the headless JSONL run (exit code 75
@@ -619,6 +620,20 @@ a screen publisher alone does not provide agent control.
 The legacy `--browser`, `--browser-executable`, and
 `NANOCODEX_BROWSER_EXECUTABLE` options are rejected with guidance to use CUA.
 
+The host browser utilities are an optional `browser` Cargo feature, so ordinary
+and release builds do not link the Chromium automation crate:
+
+- `nanocodex cookies list|sync` copies cookies for one exact origin from a local
+  Chromium-family profile into Vault. Without the feature the command exits with
+  an error naming the feature; the Nanocodex Chrome extension captures the
+  current site's cookies into the same Vault cookie jars.
+- `nanocodex credits buy` (`tempo` feature) uses Link Checkout automation only
+  with `browser`; otherwise it says so and opens Stripe Checkout in the system
+  browser.
+
+Build them with `cargo build -p nanocodex-bin --features browser` (add `tempo` for
+credits).
+
 The on-demand `host` pool remains libkrun-only; Docker is available through the
 single `hand` command and the `nanocodex_vm::docker` library API.
 
@@ -754,12 +769,14 @@ restarts it and its VM host; finish active work first. A release whose Hand
 bytes or reported `Hand Identity` match the running Hand (or that carries no
 Hand) activates only the CLI and leaves the Hand service untouched.
 
-For a local build, run `cargo build -p nanocodex-bin --bins` and use
+For a local build, run `cargo build` and use
 `nanocodex update --path target/<profile>/nanocodex`; the `nanocodex-hand` built
-beside it is used automatically, or pass `--hand-binary PATH`. The CLI and Hand
-must report the same `Hand Identity` in `--version` (builds that predate Hand
-identities must report the same full `Commit SHA`); a mismatch stops
-installation before candidate files are written. A CLI without a Hand beside
+beside it is used automatically, or pass `--hand-binary PATH`. Release builds
+record `VERGEN_GIT_SHA`, `TAG_NAME` and `NANOCODEX_HAND_IDENTITY` at their
+entry points; a pair that reports a `Hand Identity` (or full `Commit SHA`)
+must report the same one, and a plain development pair must report the same
+package version and Hand service protocol. A mismatch stops installation
+before candidate files are written. A CLI without a Hand beside
 it keeps the installed Hand.
 
 Set `NANOCODEX_STARTUP_TIMING=1` on either CLI to emit content-free JSON phase

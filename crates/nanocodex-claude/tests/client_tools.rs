@@ -122,7 +122,7 @@ async fn client_tool_search_then_nested_web_search_then_compaction() {
     );
     assert_eq!(
         r[2]["tools"],
-        json!([{"type":"web_search_20250305","name":"web_search","max_uses":3,"allowed_domains":["example.org"]}])
+        json!([{"type":"web_search_20250305","name":"web_search","allowed_domains":["example.org"]}])
     );
     assert_eq!(r[2]["tool_choice"], json!({"type":"auto"}));
     assert_eq!(r[2]["messages"].as_array().unwrap().len(), 1);
@@ -277,7 +277,7 @@ async fn web_fetch_uses_approved_page_then_auxiliary_haiku_not_server_fetch() {
 
 #[cfg(feature = "tools")]
 #[tokio::test]
-async fn web_fetch_long_answer_keeps_complete_source() {
+async fn web_fetch_long_answer_is_returned_whole_with_source() {
     assert_approved_fetch(
         "What is its title?",
         format!("Fixture title {}", "💡".repeat(10_000)),
@@ -303,6 +303,7 @@ async fn assert_approved_fetch(prompt: &str, answer: String) {
     let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
     let log = requests.clone();
     let question = prompt.to_owned();
+    let expected = answer.clone();
     let app=Router::new().route("/v1/messages",post(move |Json(body):Json<Value>| {
         let log=log.clone();
         let question=question.clone();
@@ -366,9 +367,11 @@ async fn assert_approved_fetch(prompt: &str, answer: String) {
     let result = &r[2]["messages"][2]["content"][0];
     assert_ne!(result["is_error"], true);
     let text = result["content"].as_str().unwrap();
-    assert!(text.len() <= 32 * 1024);
-    assert!(text.starts_with("Fixture title"));
-    assert!(text.ends_with("\nSource: https://example.org/final"));
+    // The auxiliary summary is no longer cut at 32 KiB.
+    assert_eq!(
+        text,
+        format!("{expected}\nSource: https://example.org/final")
+    );
     assert!(
         r[1]["messages"][0]["content"][0]["text"]
             .as_str()
@@ -454,7 +457,7 @@ async fn rejected_discovery_options_do_not_activate_a_deferred_tool() {
 }
 
 #[tokio::test]
-async fn nested_web_search_long_answer_and_title_keep_source_urls() {
+async fn nested_web_search_long_answer_and_sources_are_returned_whole() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
     let log = requests.clone();
@@ -465,10 +468,10 @@ async fn nested_web_search_long_answer_and_title_keep_source_urls() {
             let (blocks, stop) = match index {
                 1 => (vec![json!({"type":"tool_use","id":"search","name":"WebSearch","input":{"query":"bounded sources","allowed_domains":["example.org"]}})], "tool_use"),
                 2 => (vec![
-                    json!({"type":"text","text":format!("Answer {}", "💡".repeat(10_000)),"citations":[{"type":"web_search_result_location","url":"https://example.org/citation","encrypted_index":"opaque"}]}),
+                    json!({"type":"text","text":format!("Answer {}", "💡".repeat(9_000)),"citations":[{"type":"web_search_result_location","url":"https://example.org/citation","encrypted_index":"opaque"}]}),
                     json!({"type":"server_tool_use","id":"srv","name":"web_search","input":{"query":"bounded sources"}}),
                     json!({"type":"web_search_tool_result","tool_use_id":"srv","content":[
-                        {"type":"web_search_result","url":"https://example.org/result","title":"huge".repeat(10_000),"encrypted_content":"opaque"},
+                        {"type":"web_search_result","url":"https://example.org/result","title":"huge".repeat(2_500),"encrypted_content":"opaque"},
                         {"type":"web_search_result","url":"https://example.org/last","title":"Last source","encrypted_content":"opaque"}
                     ]}),
                 ], "end_turn"),
@@ -507,8 +510,14 @@ async fn nested_web_search_long_answer_and_title_keep_source_urls() {
     let result = &r[2]["messages"][2]["content"][0];
     assert_ne!(result["is_error"], true);
     let text = result["content"].as_str().unwrap();
-    assert!(text.len() <= 32 * 1024);
-    assert!(text.starts_with("Answer "));
+    // Previously the answer was cut at 32 KiB, titles at 256 bytes, and a
+    // source list above 8 KiB failed the whole search.
+    assert!(text.len() > 32 * 1024);
+    assert!(text.starts_with(&format!("Answer {}", "💡".repeat(9_000))));
+    assert!(text.contains(&format!(
+        "https://example.org/result — {}",
+        "huge".repeat(2_500)
+    )));
     for url in [
         "https://example.org/citation",
         "https://example.org/result",
@@ -698,8 +707,122 @@ async fn nested_search_preserves_sources_across_pause_and_bounds_the_combined_an
         "paused sources must survive the nested call"
     );
     assert_eq!(text.matches("https://example.org/cited").count(), 1);
-    assert!(text.starts_with("Earlier finding. "));
-    assert!(text.len() <= 32 * 1024);
+    assert!(text.starts_with(&format!("Earlier finding. {}", "💡".repeat(12_000))));
+    server.abort();
+}
+
+/// The nested search follows provider pause_turn continuations until end_turn,
+/// not a fixed number of rounds (previously four), and sends no max_uses cap.
+#[tokio::test]
+async fn nested_search_continues_past_former_pause_cap_until_end_turn() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    const PAUSES: usize = 6;
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+        let log = log.clone();
+        async move {
+            let index = { let mut r = log.lock().unwrap(); r.push(body); r.len() };
+            let (blocks, stop) = match index {
+                1 => (vec![json!({"type":"tool_use","id":"research","name":"WebSearch","input":{"query":"deep research"}})], "tool_use"),
+                n if n <= PAUSES + 1 => (vec![
+                    json!({"type":"server_tool_use","id":format!("srv-{n}"),"name":"web_search","input":{"query":"deep research"}}),
+                    json!({"type":"web_search_tool_result","tool_use_id":format!("srv-{n}"),"content":[{"type":"web_search_result","url":format!("https://example.org/round-{n}"),"title":"Round","encrypted_content":"opaque"}]}),
+                ], "pause_turn"),
+                n if n == PAUSES + 2 => (vec![json!({"type":"text","text":"Final finding."})], "end_turn"),
+                _ => (vec![json!({"type":"text","text":"done"})], "end_turn"),
+            };
+            ([("content-type", "text/event-stream")], stream(blocks, stop))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
+        .nested_web_search(false)
+        .build()
+        .unwrap();
+    let result = agent
+        .prompt("research")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(result.final_message(), "done");
+    let r = requests.lock().unwrap();
+    assert_eq!(r.len(), PAUSES + 3);
+    assert_eq!(
+        r[1]["tools"],
+        json!([{"type":"web_search_20250305","name":"web_search"}])
+    );
+    let receipt = &r[PAUSES + 2]["messages"][2]["content"][0];
+    assert_ne!(receipt["is_error"], true, "{receipt}");
+    let text = receipt["content"].as_str().unwrap();
+    assert!(text.starts_with("Final finding."));
+    for n in 2..=PAUSES + 1 {
+        assert!(
+            text.contains(&format!("https://example.org/round-{n}")),
+            "round {n}"
+        );
+    }
+    server.abort();
+}
+
+/// A paused nested response with no content cannot make progress: the call
+/// fails once instead of replaying the same request forever.
+#[tokio::test]
+async fn nested_search_empty_pause_fails_as_no_progress() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+        let log = log.clone();
+        async move {
+            let index = { let mut r = log.lock().unwrap(); r.push(body); r.len() };
+            let (blocks, stop) = match index {
+                1 => (vec![json!({"type":"tool_use","id":"research","name":"WebSearch","input":{"query":"stalled research"}})], "tool_use"),
+                2 => (vec![], "pause_turn"),
+                _ => (vec![json!({"type":"text","text":"done"})], "end_turn"),
+            };
+            ([("content-type", "text/event-stream")], stream(blocks, stop))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (agent, _) = Nanocodex::builder(Claude::new(client, "test"))
+        .max_tokens(128_000)
+        .nested_web_search(false)
+        .build()
+        .unwrap();
+    let result = agent
+        .prompt("research")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(result.final_message(), "done");
+    let r = requests.lock().unwrap();
+    assert_eq!(r.len(), 3, "the empty pause is not replayed");
+    let receipt = &r[2]["messages"][2]["content"][0];
+    assert_eq!(receipt["is_error"], true);
+    assert!(
+        receipt.to_string().contains("paused without progress"),
+        "{receipt}"
+    );
     server.abort();
 }
 

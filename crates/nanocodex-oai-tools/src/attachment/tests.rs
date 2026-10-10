@@ -469,6 +469,7 @@ async fn cancellation_is_only_an_ordinary_result() {
 async fn disconnect_after_dispatch_replays_identical_receipt_until_ack() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let (recovered_tx, recovered_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let mut first = ready(&listener).await;
         send_json(&mut first, call("lost-ack", "echo")).await;
@@ -494,6 +495,7 @@ async fn disconnect_after_dispatch_replays_identical_receipt_until_ack() {
             recv_json(&mut second).await,
             json!({"type":"status","call_id":"lost-ack","state":"missing"})
         );
+        recovered_tx.send(()).unwrap();
         assert_eq!(recv_json(&mut second).await, json!({"type":"drain"}));
         send_json(&mut second, json!({"type":"draining"})).await;
     });
@@ -507,7 +509,10 @@ async fn disconnect_after_dispatch_replays_identical_receipt_until_ack() {
         .connect()
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(180)).await;
+    tokio::time::timeout(Duration::from_secs(5), recovered_rx)
+        .await
+        .unwrap()
+        .unwrap();
     attachment.detach().await.unwrap();
     server.await.unwrap();
 }

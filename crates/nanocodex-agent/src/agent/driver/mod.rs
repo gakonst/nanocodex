@@ -759,22 +759,33 @@ where
                                                 let recovered = operation
                                                     .as_ref()
                                                     .is_some_and(ExecutionOperation::is_recovered);
-                                                let persisted = match operation.as_ref() {
-                                                    Some(operation) if !recovered => {
+                                                let (persisted, committed) = match operation.as_ref() {
+                                                    Some(operation) if !recovered => (
                                                         self.execution
                                                             .cancel_operation(
                                                                 operation.id(),
                                                                 &prompt,
                                                             )
-                                                            .await
-                                                    }
-                                                    Some(_) | None => Ok(()),
+                                                            .await,
+                                                        true,
+                                                    ),
+                                                    // Queued behind its predecessor, a recovered
+                                                    // operation usually never began an attempt.
+                                                    Some(operation) => (
+                                                        Ok(()),
+                                                        self.execution
+                                                            .cancel_unstarted(operation.id())
+                                                            .await,
+                                                    ),
+                                                    None => (Ok(()), false),
                                                 };
                                                 persisted.and_then(|()| {
-                                                    if cancel_queued_turn(
+                                                    if settle_cancelled_queued_turn(
                                                         &mut queued_turns,
                                                         key,
-                                                        !recovered,
+                                                        recovered,
+                                                        committed,
+                                                        &self.spawner.config,
                                                     ) {
                                                         Ok(())
                                                     } else {
@@ -1409,19 +1420,30 @@ where
                                             let recovered = operation
                                                 .as_ref()
                                                 .is_some_and(ExecutionOperation::is_recovered);
-                                            let persisted = match operation.as_ref() {
-                                                Some(operation) if !recovered => {
+                                            let (persisted, committed) = match operation.as_ref() {
+                                                Some(operation) if !recovered => (
                                                     self.execution
                                                         .cancel_operation(operation.id(), &prompt)
-                                                        .await
-                                                }
-                                                Some(_) | None => Ok(()),
+                                                        .await,
+                                                    true,
+                                                ),
+                                                // Queued behind its predecessor, a recovered
+                                                // operation usually never began an attempt.
+                                                Some(operation) => (
+                                                    Ok(()),
+                                                    self.execution
+                                                        .cancel_unstarted(operation.id())
+                                                        .await,
+                                                ),
+                                                None => (Ok(()), false),
                                             };
                                             persisted.and_then(|()| {
-                                                if cancel_queued_turn(
+                                                if settle_cancelled_queued_turn(
                                                     &mut queued_turns,
                                                     target,
-                                                    !recovered,
+                                                    recovered,
+                                                    committed,
+                                                    &self.spawner.config,
                                                 ) {
                                                     Ok(())
                                                 } else {
@@ -1957,6 +1979,50 @@ where
     };
     model.set_before_compaction(spawner.before_compaction.clone());
     model
+}
+
+/// Retires a queued turn whose cancellation was just durably committed while
+/// another turn runs. Its operation is already terminal, so its caller must
+/// not wait behind the active turn (which may hold a long tool call).
+/// Otherwise recovered operations keep their ordered reconciliation and
+/// ephemeral turns their queue position, as before.
+fn settle_cancelled_queued_turn(
+    queued_turns: &mut VecDeque<QueuedTurn>,
+    target: TurnKey,
+    recovered: bool,
+    committed: bool,
+    config: &ModelConfig,
+) -> bool {
+    let durable = queued_turns.iter().position(|queued| {
+        matches!(
+            queued,
+            QueuedTurn::Pending { key, execution_operation: Some(_), .. } if *key == target
+        )
+    });
+    match durable {
+        Some(position) if committed => {
+            let Some(QueuedTurn::Pending {
+                thinking,
+                events,
+                result,
+                ..
+            }) = queued_turns.remove(position)
+            else {
+                return false;
+            };
+            let outcome = emit_replayed_terminal(
+                &events,
+                config,
+                thinking,
+                "cancelled",
+                &TurnUsage::default(),
+            )
+            .and(Err(NanocodexError::TurnCancelled));
+            drop(result.send(outcome));
+            true
+        }
+        _ => cancel_queued_turn(queued_turns, target, !recovered),
+    }
 }
 
 async fn accept_execution_command(

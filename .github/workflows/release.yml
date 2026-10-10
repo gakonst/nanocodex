@@ -149,7 +149,12 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
-          cache-on-failure: true
+          # A failed job (e.g. before compiling) must not store a near-empty target
+          # under the exact key: rust-cache then restores it as "full match" and
+          # skips saving ("Cache up-to-date"), keeping that key cold indefinitely.
+          cache-on-failure: false
+      - uses: ./.github/actions/docker-hub-mirror
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
       - name: Prepare embedded Linux Wayland helpers
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -163,9 +168,26 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
-          cargo build --locked --release \
-            --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo \
+          # Release-stage Hand identity: computed from the Hand package closure
+          # before compiling, verified against the Hand's Cargo dep-info after.
+          features=nanocodex-bin/tempo
+          payload=()
+          if [[ -n "${NANOCODEX_LINUX_SCREEN_BUNDLE:-}" ]]; then
+            # Distributable Linux Hands embed the helper payload named above.
+            features+=",nanocodex-hand-daemon/embedded-screen-helpers"
+            payload=(--payload "linux-screen-helpers=$NANOCODEX_LINUX_SCREEN_BUNDLE")
+          fi
+          NANOCODEX_HAND_IDENTITY="$(scripts/release/hand-source-identity.py compute \
+            --target ${{ matrix.target }} --profile release --features "$features" \
+            ${payload[@]+"${payload[@]}"} --report "$RUNNER_TEMP/hand-identity-inputs.json")"
+          export NANOCODEX_HAND_IDENTITY
+          echo "Hand source identity: $NANOCODEX_HAND_IDENTITY" >> "$GITHUB_STEP_SUMMARY"
+          cargo build --locked --release --timings \
+            --package nanocodex-bin --package nanocodex-hand-daemon --features "$features" \
             --target ${{ matrix.target }}
+          scripts/release/hand-source-identity.py verify \
+            --report "$RUNNER_TEMP/hand-identity-inputs.json" \
+            --dep-info "target/${{ matrix.target }}/release/nanocodex-hand.d"
       - name: Verify shipped Linux Hand screen payload
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -218,6 +240,15 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/*
           if-no-files-found: error
+      # Per-crate compile critical path for profiling; never a release asset.
+      - name: Retain Cargo build timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-timings-${{ matrix.target }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 30
 
   build-windows-hand:
     name: build Windows Hand installer
@@ -238,7 +269,10 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
-          cache-on-failure: true
+          # A failed job (e.g. before compiling) must not store a near-empty target
+          # under the exact key: rust-cache then restores it as "full match" and
+          # skips saving ("Cache up-to-date"), keeping that key cold indefinitely.
+          cache-on-failure: false
       - name: Build Windows Hand payload
         shell: pwsh
         env:
@@ -246,7 +280,7 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
-          cargo build --locked --release --package nanocodex-bin --bin nanocodex --bin nanocodex-hand --features tempo
+          cargo build --locked --release --timings --package nanocodex-bin --package nanocodex-hand-daemon --features nanocodex-bin/tempo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
@@ -277,6 +311,14 @@ jobs:
           name: nanocodex-hand-x86_64-pc-windows-msvc
           path: dist/windows-hand/*
           if-no-files-found: error
+      - name: Retain Cargo build timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-timings-windows-hand
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 30
 
   publish-crates:
     name: publish crates.io packages
@@ -317,7 +359,10 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
-          cache-on-failure: true
+          # A failed job (e.g. before compiling) must not store a near-empty target
+          # under the exact key: rust-cache then restores it as "full match" and
+          # skips saving ("Cache up-to-date"), keeping that key cold indefinitely.
+          cache-on-failure: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -336,7 +381,6 @@ jobs:
           pnpm --filter nanocodex pack --pack-destination "$PWD/dist/npm"
           pnpm --filter nanocodex-vite pack --pack-destination "$PWD/dist/npm"
       - name: Test publishable packages
-        if: ${{ false }}
         run: |
           pnpm --filter nanocodex-tools test
           pnpm --filter nanocodex test
@@ -408,8 +452,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      # Release assets only (the Linux, macOS and Windows nanocodex-* artifacts);
+      # build telemetry artifacts are never published.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: nanocodex-*
           path: dist
           merge-multiple: true
       - name: Test Hand reuse against a fake release store
