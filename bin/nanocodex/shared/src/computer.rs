@@ -27,7 +27,8 @@ impl Computer {
             refresh,
             background,
         } = self.command;
-        if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        {
             // Linux Hands capture and control through their built-in native
             // screen; OpenAI's signed component feed is macOS-only. Report what
             // the native screen needs instead of a provider failure. Read-only:
@@ -105,6 +106,7 @@ impl Computer {
 /// is not proof the screen works: the running Hand reports that itself through
 /// `nanocodex hand permissions --check`. The Wayland helpers are embedded in
 /// the Hand executable and extracted on first use; nothing is downloaded.
+#[cfg(target_os = "linux")]
 fn linux_native_screen_receipt() -> serde_json::Value {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut found = serde_json::Map::new();
