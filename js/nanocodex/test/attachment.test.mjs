@@ -790,3 +790,35 @@ test("trusted turn completion reaches tool lifecycle outside its public catalog"
   assert.deepEqual(ended, ["Stop", "Interrupt", "SubagentStop"].map(event => ["session:1", "session:1:7", event]));
   await drain(client, socket); await tools.close();
 });
+
+test("attachment applies the byte budget to the exact serialized output and sends that same encoding", async () => {
+  const text = 'é中😀 "quote" \\back\\slash\t\u0001\u2028{"nested":{"json":[1,"two",null]}}';
+  const receipt = async (handler, budget) => {
+    const fixture = await readyAttachment({ handler });
+    fixture.socket.receive({ ...callFrame({}), output_byte_budget: budget });
+    await waitFor(() => fixture.socket.frames().some(({ type }) => type === "result"));
+    const raw = fixture.socket.sent.find((value) => JSON.parse(value).type === "result");
+    const frame = JSON.parse(raw);
+    // The receipt is byte-for-byte JSON.stringify of its business frame plus timing.
+    const { timing, ...business } = frame;
+    assert.equal(raw, JSON.stringify(business).slice(0, -1) + ',"timing":' + JSON.stringify(timing) + "}");
+    fixture.socket.receive({ type: "ack", call_id: frame.call_id });
+    await drain(fixture.client, fixture.socket);
+    await fixture.tools.close();
+    return frame;
+  };
+  const unbounded = await receipt(() => ({ text, nested: { json: [1, "two", null], text } }), Number.MAX_SAFE_INTEGER);
+  assert.equal(unbounded.outcome.status, "completed");
+  const exact = Buffer.byteLength(JSON.stringify(unbounded.outcome.output), "utf8");
+  assert.ok(exact > JSON.stringify(unbounded.outcome.output).length, "fixture must contain multibyte UTF-8");
+  for (const [budget, status] of [[exact, "completed"], [exact + 1, "completed"], [exact - 1, "ambiguous"]]) {
+    const frame = await receipt(() => ({ text, nested: { json: [1, "two", null], text } }), budget);
+    assert.equal(frame.outcome.status, status, "budget " + budget + " for " + exact + " output bytes");
+    if (status === "completed") assert.deepEqual(frame.outcome.output, unbounded.outcome.output);
+    else assert.match(frame.outcome.message, /exceeded the admitted byte budget/);
+  }
+  const failed = await receipt(() => { throw new Error(text); }, Number.MAX_SAFE_INTEGER);
+  assert.equal(failed.outcome.status, "completed");
+  assert.equal(failed.outcome.output.success, false);
+  assert.ok(failed.outcome.output.output.includes(text));
+});
