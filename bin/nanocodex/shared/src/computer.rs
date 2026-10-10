@@ -28,7 +28,7 @@ impl Computer {
             background,
         } = self.command;
         #[cfg(target_os = "linux")]
-        {
+        if cfg!(target_os = "linux") {
             // Linux Hands capture and control through their built-in native
             // screen; OpenAI's signed component feed is macOS-only. Report what
             // the native screen needs instead of a provider failure. Read-only:
