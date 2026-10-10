@@ -425,9 +425,7 @@ async fn journey() {
                 let handles = Arc::clone(&handles);
                 recipe_calls.fetch_add(1, Ordering::SeqCst);
                 async move {
-                    let HarnessModel::Codex(model) = request.model else {
-                        unreachable!()
-                    };
+                    let model = request.codex_model()?;
                     let mut builder = Nanocodex::builder(openai)
                         .model(model)
                         .thinking(request.thinking)
@@ -462,7 +460,7 @@ async fn journey() {
                 }
                 async move {
                     let mut builder =
-                        Nanocodex::builder(Claude::new(claude, request.model.as_str()))
+                        Nanocodex::builder(Claude::new(claude, request.claude_model()?.as_str()))
                             .thinking(request.thinking)?
                             .host_context(request.host_context)
                             .spawn_factory(request.spawn_factory)
@@ -702,4 +700,65 @@ async fn journey() {
         restore_calls.load(Ordering::SeqCst)
     );
     server.abort();
+}
+
+fn start_error(result: nanocodex::agent::Result<(Nanocodex, nanocodex::AgentEvents)>) -> String {
+    match result {
+        Ok(_) => panic!("construction unexpectedly succeeded"),
+        Err(error) => error.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn router_exposes_registered_routes_and_rejects_mismatched_recipes() {
+    // A Claude route whose recipe wrongly asks for a Codex model, and no Codex route.
+    let harness = Harness::builder()
+        .register(HarnessFamily::Claude, |request| async move {
+            assert_eq!(request.family(), HarnessFamily::Claude);
+            assert_eq!(request.claude_model()?, ClaudeModel::Sonnet55);
+            assert_eq!(request.thinking, ClaudeModel::Sonnet55.default_thinking());
+            let debug = format!("{request:?}");
+            assert!(
+                debug.contains("Sonnet55") && debug.contains("has_snapshot: false"),
+                "{debug}"
+            );
+            request.codex_model()?;
+            unreachable!("a Claude request has no Codex model")
+        })
+        .build();
+    assert_eq!(harness.families(), [HarnessFamily::Claude]);
+    assert!(harness.supports(HarnessFamily::Claude));
+    assert!(!harness.supports(HarnessFamily::Codex));
+    assert_eq!(format!("{harness:?}"), "Harness { families: [Claude] }");
+
+    // Family models convert directly; the recipe's typed accessor rejects the mismatch.
+    let message = start_error(harness.start(ClaudeModel::Sonnet55).await);
+    assert_eq!(
+        message,
+        "invalid task request: codex recipe received claude model claude-sonnet-5-5"
+    );
+    let message = start_error(harness.start(Model::Sol).await);
+    assert!(
+        message.contains("codex harness is not configured for this host"),
+        "{message}"
+    );
+    let message = start_error(
+        harness
+            .start_with(
+                SpawnOptions::new()
+                    .harness(HarnessFamily::Codex)
+                    .harness_model(ClaudeModel::Opus55.into()),
+            )
+            .await,
+    );
+    assert!(
+        message.contains("model does not belong to selected harness"),
+        "{message}"
+    );
+
+    // Operator-facing identifiers fail with every accepted choice, not the last fallback's.
+    let error = "gpt-7".parse::<HarnessModel>().unwrap_err();
+    assert!(error.to_string().contains("gpt-6.1-sol"), "{error}");
+    assert!(error.to_string().contains("opus, sonnet"), "{error}");
+    let _: Box<dyn std::error::Error + Send + Sync> = Box::new(error);
 }

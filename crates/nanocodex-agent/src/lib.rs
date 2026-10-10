@@ -15,7 +15,9 @@ mod error;
 mod harness;
 mod reasoning;
 mod service_tier_serde;
-pub use harness::{ClaudeModel, HarnessFamily, HarnessModel};
+pub use harness::{
+    ClaudeModel, HarnessFamily, HarnessModel, ParseHarnessError, ParseHarnessErrorKind,
+};
 #[cfg(feature = "openai")]
 mod model;
 #[cfg(feature = "openai")]

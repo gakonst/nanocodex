@@ -500,8 +500,9 @@ impl AgentArgs {
             .as_deref()
             .or(environment.as_deref())
             .map(|value| {
-                let model: HarnessModel =
-                    value.parse().map_err(|error: &'static str| eyre!(error))?;
+                let model: HarnessModel = value
+                    .parse()
+                    .map_err(|error: nanocodex::ParseHarnessError| eyre!(error))?;
                 if model.family() != family {
                     return Err(eyre!(
                         "model {value:?} does not belong to the {family} harness"
@@ -809,11 +810,7 @@ impl AgentArgs {
                 let workspace = codex_workspace.clone();
                 let workspaces = Arc::clone(&codex_workspaces);
                 async move {
-                    let HarnessModel::Codex(model) = request.model else {
-                        return Err(nanocodex::NanocodexError::InvalidRequest(
-                            "Codex recipe received a Claude model".into(),
-                        ));
-                    };
+                    let model = request.codex_model()?;
                     workspaces
                         .authorize_cross_family(request.parent.as_ref())
                         .map_err(nanocodex::NanocodexError::InvalidRequest)?;

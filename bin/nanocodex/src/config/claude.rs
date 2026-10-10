@@ -416,11 +416,7 @@ impl AgentArgs {
                         .current(&session_key)
                         .map_err(nanocodex::NanocodexError::InvalidRequest)?;
                     let tool_workspace = workspace.clone();
-                    let HarnessModel::Codex(model) = request.model else {
-                        return Err(nanocodex::NanocodexError::InvalidRequest(
-                            "Codex recipe received a Claude model".into(),
-                        ));
-                    };
+                    let model = request.codex_model()?;
                     let auth = auth
                         .resolve()
                         .map_err(|error| {
@@ -821,7 +817,7 @@ pub(super) fn register_claude_recipe(
                 .map_err(nanocodex::NanocodexError::InvalidRequest)?;
             let mut builder = configured_claude_builder(
                 client,
-                request.model,
+                request.claude_model()?.into(),
                 request.thinking,
                 workspace,
                 instructions,
