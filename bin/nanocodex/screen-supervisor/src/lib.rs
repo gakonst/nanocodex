@@ -519,10 +519,10 @@ mod tests {
                 move |report| {
                     let label = label(&report);
                     seen.lock().unwrap().push(label);
-                    if label != "starting" {
-                        if let Some(ready) = ready.take() {
-                            let _ = ready.send(());
-                        }
+                    if label != "starting"
+                        && let Some(ready) = ready.take()
+                    {
+                        let _ = ready.send(());
                     }
                 },
             ));
