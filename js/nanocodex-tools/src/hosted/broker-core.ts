@@ -44,6 +44,106 @@ function disabledBrowserTool(name: string): boolean {
 const encoder = new TextEncoder();
 
 /**
+ * Normalized outcomes always begin with {"status": and late receipts with
+ * {"type":"result", so this reserved prefix can never be a retained outcome.
+ */
+const ARCHIVE_REFERENCE_PREFIX = '{"hosted_tool_archive":';
+/** One in-flight archive write bounds large-result bytes held for storage. */
+const ARCHIVE_WRITE_CONCURRENCY = 1;
+/** Received large frames that may wait; more are refused before ACK with a transient close. */
+const ARCHIVE_WRITE_WAITERS = 2;
+const ARCHIVE_READ_CONCURRENCY = 1;
+const ARCHIVE_READ_WAITERS = 8;
+/** Archived values keep the remaining row (input, other terminal column) below the 2 MB SQLite row limit. */
+const ARCHIVE_ROW_BUDGET_BYTES = 1_800_000;
+const ARCHIVE_ROW_OVERHEAD_BYTES = 4096;
+
+type ArchiveDigest = Readonly<{ sha256: string; utf8Bytes: number }>;
+type ArchiveReference = Readonly<{ version: 1; field: "result" | "receipt"; key: string; sha256: string; utf8_bytes: number }>;
+/** The exact normalized outcome text, plus its archive identity and durable references once written. */
+type StoredOutcome = Readonly<{
+  text: string;
+  archive?: ArchiveDigest;
+  references?: Readonly<{ result: string; receipt: string }>;
+}>;
+
+/** Byte-identical to JSON.stringify({ type: "result", outcome }) for the outcome serialized as outcomeText. */
+function receiptText(outcomeText: string): string {
+  return '{"type":"result","outcome":' + outcomeText + "}";
+}
+
+function resultValue(stored: StoredOutcome): string { return stored.references?.result ?? stored.text; }
+function receiptValue(stored: StoredOutcome): string { return stored.references?.receipt ?? receiptText(stored.text); }
+
+function isArchiveReference(text: string | null | undefined): text is string {
+  return typeof text === "string" && text.startsWith(ARCHIVE_REFERENCE_PREFIX);
+}
+
+function parseArchiveReference(text: string | null | undefined): ArchiveReference | undefined {
+  if (!isArchiveReference(text)) return undefined;
+  try {
+    const value = (JSON.parse(text) as { hosted_tool_archive?: Partial<ArchiveReference> }).hosted_tool_archive;
+    if (value?.version === 1 && (value.field === "result" || value.field === "receipt")
+      && typeof value.key === "string" && typeof value.sha256 === "string" && /^[0-9a-f]{64}$/.test(value.sha256)
+      && typeof value.utf8_bytes === "number" && Number.isSafeInteger(value.utf8_bytes) && value.utf8_bytes >= 0) {
+      return value as ArchiveReference;
+    }
+  } catch { /* A malformed reference never matches and never resolves. */ }
+  return undefined;
+}
+
+/** Small row value: archive identity plus the status fields owner statistics read with json_extract. */
+function archiveReference(field: "result" | "receipt", key: string, digest: ArchiveDigest, outcome: HostedToolCallOutcome): string {
+  const summary: Record<string, unknown> = {
+    hosted_tool_archive: { version: 1, field, key, sha256: digest.sha256, utf8_bytes: digest.utf8Bytes },
+    status: outcome.status,
+  };
+  if (outcome.status === "completed") {
+    const structured: unknown = outcome.output.structured_result;
+    const status = structured !== null && typeof structured === "object" && !Array.isArray(structured)
+      ? (structured as { status?: unknown }).status : undefined;
+    summary.output = { success: outcome.output.success,
+      ...(typeof status === "string" && status.length <= 64 ? { structured_result: { status } } : {}) };
+  }
+  return JSON.stringify(summary);
+}
+
+/** UTF-8 length without allocating an encoded copy. */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length
+      && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) { bytes += 4; index++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+/** Local archive capacity is exhausted; the frame was not stored or acknowledged. */
+class ArchiveBusyError extends Error {
+  constructor() { super("Hosted Tools result archive is busy"); }
+}
+
+class ArchiveSlots {
+  #free: number;
+  readonly #waiters: (() => void)[] = [];
+  constructor(permits: number, readonly maxWaiters: number) { this.#free = permits; }
+  /** Rejects instead of queueing beyond maxWaiters, so waiting large frames stay bounded. */
+  async acquire(): Promise<void> {
+    if (this.#free > 0) { this.#free--; return; }
+    if (this.#waiters.length >= this.maxWaiters) throw new ArchiveBusyError();
+    await new Promise<void>(resolve => { this.#waiters.push(resolve); });
+  }
+  release(): void {
+    const next = this.#waiters.shift();
+    if (next) next(); else this.#free++;
+  }
+}
+
+/**
  * Marks the one case where an attached source is known to be absent before a
  * durable admission. The unified ToolRouter may then select the exact
  * same-name cloud contract. It must never infer this from an outcome message:
@@ -314,6 +414,23 @@ export interface HostedToolsBrokerPersistence {
   generationCalls?(leaseId: string, generation: number): readonly HostedToolsCallRow[];
 }
 
+/**
+ * Optional immutable store for terminal outcomes too large for one ledger row.
+ * The broker stores the complete normalized outcome bytes here before the
+ * compare-and-set that records a small reference, and acknowledges a result
+ * only after that commit. Nothing is expired or truncated.
+ */
+export interface HostedToolsResultArchive {
+  /** Outcomes whose normalized UTF-8 encoding exceeds this stay out of the row. */
+  readonly inlineLimitBytes: number;
+  /** Synchronous lowercase hex SHA-256 of exactly these bytes. */
+  digest(bytes: Uint8Array): string;
+  /** Durably stores exactly these bytes under a content-addressed key and returns it; idempotent for the same content. */
+  put(callId: string, bytes: Uint8Array, sha256: string): Promise<string>;
+  /** Returns exactly the stored text after verifying its size and SHA-256, or rejects. */
+  load(key: string, sha256: string, utf8Bytes: number): Promise<string>;
+}
+
 export type HostedToolsDiagnosticReason = "transport_closed" | "transport_error" | "protocol_error"
   | "owner_restarted" | "owner_shutdown" | "route_revoked" | "host_replaced" | "host_draining"
   | "lease_expired" | "lease_validation_failed" | "lease_validation_unavailable"
@@ -321,7 +438,7 @@ export type HostedToolsDiagnosticReason = "transport_closed" | "transport_error"
   | "call_send_failed" | "cancel_send_failed" | "ack_send_failed"
   | "ready_send_failed" | "drain_send_failed"
   | "cancelled_before_dispatch" | "in_flight_limit" | "invalid_call" | "admission_uncertain"
-  | "dispatch_ownership_lost";
+  | "dispatch_ownership_lost" | "result_store_failed";
 
 export type HostedToolsCallObservation = Readonly<{
   stage: "received" | "admitted" | "dispatched" | "terminal" | "replay" | "receipt" | "late_receipt" | "receipt_replay" | "receipt_lookup" | "cancel_requested"
@@ -396,6 +513,8 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
    */
   reconnectAdmissionWaitMs?: number;
   persistence: HostedToolsBrokerPersistence;
+  /** Complete storage for large terminal outcomes; absent keeps every outcome inline. */
+  resultArchive?: HostedToolsResultArchive;
   /** Resume exact live hibernated sockets instead of forcing every route to reconnect. */
   resumeRetainedSockets?: boolean;
   /** Correlated call boundaries only; inputs, outputs, and credentials are omitted. */
@@ -458,6 +577,12 @@ export class HostedToolsBrokerCore {
   readonly #maxCallsPerGeneration: number;
   readonly #reconnectAdmissionWaitMs: number;
   readonly #persistence: HostedToolsBrokerPersistence;
+  readonly #resultArchive: HostedToolsResultArchive | undefined;
+  readonly #archiveWrites = new Map<string, Promise<string>>();
+  readonly #archiveWriteSlots = new ArchiveSlots(ARCHIVE_WRITE_CONCURRENCY, ARCHIVE_WRITE_WAITERS);
+  readonly #archiveReadSlots = new ArchiveSlots(ARCHIVE_READ_CONCURRENCY, ARCHIVE_READ_WAITERS);
+  /** Call IDs whose result frames were refused for local archive capacity, oldest first. */
+  readonly #deferredResults = new Map<string, HostedToolsSocket>();
   readonly #onCatalogChanged: ((definitions: readonly HostedToolsProviderDefinition[]) => void) | undefined;
   readonly #beforeCatalogPublish: HostedToolsBrokerCoreOptions["beforeCatalogPublish"];
   readonly #entryAllowed: (
@@ -497,6 +622,7 @@ export class HostedToolsBrokerCore {
       throw new TypeError("maxCallsPerGeneration must be a positive safe integer");
     }
     this.#persistence = options.persistence;
+    this.#resultArchive = options.resultArchive;
     this.#onCatalogChanged = options.onCatalogChanged;
     this.#beforeCatalogPublish = options.beforeCatalogPublish;
     this.#entryAllowed = options.entryAllowed ?? (() => true);
@@ -592,7 +718,7 @@ export class HostedToolsBrokerCore {
     const state = this.#persistence.states().find(state => state.lease_id === row.lease_id && state.generation === row.generation);
     const socket = this.#socketForState(state);
     if (!socket) throw new HostedToolsProtocolError("stale_socket", "tool result requires its active pinned attachment");
-    this.#completeResult(socket, frame);
+    void this.#completeResult(socket, frame, undefined, undefined, false);
   }
 
   owns(socket: HostedToolsSocket): boolean { return this.handles(socket); }
@@ -964,8 +1090,32 @@ export class HostedToolsBrokerCore {
    * the call's original admitted deadline.
    */
   async receipt(request: HostedToolsReceiptRequest): Promise<HostedToolsReceipt> {
+    for (let attempt = 0; ; attempt++) {
+      let authority = this.#receiptAuthority(request);
+      if (authority === "missing") return { state: "missing" };
+      if (!authority) return { state: "unresolved" };
+      const before = authority.row;
+      const retained = before.state === "ambiguous" && before.receipt_json ? before.receipt_json : before.result_json;
+      if (!isArchiveReference(retained)) return this.#settleReceipt(request, before, authority.binding);
+      // The row stays retained: an unreadable archive is unresolved, never missing or re-run.
+      const archived = await this.#loadArchived(retained);
+      if (!archived) return { state: "unresolved" };
+      // Authority, routing and the retained row are rechecked after the asynchronous read.
+      authority = this.#receiptAuthority(request);
+      if (!authority || authority === "missing") return { state: "unresolved" };
+      const after = authority.row;
+      if (after.call_id === before.call_id && after.state === before.state
+        && after.result_json === before.result_json && after.receipt_json === before.receipt_json) {
+        return this.#settleReceipt(request, after, authority.binding, archived);
+      }
+      if (attempt >= 2) return { state: "unresolved" };
+    }
+  }
+
+  #receiptAuthority(request: HostedToolsReceiptRequest):
+    { row: HostedToolsCallRow; binding: HostedToolsCatalogBinding } | "missing" | undefined {
     const row = this.#persistence.callBySource(request.sessionId, request.callId);
-    if (!row || row.session_id !== request.sessionId || row.source_call_id !== request.callId) return { state: "missing" };
+    if (!row || row.session_id !== request.sessionId || row.source_call_id !== request.callId) return "missing";
     const candidates = this.#catalogBindings(undefined, true).filter(candidate => (request.machineId === undefined
       ? candidate.machine === undefined && candidate.entry.definition.name === request.name
       : candidate.machine?.id === request.machineId && candidate.wireName === request.name)
@@ -983,11 +1133,21 @@ export class HostedToolsBrokerCore {
         ? [binding.routeId, "process-runtime", row.host_runtime_id, row.name]
         : [binding.routeId, row.generation, row.lease_id, row.name])
       || !this.#entryAllowed(binding.entry, binding.connectGrantId, binding.appToolCatalogDigest, request.context)) {
-      return { state: "unresolved" };
+      return undefined;
     }
+    return { row, binding };
+  }
+
+  async #settleReceipt(
+    request: HostedToolsReceiptRequest,
+    row: HostedToolsCallRow,
+    binding: HostedToolsCatalogBinding,
+    archived?: HostedToolCallOutcome,
+  ): Promise<HostedToolsReceipt> {
     this.#observe("receipt_lookup", row);
-    let outcome: HostedToolCallOutcome | undefined;
-    if (row.state === "ambiguous" && row.receipt_json) {
+    let outcome: HostedToolCallOutcome | undefined = archived;
+    if (outcome) { /* verified archived receipt */ }
+    else if (row.state === "ambiguous" && row.receipt_json) {
       // A terminal result that arrived after the deadline is real evidence.
       const late = JSON.parse(row.receipt_json) as { outcome?: HostedToolCallOutcome };
       outcome = late.outcome;
@@ -1093,7 +1253,7 @@ export class HostedToolsBrokerCore {
     } else if (frame.type === "status") this.#recoverStatus(socket, frame);
     else if (frame.type === "drain") this.#drain(socket);
     else if (frame.type === "diagnostic") this.#hostProgress(socket, frame, timing);
-    else this.#completeResult(socket, frame, timing);
+    else await this.#completeResult(socket, frame, timing);
   }
 
   #hostProgress(
@@ -1560,12 +1720,13 @@ export class HostedToolsBrokerCore {
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "result" }>,
     timing?: HostFrameTiming,
-  ): void {
+    prepared?: StoredOutcome,
+    allowAsync = true,
+  ): Promise<void> | undefined {
     const resultAt = performance.now();
     const receiveTiming = this.#frameObservation(frame.call_id, timing);
     const attachment = this.#activeAttachment(socket);
     const row = this.#persistence.call(frame.call_id);
-    const stored = JSON.stringify(frame.outcome);
     if (!row
       || row.lease_id !== attachment.leaseId
       || row.generation !== attachment.generation
@@ -1573,10 +1734,20 @@ export class HostedToolsBrokerCore {
       || (row.host_runtime_id != null && row.host_runtime_id !== attachment.runtimeId)) {
       throw new HostedToolsProtocolError("unknown_call", "result does not match an admitted pinned call");
     }
+    const stored = prepared ?? this.#storedOutcome(frame.outcome, row);
+    // An archived outcome records its small reference only after its complete
+    // bytes are durable; every check below then runs again (see #archiveThenComplete).
+    const archiveFirst = (): Promise<void> | undefined => {
+      if (!stored.archive || stored.references) return undefined;
+      if (!allowAsync) throw new HostedToolsProtocolError("broker_failure", "an archived Hosted Tools result requires the WebSocket result path");
+      return this.#archiveThenComplete(socket, frame, timing, stored, attachment);
+    };
     if (row.state === "ambiguous") {
-      const receiptJson = JSON.stringify({ type: "result", outcome: frame.outcome });
-      const recorded = this.#persistence.recordLateReceipt(row.call_id, receiptJson, this.#now());
-      if (!recorded || recorded.receipt_json !== receiptJson) {
+      const archiving = row.receipt_json === null ? archiveFirst() : undefined;
+      if (archiving) return archiving;
+      const recorded = stored.archive && !stored.references ? row
+        : this.#persistence.recordLateReceipt(row.call_id, receiptValue(stored), this.#now());
+      if (!recorded || !this.#sameStored(recorded.receipt_json, stored, "receipt")) {
         throw new HostedToolsProtocolError("result_conflict", "late terminal receipt conflicts with retained proof");
       }
       this.#ackResult(socket, frame);
@@ -1584,7 +1755,7 @@ export class HostedToolsBrokerCore {
       return;
     }
     if (row.state !== "dispatched") {
-      if (row.result_json === stored && row.state === outcomeState(frame.outcome)) {
+      if (this.#sameStored(row.result_json, stored, "result") && row.state === outcomeState(frame.outcome)) {
         this.#ackResult(socket, frame);
         this.#observe("receipt_replay", row, { ...receiveTiming, outcome: frame.outcome.status, ...(frame.timing ? { host_timing: frame.timing } : {}) });
         return;
@@ -1593,9 +1764,10 @@ export class HostedToolsBrokerCore {
     }
     if (this.#now() >= row.deadline_at) {
       this.#finishAmbiguous(row, "Hosted Tools call result arrived after its durable deadline", "call_deadline");
-      const receiptJson = JSON.stringify({ type: "result", outcome: frame.outcome });
-      const recorded = this.#persistence.recordLateReceipt(row.call_id, receiptJson, this.#now());
-      if (!recorded || recorded.receipt_json !== receiptJson) {
+      const archiving = archiveFirst();
+      if (archiving) return archiving;
+      const recorded = this.#persistence.recordLateReceipt(row.call_id, receiptValue(stored), this.#now());
+      if (!recorded || !this.#sameStored(recorded.receipt_json, stored, "receipt")) {
         throw new HostedToolsProtocolError("result_conflict", "late terminal receipt conflicts with retained proof");
       }
       this.#ackResult(socket, frame);
@@ -1609,14 +1781,16 @@ export class HostedToolsBrokerCore {
         "completed output exceeds the byte budget pinned to the call",
       );
     }
+    const archiving = archiveFirst();
+    if (archiving) return archiving;
     const completed = this.#persistence.transitionCall(
       row.call_id,
       ["dispatched"],
       outcomeState(frame.outcome),
-      stored,
+      resultValue(stored),
       this.#now(),
     );
-    if (!completed || completed.result_json !== stored) {
+    if (!completed || !this.#sameStored(completed.result_json, stored, "result")) {
       throw new HostedToolsProtocolError("result_conflict", "call result lost durable ownership");
     }
     const pending = this.#takePending(row.call_id);
@@ -1640,6 +1814,231 @@ export class HostedToolsBrokerCore {
           transport_call_id: row.call_id, admission_ms: pending.dispatchedAt - pending.receivedAt,
           roundtrip_ms: resultAt - pending.dispatchedAt, settlement_ms: performance.now() - resultAt });
       } catch { /* Diagnostics must never change a durable call outcome. */ }
+    }
+  }
+
+  /** Normalized outcome text; large outcomes also carry the digest of their exact UTF-8 bytes. */
+  #storedOutcome(outcome: HostedToolCallOutcome, row: HostedToolsCallRow): StoredOutcome {
+    const text = JSON.stringify(outcome);
+    const archive = this.#resultArchive;
+    if (!archive) return { text };
+    const inputBytes = row.input_json.length * 3 <= ARCHIVE_ROW_OVERHEAD_BYTES ? row.input_json.length * 3 : utf8Length(row.input_json);
+    const limit = Math.min(archive.inlineLimitBytes, ARCHIVE_ROW_BUDGET_BYTES - inputBytes - ARCHIVE_ROW_OVERHEAD_BYTES);
+    if (text.length * 3 <= limit || utf8Length(text) <= limit) return { text };
+    return { text, archive: this.#digest(text) };
+  }
+
+  #digest(text: string): ArchiveDigest {
+    const archive = this.#resultArchive;
+    if (!archive) throw new HostedToolsProtocolError("broker_failure", "retained Hosted Tools result archive is not configured");
+    const bytes = encoder.encode(text);
+    return { sha256: archive.digest(bytes), utf8Bytes: bytes.byteLength };
+  }
+
+  /**
+   * Exact normalized-byte identity: an inline value compares its complete
+   * text; an archive reference compares the field, UTF-8 length and SHA-256
+   * of the candidate's complete normalized bytes.
+   */
+  #sameStored(retained: string | null, stored: StoredOutcome, field: "result" | "receipt"): boolean {
+    if (!isArchiveReference(retained)) {
+      return retained === (field === "result" ? stored.text : receiptText(stored.text));
+    }
+    const reference = parseArchiveReference(retained);
+    if (!reference || reference.field !== field) return false;
+    const digest = stored.archive ?? this.#digest(stored.text);
+    return reference.utf8_bytes === digest.utf8Bytes && reference.sha256 === digest.sha256;
+  }
+
+  async #archiveThenComplete(
+    socket: HostedToolsSocket,
+    frame: Extract<HostedToolsHostFrame, { type: "result" }>,
+    timing: HostFrameTiming | undefined,
+    stored: StoredOutcome,
+    attachment: HostedToolsSocketAttachment,
+  ): Promise<void> {
+    const digest = stored.archive!;
+    let key: string;
+    try {
+      key = await this.#archiveWrite(frame.call_id, stored.text, digest);
+    } catch (error) {
+      if (error instanceof ArchiveBusyError && this.#deferArchivedResult(socket, frame.call_id, attachment)) return;
+      // Nothing was recorded or acknowledged. A transient close keeps a
+      // command-recovery epoch, so the same Hand resends this retained result.
+      this.#retire(socket, "Hosted Tools result storage failed: " + errorMessage(error), "result_store_failed");
+      closeSocket(socket, 1011, "Hosted Tools result storage failed");
+      return;
+    }
+    // Ownership, lease, deadline, cancellation and call state may have changed
+    // during the write: re-run every check and the compare-and-set before ACK.
+    const prepared: StoredOutcome = {
+      text: stored.text,
+      archive: digest,
+      references: {
+        result: archiveReference("result", key, digest, frame.outcome),
+        receipt: archiveReference("receipt", key, digest, frame.outcome),
+      },
+    };
+    try {
+      await this.#completeResult(socket, frame, timing, prepared);
+    } catch (error) {
+      if (!(error instanceof HostedToolsProtocolError) || error.code !== "stale_socket") throw error;
+      this.#detachedArchiveReceipt(socket, frame, attachment, prepared, error);
+    }
+  }
+
+  /**
+   * The socket lost ownership while the complete bytes were being stored. It
+   * is fenced exactly as a stale frame would be and receives no ACK. If that
+   * left the pinned call ambiguous without proof, the result authenticated on
+   * its pinned socket is retained as the late receipt instead of being dropped.
+   */
+  /** Commits an archived result for its exact pinned call without acknowledging it. */
+  #settleReleasedArchive(
+    frame: Extract<HostedToolsHostFrame, { type: "result" }>,
+    attachment: HostedToolsSocketAttachment,
+    prepared: StoredOutcome,
+  ): void {
+    const row = this.#persistence.call(frame.call_id);
+    if (!row || row.lease_id !== attachment.leaseId || row.generation !== attachment.generation
+      || row.host_id !== attachment.sessionId
+      || (row.host_runtime_id != null && row.host_runtime_id !== attachment.runtimeId)) return;
+    if (row.state === "dispatched" && this.#now() < row.deadline_at) {
+      const completed = this.#persistence.transitionCall(
+        row.call_id, ["dispatched"], outcomeState(frame.outcome), resultValue(prepared), this.#now());
+      if (completed && completed.state === outcomeState(frame.outcome) && this.#sameStored(completed.result_json, prepared, "result")) {
+        this.#takePending(row.call_id)?.resolve(frame.outcome);
+        this.#observe("receipt", row, { outcome: frame.outcome.status });
+      }
+      return;
+    }
+    if (row.state === "dispatched") {
+      this.#finishAmbiguous(row, "Hosted Tools call result arrived after its durable deadline", "call_deadline");
+    }
+    const late = this.#persistence.call(frame.call_id);
+    if (late?.state !== "ambiguous" || late.receipt_json !== null) return;
+    const recorded = this.#persistence.recordLateReceipt(late.call_id, receiptValue(prepared), this.#now());
+    if (recorded && this.#sameStored(recorded.receipt_json, prepared, "receipt")) {
+      this.#observe("late_receipt", late, { outcome: frame.outcome.status });
+    }
+  }
+
+  #detachedArchiveReceipt(
+    socket: HostedToolsSocket,
+    frame: Extract<HostedToolsHostFrame, { type: "result" }>,
+    attachment: HostedToolsSocketAttachment,
+    prepared: StoredOutcome,
+    error: HostedToolsProtocolError,
+  ): void {
+    const state = attachment.routeId === undefined ? undefined : this.#persistence.state(attachment.routeId);
+    const sameEpoch = !!state && state.lease_id === attachment.leaseId && state.generation === attachment.generation;
+    const live = sameEpoch ? this.#socketForState(state) : undefined;
+    const unexpired = !!state && sameEpoch && state.lease_expires_at > this.#now();
+    // An expired lease never settles here, even with another live socket: it
+    // follows the fence and late-receipt path below like any expired route.
+    if (unexpired && live !== socket && (live !== undefined || (!!state && this.#canRecover(state)))) {
+      // The epoch outlives this socket: the same runtime resumed it on a newer
+      // socket, or it is an unexpired command-recovery epoch awaiting reconnect.
+      // Retiring here would make that generation ambiguous, so only release the
+      // old socket. The durable result is still committed for its exact pinned
+      // call without an ACK, like a lost acknowledgement: the Hand's resend on
+      // its current socket then matches the retained reference and is acked.
+      const current = this.#attachment(socket);
+      if (current) this.context.writeAttachment(socket, { ...current, active: false });
+      closeSocket(socket, 1012, "Hosted Tools attachment resumed on another socket");
+      this.#settleReleasedArchive(frame, attachment, prepared);
+      return;
+    }
+    const expired = !!state && sameEpoch && state.lease_expires_at <= this.#now();
+    this.#observeConnection("error", attachment, { reason_code: expired ? "lease_expired" : "protocol_error" });
+    this.#fence(socket, error.code + ": " + error.message, expired ? 1012 : 1008, expired ? "lease_expired" : "protocol_error");
+    const row = this.#persistence.call(frame.call_id);
+    if (!row || row.lease_id !== attachment.leaseId || row.generation !== attachment.generation
+      || row.host_id !== attachment.sessionId
+      || (row.host_runtime_id != null && row.host_runtime_id !== attachment.runtimeId)) return;
+    // Fencing an already inactive socket cannot retire its epoch. Preserve the
+    // authenticated archived evidence even if expiry preceded that retirement.
+    if (expired && row.state === "dispatched") {
+      this.#finishAmbiguous(row, "Hosted Tools lease expired before the archived result was recorded", "lease_expired");
+    }
+    const late = this.#persistence.call(frame.call_id);
+    if (late?.state !== "ambiguous" || late.receipt_json !== null) return;
+    const recorded = this.#persistence.recordLateReceipt(late.call_id, receiptValue(prepared), this.#now());
+    if (recorded && this.#sameStored(recorded.receipt_json, prepared, "receipt")) {
+      this.#observe("late_receipt", late, { outcome: frame.outcome.status });
+    }
+  }
+
+  /**
+   * Local archive backpressure: the frame is dropped without ACK and only its
+   * call ID is kept. The socket and its epoch stay open, so accepted writes
+   * and other calls continue; each freed write slot asks the same live socket
+   * to resend one deferred retained result with a recovery frame.
+   */
+  #deferArchivedResult(socket: HostedToolsSocket, callId: string, attachment: HostedToolsSocketAttachment): boolean {
+    const state = attachment.routeId === undefined ? undefined : this.#persistence.state(attachment.routeId);
+    if (!state || !this.#canRecover(state) || this.#socketForState(state) !== socket) return false;
+    this.#deferredResults.delete(callId);
+    this.#deferredResults.set(callId, socket);
+    return true;
+  }
+
+  #requestDeferredResult(): void {
+    for (const [callId, socket] of this.#deferredResults) {
+      this.#deferredResults.delete(callId);
+      const attachment = this.#attachment(socket);
+      const state = attachment?.routeId === undefined ? undefined : this.#persistence.state(attachment.routeId);
+      const row = this.#persistence.call(callId);
+      // A reconnect replays every unacknowledged result itself; only the same
+      // live socket's still-unsettled pinned call is asked again.
+      if (!attachment?.active || !state || this.#socketForState(state) !== socket || !row
+        || row.lease_id !== attachment.leaseId || row.generation !== attachment.generation
+        || !(row.state === "dispatched" || (row.state === "ambiguous" && row.receipt_json === null))) continue;
+      try {
+        this.#send(socket, { type: "recover", call_ids: [callId] });
+      } catch {
+        this.#retire(socket, "recovery delivery failed", "call_send_failed");
+        closeSocket(socket, 1011, "Hosted Tools recovery delivery failed");
+      }
+      return;
+    }
+  }
+
+  /** Coalesces identical writes; at most ARCHIVE_WRITE_CONCURRENCY encoded payloads exist at once. */
+  async #archiveWrite(callId: string, text: string, digest: ArchiveDigest): Promise<string> {
+    const archive = this.#resultArchive;
+    if (!archive) throw new Error("result archive is not configured");
+    const identity = callId + "\n" + digest.sha256;
+    const existing = this.#archiveWrites.get(identity);
+    if (existing) return existing;
+    const write = (async () => {
+      await this.#archiveWriteSlots.acquire();
+      try {
+        const bytes = encoder.encode(text);
+        if (bytes.byteLength !== digest.utf8Bytes) throw new Error("result bytes changed before storage");
+        return await archive.put(callId, bytes, digest.sha256);
+      } finally {
+        this.#archiveWriteSlots.release();
+        this.#requestDeferredResult();
+      }
+    })();
+    this.#archiveWrites.set(identity, write);
+    try { return await write; }
+    finally { if (this.#archiveWrites.get(identity) === write) this.#archiveWrites.delete(identity); }
+  }
+
+  /** Verified complete outcome, or undefined when the archive is unavailable, missing or corrupt. */
+  async #loadArchived(text: string): Promise<HostedToolCallOutcome | undefined> {
+    const reference = parseArchiveReference(text);
+    const archive = this.#resultArchive;
+    if (!reference || !archive) return undefined;
+    try { await this.#archiveReadSlots.acquire(); } catch { return undefined; }
+    try {
+      return JSON.parse(await archive.load(reference.key, reference.sha256, reference.utf8_bytes)) as HostedToolCallOutcome;
+    } catch {
+      return undefined;
+    } finally {
+      this.#archiveReadSlots.release();
     }
   }
 
@@ -2141,7 +2540,15 @@ export class HostedToolsBrokerCore {
         && owner.runtime_id === existing.host_runtime_id ? this.#restorePending(existing) : undefined);
     if (pending && existing.state === "dispatched") this.#attachAbort(existing.call_id, pending, signal);
     const outcome = existing.result_json
-      ? JSON.parse(existing.result_json) as HostedToolCallOutcome
+      ? isArchiveReference(existing.result_json)
+        // A retained receipt is never re-run; an unreadable archive stays retryable by the same call ID.
+        ? await this.#loadArchived(existing.result_json).then(loaded => !loaded
+          ? hostedToolsAmbiguous("The retained Hosted Tools receipt archive is temporarily unreadable. The call was not re-run; retry the same call ID.")
+          // The resolve-time authority check runs again after the asynchronous read.
+          : this.#entryAllowed(binding.entry, binding.connectGrantId, binding.appToolCatalogDigest)
+            ? loaded
+            : hostedToolsAmbiguous("Hosted Tools authority changed while the retained receipt was read. The call was not re-run."))
+        : JSON.parse(existing.result_json) as HostedToolCallOutcome
       : existing.state === "dispatched" && pending
         ? await pending.promise
         : existing.state === "admitted"
@@ -2268,7 +2675,7 @@ export class HostedToolsBrokerCore {
       this.#notifyCatalogChanged();
       return;
     }
-    const transient = ["transport_closed", "transport_error", "call_send_failed", "cancel_send_failed", "ack_send_failed"].includes(reasonCode);
+    const transient = ["transport_closed", "transport_error", "call_send_failed", "cancel_send_failed", "ack_send_failed", "result_store_failed"].includes(reasonCode);
     if (state && this.#canRecover(state) && transient && !attachment.draining
       && state.lease_id === attachment.leaseId && state.generation === attachment.generation) {
       for (const row of this.#persistence.generationCalls!(state.lease_id!, state.generation)) {
