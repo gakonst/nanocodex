@@ -1122,15 +1122,28 @@ mod tests {
         assert_eq!(state.lock().unwrap().missing_replies, 6);
     }
 
+    /// The upload credential's deadline ends a live stream. The deadline is
+    /// fixed when the stream starts, and a starved runner can take longer than
+    /// the window to encode and upload its first segment; that stream expires
+    /// too, but only a stream that went live proves this journey, so each
+    /// attempt that never went live doubles the window.
     #[tokio::test(flavor = "multi_thread")]
     async fn deadline_expires_stream() {
-        let (seen, state) = terminal(|_| {}, TOKEN, 6_000, false).await;
-        assert!(seen.iter().any(|v| v["status"] == "live"));
-        assert_eq!(last_error(&seen), "expired");
-        assert!(
-            !state.lock().unwrap().deleted,
-            "expired credentials are not used"
-        );
+        let mut attempts = Vec::new();
+        for window_ms in [6_000, 12_000, 24_000] {
+            let (seen, state) = terminal(|_| {}, TOKEN, window_ms, false).await;
+            assert_eq!(last_error(&seen), "expired", "{seen:?}");
+            assert!(
+                !state.lock().unwrap().deleted,
+                "expired credentials are not used"
+            );
+            let live = seen.iter().any(|v| v["status"] == "live");
+            attempts.push((window_ms, seen));
+            if live {
+                return;
+            }
+        }
+        panic!("no stream went live before its deadline: {attempts:?}");
     }
 
     /// A stop whose scratch directory cannot be removed is reported as a
