@@ -211,15 +211,17 @@ impl Service<ResponsesAttempt> for PricingTraceService {
     }
 }
 
+// Agents require Code Mode since eda4a21e3; the barrier runs as a nested tool.
+const PENDING_TOOL_CELL: &str = "text(await tools.trace__pending({}));";
+
 fn pending_tool_generation() -> ResponsesOutput {
     let item = serde_json::from_value(json!({
-        "type": "function_call",
+        "type": "custom_tool_call",
         "call_id": "call-pending",
-        "namespace": "trace__",
-        "name": "pending",
-        "arguments": "{}"
+        "name": "exec",
+        "input": PENDING_TOOL_CELL
     }))
-    .expect("function call item decodes");
+    .expect("exec call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-tool".to_owned(),
         reported_model: None,
@@ -229,10 +231,10 @@ fn pending_tool_generation() -> ResponsesOutput {
         output_items: vec![item],
         code_calls: vec![CodeCall {
             call_id: "call-pending".to_owned(),
-            name: "pending".to_owned(),
-            namespace: Some("trace__".to_owned()),
-            input: "{}".to_owned(),
-            kind: CodeCallKind::Function,
+            name: "exec".to_owned(),
+            namespace: None,
+            input: PENDING_TOOL_CELL.to_owned(),
+            kind: CodeCallKind::Custom,
         }],
         usage: None,
         time_to_first_event_ns: 0,
