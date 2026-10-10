@@ -304,7 +304,12 @@ jobs:
             # Artifact downloads do not preserve executable permissions.
             chmod +x "$binary"
             if [[ -z "$PR_NUMBER" ]]; then
+              # Publication ships executables compressed; publish restores the
+              # raw compatibility file from these verified bytes, so the
+              # artifact carries each executable once.
               gzip -n -9 -c "$binary" > "$binary.gz"
+              gzip -dc "$binary.gz" | cmp - "$binary"
+              rm "$binary"
             fi
           done
           test -s "nanocodex-voice-$TARGET.tar.gz"
@@ -327,6 +332,8 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
+          # PR artifacts stay raw executables; publication bundles are already gzip.
+          compression-level: ${{ inputs.pr && 6 || 0 }}
 
   build-windows-hand:
     if: github.repository == 'gakonst/nanocodex'
@@ -572,6 +579,22 @@ jobs:
           pattern: nanocodex-*
           path: dist
           merge-multiple: true
+      - name: Restore raw executables
+        shell: bash
+        run: |
+          cd dist
+          shopt -s nullglob
+          # Bundles carry CLI and Hand executables only as NAME.gz. gzip checks
+          # each stream's CRC and length; an artifact that also carries NAME
+          # must match exactly. Hand reuse refreshes a restored raw file.
+          for compressed in nanocodex-*.gz nanocodex2-*.gz; do
+            case "$compressed" in *.tar.gz) continue ;; esac
+            if [[ -e "${compressed%.gz}" ]]; then
+              gzip -dc "$compressed" | cmp - "${compressed%.gz}"
+            else
+              gzip -dc "$compressed" > "${compressed%.gz}"
+            fi
+          done
       - name: Republish an unchanged Hand
         env:
           GH_TOKEN: ${{ github.token }}
