@@ -745,9 +745,15 @@ async fn late_computer_provider_preserves_daemon_and_running_shell() {
             .await
             .unwrap();
         assert!(setup.status.success(), "{setup:?}");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&setup.stdout).unwrap()["status"],
-            "unsupported"
+        let receipt: Value = serde_json::from_slice(&setup.stdout).unwrap();
+        assert_eq!(receipt["platform"], "linux", "{receipt}");
+        assert_eq!(receipt["provider"], "native_screen", "{receipt}");
+        assert!(
+            matches!(
+                receipt["status"].as_str(),
+                Some("prerequisites_found" | "prerequisites_missing")
+            ),
+            "{receipt}"
         );
     }
     // A managed receipt may precede completion/recovery of its executable.
@@ -812,16 +818,17 @@ async fn late_computer_provider_preserves_daemon_and_running_shell() {
         .unwrap()
     };
     if cfg!(target_os = "linux") {
-        // The selected provider is unavailable during a later setup attempt;
-        // its stable gateway must report the actual outcome without reconnecting.
+        // Linux prerequisite discovery does not record an upstream setup failure.
+        // Until the selected external provider arrives, discovery stays pending
+        // and actions are rejected without reconnecting the Hand.
         std::fs::remove_file(managed.join("provider.json")).unwrap();
         let unavailable = call("setup-outcome", "mcp__cua_repl__js", json!({}), true).await;
         assert_eq!(
             receipt(&unavailable)["status"],
-            "unsupported",
+            "preparing",
             "{unavailable}"
         );
-        assert_eq!(receipt(&unavailable)["retry"], "nanocodex computer setup");
+        assert!(!managed.join("setup-failure.json").exists());
         let rejected = call(
             "setup-action",
             "mcp__cua_repl__js",
@@ -830,7 +837,7 @@ async fn late_computer_provider_preserves_daemon_and_running_shell() {
         )
         .await;
         assert!(
-            rejected.to_string().contains("no action was dispatched"),
+            rejected.to_string().contains("components are unavailable"),
             "{rejected}"
         );
         std::fs::write(managed.join("provider.json"), &provider_receipt).unwrap();
