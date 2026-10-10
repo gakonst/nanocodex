@@ -1,0 +1,6 @@
+[
+  {"agent":"stock_codex","model":"gpt-6-astra","effort":"low"},
+  {"agent":"nanocodex","model":"gpt-6-astra","effort":"low"},
+  {"agent":"stock_codex","model":"gpt-6-astra","effort":"high"},
+  {"agent":"nanocodex","model":"gpt-6-astra","effort":"high"}
+]
