@@ -22,6 +22,7 @@ from uuid import uuid4
 
 spec = importlib.util.spec_from_file_location('screen', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py'))
 h = importlib.util.module_from_spec(spec)
+COLUMNS = 240
 spec.loader.exec_module(h)
 
 
@@ -92,10 +93,12 @@ def main():
             command += ['--claude-api-key', 'synthetic-claude-key']
         (out / 'scenario.json').write_text(json.dumps({'command': command, 'environment': environment, 'expected_model': expected}, indent=2))
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        # The composer omits its "Enter send" hint when the workspace path on
+        # its bottom border leaves no room; CI artifact paths exceed 120 columns.
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment, start_new_session=True)
         os.close(slave)
-        screen = h.TerminalScreen()
+        screen = h.TerminalScreen(columns=COLUMNS)
         transcript = bytearray()
 
         def drain():
