@@ -62,6 +62,7 @@ def cases(now):
         ('latest-503-then-502', None, [reply(503), reply(502)], True),
         ('stable-pin-429-retry-after', 'v99.3.2', [reply(429, {'Retry-After': '1'})], True),
         ('stable-pin-connection-reset', 'v99.3.3', ['reset'], True),
+        ('stable-pin-truncated-body', 'v99.3.5', ['truncated-body'], True),
         ('secondary-limit-403-retry-after', 'v99.3.4',
          [reply(403, {'Retry-After': '1', 'x-ratelimit-remaining': '42'},
                 json.dumps({'message': 'You have exceeded a secondary rate limit.'}).encode())], True),
@@ -93,6 +94,17 @@ class Origin(QuietHandler):
                 step = fixture['script'].pop(0)
                 if step == 'reset':
                     event['reply'] = 'connection reset before response'
+                    self.close_connection = True
+                    return
+                if step == 'truncated-body':
+                    # 200 headers promise the full release; the connection drops mid-body.
+                    body = json.dumps(fixture['release']).encode()
+                    event['reply'] = '200 truncated body'
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body[:len(body) // 2])
+                    self.wfile.flush()
                     self.close_connection = True
                     return
                 event['reply'] = step['status']
@@ -289,6 +301,7 @@ def main():
                         check(seconds < 15, f'quota failure took {seconds:.1f}s')
                     elif name == 'retry-after-beyond-budget':
                         check(len(metadata) == 1, f'over-budget Retry-After retried {len(metadata)} times')
+                        check('retrying' not in stderr, 'waited before rejecting an over-budget Retry-After')
                         check('60 minutes' in stderr and 'retry limit' in stderr, 'missing over-budget wait diagnostic')
                         check(seconds < 15, f'over-budget failure took {seconds:.1f}s')
                     elif name == 'not-found-pin':

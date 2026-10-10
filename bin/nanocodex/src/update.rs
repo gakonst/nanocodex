@@ -51,9 +51,10 @@ const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 const METADATA_ATTEMPTS: u32 = 5;
 const METADATA_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Total wait between metadata attempts, including server-requested delays.
-const METADATA_RETRY_BUDGET: Duration = Duration::from_secs(60);
-const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Wall-clock limit for every metadata attempt and wait, including
+/// server-requested delays; a longer requested wait fails immediately.
+const METADATA_DEADLINE: Duration = Duration::from_secs(90);
+const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reuse only the exact running CLI covered by this release manifest.
@@ -1334,12 +1335,15 @@ async fn activate_transaction<S: ServiceTransaction>(
 
 /// GitHub release metadata is one small idempotent GET. Transient network
 /// failures, 408, 5xx and rate limits with a short server-requested wait are
-/// retried within a bounded total delay; missing releases, refusals and
+/// retried within one wall-clock deadline; missing releases, refusals and
 /// malformed metadata fail on the first response.
 async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<Release> {
-    let mut waited = Duration::ZERO;
+    let deadline = std::time::Instant::now() + METADATA_DEADLINE;
     for attempt in 1..=METADATA_ATTEMPTS {
-        let (reason, requested) = match fetch_release_once(client, url, description).await {
+        let timeout = METADATA_REQUEST_TIMEOUT
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
+        let (reason, requested) = match fetch_release_once(client, url, description, timeout).await
+        {
             Ok(release) => return Ok(release),
             Err(MetadataFailure::Permanent(error)) => return Err(error),
             Err(MetadataFailure::Transient {
@@ -1352,13 +1356,15 @@ async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<
         }
         let delay =
             requested.unwrap_or_else(|| METADATA_RETRY_DELAY.saturating_mul(1 << (attempt - 1)));
-        let remaining = METADATA_RETRY_BUDGET.saturating_sub(waited);
-        if delay > remaining {
-            bail!(
-                "could not fetch the {description}: {reason}. GitHub asked to wait {}, longer than the {}s update retry limit; try again after that time",
-                human_wait(delay),
-                METADATA_RETRY_BUDGET.as_secs()
-            );
+        let limit = METADATA_DEADLINE.as_secs();
+        if delay > deadline.saturating_duration_since(std::time::Instant::now()) {
+            if requested.is_some() {
+                bail!(
+                    "could not fetch the {description}: {reason}. GitHub asked to wait {}, longer than the {limit}s update retry limit; try again after that time",
+                    human_wait(delay)
+                );
+            }
+            bail!("could not fetch the {description} within {limit}s: {reason}");
         }
         eprintln!(
             "{description} metadata unavailable ({reason}); retrying {}/{METADATA_ATTEMPTS} in {:.1}s...",
@@ -1366,7 +1372,6 @@ async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<
             delay.as_secs_f64()
         );
         tokio::time::sleep(delay).await;
-        waited += delay;
     }
     unreachable!("the metadata attempt loop always returns")
 }
@@ -1383,10 +1388,11 @@ async fn fetch_release_once(
     client: &Client,
     url: &str,
     description: &str,
+    timeout: Duration,
 ) -> std::result::Result<Release, MetadataFailure> {
     let response = client
         .get(url)
-        .timeout(METADATA_REQUEST_TIMEOUT)
+        .timeout(timeout)
         .header(header::ACCEPT, "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
@@ -1479,8 +1485,14 @@ fn classify_metadata_status(
         let limit = header_text("x-ratelimit-limit").unwrap_or("unknown");
         let reset = header_text("x-ratelimit-reset").and_then(|value| value.parse::<i64>().ok());
         let now = chrono::Utc::now().timestamp();
-        let wait =
-            reset.map(|reset| Duration::from_secs(u64::try_from(reset - now).unwrap_or(0) + 1));
+        // Untrusted headers: saturate rather than overflow on extreme values.
+        let wait = reset.map(|reset| {
+            Duration::from_secs(
+                u64::try_from(reset.saturating_sub(now))
+                    .unwrap_or(0)
+                    .saturating_add(1),
+            )
+        });
         let reset_text = reset
             .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
             .map_or_else(
@@ -1492,7 +1504,8 @@ fn classify_metadata_status(
                 "GitHub API rate limit exhausted (HTTP {}; {limit} requests/hour for unauthenticated clients on this network); the quota resets {reset_text}",
                 status.as_u16()
             ),
-            retry_after: retry_after.or(wait).or(Some(Duration::MAX)),
+            // Honour the longer of Retry-After and the quota reset.
+            retry_after: retry_after.max(wait).or(Some(Duration::MAX)),
         };
     }
     let http = format!("HTTP {status}{detail}");
@@ -1523,7 +1536,9 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
         return Some(Duration::from_secs(seconds));
     }
     let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-    let seconds = at.timestamp() - chrono::Utc::now().timestamp();
+    let seconds = at
+        .timestamp()
+        .saturating_sub(chrono::Utc::now().timestamp());
     Some(Duration::from_secs(u64::try_from(seconds).unwrap_or(0)))
 }
 
