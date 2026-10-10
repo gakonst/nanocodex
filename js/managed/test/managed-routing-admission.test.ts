@@ -1,7 +1,7 @@
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import worker, { type DurableAgentSession } from "../src/index";
-import { DEFAULT_AGENT_SETTINGS, parseCompleteAgentSettings } from "../src/agent-settings";
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS, parseCompleteAgentSettings } from "../src/agent-settings";
 import { parseConfiguration } from "../src/agent-configuration";
 import { resolveThreadRoute, routingPolicySchema } from "../src/thread-model-routing";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
@@ -19,6 +19,8 @@ const request = (path: string, method: string, body?: unknown) => new Request(`h
 });
 async function fixture(run: (instance: DurableAgentSession, state: DurableObjectState) => Promise<void>) {
   await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, state) => {
+    // A fresh Session creates its schema on its first request; this one is refused without an owner.
+    await instance.fetch(request("/state", "GET"));
     state.storage.sql.exec(`INSERT INTO session_state
       (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,
@@ -60,10 +62,11 @@ describe("managed routing admission", () => {
         NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
         NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => new Response(null, { status: 503 }) }) },
       } });
+      // The stubbed transport is the Responses socket; the default is now Claude (398726862).
       const created = await instance.fetch(request("/create", "POST", {
         session_id: "0198d3f0-8844-7000-8000-000000000092", owner_id: principal.userId,
         organization_id: principal.organizationId, team_id: principal.teamId, authorization_epoch: 1,
-        public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS, configuration: { tools: [], environment: { network: { access: "disabled" } } },
+        public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS, configuration: { tools: [], environment: { network: { access: "disabled" } } },
       }));
       expect(created.status).toBe(200);
       const headers = new Headers(); forwardPrincipalAssertions(headers, principal);
@@ -254,6 +257,13 @@ describe("managed routing admission", () => {
       // Even an obsolete deployment-wide auto flag must not enroll a client.
       NANOCODEX_AUTO_ROUTING: "true",
       AI: { run() { throw Error("admission must not call Jev"); } },
+      // Omitted settings select a default from the live account catalog (bd8f31ff5, 398726862).
+      NANOCODEX: { fetch: async (input: RequestInfo) => {
+        const path = new URL(typeof input === "string" ? input : input.url).pathname;
+        if (path.endsWith("/credentials")) return Response.json({ claude: { connected: true }, chatgpt: { connected: true } });
+        if (path.endsWith("/credentials/claude/models")) return Response.json({ models: [{ id: DEFAULT_AGENT_SETTINGS.model }], has_more: false });
+        return new Response(null, { status: 404 });
+      } },
       NANOCODEX_USERS: { getByName() { return {}; } },
       NANOCODEX_SESSIONS: {
         idFromName: () => ({ toString: () => "fixture-session" }),
@@ -269,7 +279,9 @@ describe("managed routing admission", () => {
       runtime, createExecutionContext(), principal);
     expect(response.status).toBe(201);
     expect(!!admitted.configuration.model_routing).toBe(routed);
-    expect(admitted.settings).toEqual(body.includes("gpt-6.1-sol") ? { ...DEFAULT_AGENT_SETTINGS, model: "gpt-6.1-sol" } : DEFAULT_AGENT_SETTINGS);
+    // Routing skips default selection and keeps the OpenAI baseline (398726862).
+    expect(admitted.settings).toEqual(body.includes("gpt-6.1-sol") ? { ...DEFAULT_AGENT_SETTINGS, model: "gpt-6.1-sol" }
+      : routed ? DEFAULT_OPENAI_AGENT_SETTINGS : DEFAULT_AGENT_SETTINGS);
     if (routed) expect(admitted.configuration.model_routing.strategy).toBe("direct");
   });
 
