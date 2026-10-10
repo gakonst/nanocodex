@@ -108,7 +108,9 @@ test('managed company context: private defaults, team contributions, reader and 
         const discover=prompt.includes('DISCOVER_CONTEXTS');
         const name=discover?'list_company_context':lookup?'memories__read':history?'find_session':'memories__write';
         const input=discover?{}:lookup?{path:'MEMORY.md',team_id:teamIdentifier}:history?{query:'SHARED_MAPLE_295',team_id:teamIdentifier}:{operation:'put',path:'MEMORY.md',content:shared?'SHARED_MAPLE_295 team memory':'PRIVATE_ORCHID_794 personal memory'};
-        return sse({type:'tool_use',id:(prompt.includes('DENIED_CONTEXT')?'denied-':'context-tool-')+main.length,name,input},'tool_use','call-'+main.length);
+        // Code Mode is mandatory since eda4a21e3: the model reaches context tools only through exec.
+        const code='text(JSON.stringify(await tools.'+name+'('+JSON.stringify(input)+')));';
+        return sse({type:'tool_use',id:(prompt.includes('DENIED_CONTEXT')?'denied-':'context-tool-')+main.length,name:'exec',input:{code}},'tool_use','call-'+main.length);
       }
       const response=await claudeProvider(request);if(response)return response;
       throw new Error('Unexpected external request '+url.origin+url.pathname);
