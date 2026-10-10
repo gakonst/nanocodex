@@ -4923,6 +4923,11 @@ async fn terminal_keeps_local_shell_context_scoped_to_the_session_after_resume()
         fixture.terminal.input("\r");
         if succeeds {
             fixture.replacement_connection().await;
+            // The picker overlay truncates the old shell output, so wait for
+            // it to close first. Its closing frame also shows the resume
+            // status; the old output then disappears only when the restored
+            // session (which accepts input) replaces the transcript.
+            fixture.terminal.wait_no_text("Recent threads").await;
             fixture
                 .terminal
                 .wait_no_text("OLD_SESSION_SHELL_OUTPUT")
