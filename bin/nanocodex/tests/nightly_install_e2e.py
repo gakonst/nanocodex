@@ -434,7 +434,7 @@ def check_entrypoints(p, probes, sha, label, unified_expected=True):
 
 def manager_copies_unchanged(before, after, label):
     """A repeat no-op update must not rewrite the full-size manager copies either."""
-    unchanged_files(before, after, [], f"{label}: FINDING no-op leaves manager copies (versions/nightly, updater/)", ("versions/nightly/", "updater/"))
+    unchanged_files(before, after, [], f"{label}: no-op leaves manager copies (versions/nightly, updater/)", ("versions/nightly/", "updater/"))
 
 
 def legacy_activation_entrypoints(p, probes, sha, label):
@@ -444,10 +444,13 @@ def legacy_activation_entrypoints(p, probes, sha, label):
     check(f"{label}: bin/nanocodex runs NEW (one Commit SHA {sha[:12]})", pr.get("exit") == 0 and pr.get("commit") == [sha], observed=pr)
     n2 = probes.get("nanocodex2", {})
     missing = [n for n in ("nc", "ncl", *HAND_ALIASES) if not probes.get(n, {}).get("present")]
-    check(f"{label}: FINDING legacy-updater activation leaves the managed bin/nanocodex2 entrypoint and NEW aliases coherent",
+    check(f"{label}: legacy-updater activation leaves bin/nanocodex2 linked to the CLI and every NEW alias present",
           n2.get("commit") == [sha] and n2.get("link") == "../current/nanocodex" and not missing,
-          nanocodex2_link=n2.get("link"), nanocodex2_runs=(n2.get("first_line") or [None])[0], missing_aliases=missing,
-          note="the OLD updater links bin/nanocodex2 -> ../current/nanocodex2, which is the NEW Hand daemon")
+          nanocodex2_link=n2.get("link"), nanocodex2_version_from=(n2.get("first_line") or [None])[0], missing_aliases=missing,
+          note="the OLD updater links bin/nanocodex2 -> ../current/nanocodex2 (the Hand); --version/--help are the Hand's")
+    # The Hand forwards user commands to the CLI, so managed commands through the
+    # stale link must keep working (actual run, not inferred from --version).
+    managed_status(p["store"] / "bin/nanocodex2", base_env(p), f"{label}: stale bin/nanocodex2 forwards")
 
 
 def check_old_aliases(probes, label):
@@ -1020,8 +1023,12 @@ def step_p1():
     vdir = p["store"] / "versions" / key
     check("candidate CLI and Hand bytes installed unchanged",
           file_sha(vdir / "nanocodex") == file_sha(CAND[0]) and file_sha((vdir / "nanocodex2").resolve()) == file_sha(CAND[1]))
-    first = run("candidate-first-run", [str(p["store"] / "bin/nanocodex"), "--version"], base_env(p), timeout=60)
-    check("candidate first run via bin/nanocodex exits 0", first["exit"] == 0, out=first["out"][-300:], err=first["err"][-300:])
+    links = {n: os.readlink(p["store"] / "bin" / n) if (p["store"] / "bin" / n).is_symlink() else None for n in CLI_ALIASES + HAND_ALIASES}
+    state.setdefault("candidate", {})["links_after_old_activation"] = links; save()
+    log(f"  links after OLD-updater activation, before any candidate run: {json.dumps(links)}")
+    # First command a user runs: the managed CLI through the stale bin/nanocodex2.
+    # It must keep forwarding and is expected to trigger the candidate's self-repair.
+    managed_status(p["store"] / "bin/nanocodex2", base_env(p), "candidate first run via stale bin/nanocodex2")
     probes = probe_versions(p, base_env(p))
     check_entrypoints(p, probes, sha, "candidate after OLD-updater activation and its first run")
     state["steps"]["p1"] = {"snapshot": snapshot(p), "key": key, "sha": sha, "probes": probes}; save()
@@ -1124,4 +1131,3 @@ if args.inner:
     inner()
 else:
     outer()
-
