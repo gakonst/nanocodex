@@ -134,6 +134,8 @@ pub struct Publisher {
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
     initially_replaced: bool,
+    /// Whether the current session is published; false while reconnecting.
+    connected: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Drop for Publisher {
     fn drop(&mut self) {
@@ -146,6 +148,11 @@ impl Publisher {
     /// Whether publication has ended, including an authenticated host replacement.
     pub fn is_finished(&self) -> bool {
         self.initially_replaced || self.task.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+    /// Whether the broker currently publishes this screen. A lost session that
+    /// the publisher is reconnecting is not connected, even if capture works.
+    pub fn is_connected(&self) -> bool {
+        !self.is_finished() && self.connected.load(std::sync::atomic::Ordering::SeqCst)
     }
     pub async fn start(
         target: &PublisherTarget,
@@ -191,6 +198,8 @@ impl Publisher {
         let (stop, mut stopped) = oneshot::channel();
         let (ready, waiting) = oneshot::channel();
         let machine = machine.clone();
+        let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session_connected = connected.clone();
         let task = tokio::spawn(async move {
             let mut ready = Some(ready);
             let mut authorized_at = Instant::now();
@@ -203,13 +212,17 @@ impl Publisher {
                 let result = tokio::select! {
                     _ = &mut stopped => break,
                     changed = targets.changed() => {
+                        // The session was abandoned for a new target: it is no
+                        // longer published, before any release work awaits.
+                        session_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                         if changed.is_err() { break; }
                         broadcast.stop().await;
                         let _ = call(&backend, json!({"action":"release"}), Duration::from_secs(3)).await;
                         continue;
                     },
-                    result = session(&target, &machine, &backend, &video, audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
+                    result = session(&target, &machine, &backend, &video, audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, &mut ready, &session_connected, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
+                session_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                 if let Err(error) = &result {
                     tracing::warn!(target: "nanocodex2", stage = "screen.session.exit", reason = error.category(), http_status = error.http_status(), close_code = error.close_code(), elapsed_ms = session_started.elapsed().as_millis() as u64);
                 }
@@ -251,6 +264,7 @@ impl Publisher {
             stop: Some(stop),
             task: Some(task),
             initially_replaced: false,
+            connected,
         };
         match tokio::time::timeout(Duration::from_secs(30), waiting).await {
             Ok(Ok(published)) => {
@@ -561,6 +575,7 @@ async fn session(
     capabilities: &Value,
     input_keepalive: bool,
     ready: &mut Option<oneshot::Sender<bool>>,
+    connected: &std::sync::atomic::AtomicBool,
     providers: &Option<Arc<dyn Observation>>,
     broadcast: &mut Box<dyn Broadcast>,
     last_authorized: &mut Instant,
@@ -623,6 +638,7 @@ async fn session(
         capabilities,
         input_keepalive,
         ready,
+        connected,
         providers,
         broadcast,
         last_authorized,
@@ -646,6 +662,7 @@ async fn session_loop(
     capabilities: &Value,
     input_keepalive: bool,
     ready: &mut Option<oneshot::Sender<bool>>,
+    connected: &std::sync::atomic::AtomicBool,
     providers: &Option<Arc<dyn Observation>>,
     broadcast: &mut Box<dyn Broadcast>,
     last_authorized: &mut Instant,
@@ -800,6 +817,7 @@ async fn session_loop(
                         tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
                         generation = value["generation"].as_str().ok_or(SessionError::Closed)?.into();
                         if socket.video.is_some() { ice.prefetch(); }
+                        connected.store(true, std::sync::atomic::Ordering::SeqCst);
                         if let Some(ready) = ready.take() { let _ = ready.send(true); }
                     },
                     // Playback is commanded only by the broker itself, never by a
@@ -1275,6 +1293,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut broadcast = options.broadcast;
             let mut ready = None;
+            let connected = std::sync::atomic::AtomicBool::new(false);
             let mut authorized = Instant::now();
             let capabilities = call(
                 &backend,
@@ -1285,7 +1304,7 @@ mod tests {
             tokio::select! {
                 _ = &mut stopped => {},
                 _ = session_loop(&target, &machine, &backend, (1, 1),
-                    &capabilities, false, &mut ready,
+                    &capabilities, false, &mut ready, &connected,
                     &options.observation, &mut broadcast, &mut authorized,
                     Instant::now(), Socket { wire, video: None,
                         microphone: MicrophoneControl::default() }) => {},
@@ -1303,6 +1322,7 @@ mod tests {
             stop: Some(stop),
             task: Some(task),
             initially_replaced: false,
+            connected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let (wire, catalog) = peer.await.unwrap();
         (publisher, wire, catalog)

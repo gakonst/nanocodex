@@ -5,6 +5,15 @@ use std::{future::Future, time::Duration};
 pub trait Session {
     type Error: std::fmt::Display;
     fn is_finished(&self) -> bool;
+    /// Whether the published session is connected now; a session that is
+    /// reconnecting is not ready even while capture works.
+    fn is_connected(&self) -> bool {
+        true
+    }
+    /// Whether owned capture infrastructure visibly needs repair.
+    fn capture_lost(&mut self) -> bool {
+        false
+    }
     /// Repair capture in place. Return true only when a helper was restarted.
     fn maintain(&mut self) -> impl Future<Output = Result<bool, Self::Error>>;
     fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>>;
@@ -21,18 +30,54 @@ pub async fn while_attached<S: Session, F: Future<Output = Result<S, S::Error>>>
     while_attached_observed(start, attachment, |_| {}).await
 }
 
+/// Screen lifecycle for status readers. Ready means capture works and the
+/// session was published; later viewer reconnects of a published session are
+/// not reported. Stopped is terminal for this attachment: a finished publisher
+/// (for example, replaced by another host) is never started again.
+#[derive(Debug)]
+pub enum Report<'a, E> {
+    Starting,
+    Ready,
+    Unavailable(&'a E),
+    /// Capture works, but the published session is lost and reconnecting.
+    Reconnecting,
+    /// Owned capture infrastructure died and is being repaired.
+    Recovering,
+    Stopped(Stop),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// The publisher ended, including a replacement fence.
+    Finished,
+    /// The attachment or process shut the screen down.
+    Shutdown,
+}
+
 pub async fn while_attached_observed<S: Session, F: Future<Output = Result<S, S::Error>>>(
     start: impl FnMut() -> F,
     attachment: impl Future<Output = Result<(), S::Error>>,
-    observe: impl FnMut(Option<&S::Error>),
+    mut observe: impl FnMut(Option<&S::Error>),
+) -> Result<(), S::Error> {
+    while_attached_reported(start, attachment, move |report| match report {
+        Report::Ready => observe(None),
+        Report::Unavailable(error) => observe(Some(error)),
+        Report::Starting | Report::Reconnecting | Report::Recovering | Report::Stopped(_) => {}
+    })
+    .await
+}
+
+pub async fn while_attached_reported<S: Session, F: Future<Output = Result<S, S::Error>>>(
+    start: impl FnMut() -> F,
+    attachment: impl Future<Output = Result<(), S::Error>>,
+    report: impl FnMut(Report<'_, S::Error>),
 ) -> Result<(), S::Error> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let screen = supervise_observed(
+    let screen = supervise_reported(
         start,
         async {
             let _ = stopped.await;
         },
-        observe,
+        report,
     );
     let hand = async {
         let result = attachment.await;
@@ -49,28 +94,45 @@ pub async fn supervise<S: Session, F: Future<Output = Result<S, S::Error>>>(
     start: impl FnMut() -> F,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), S::Error> {
-    supervise_observed(start, shutdown, |_| {}).await
+    supervise_reported(start, shutdown, |_| {}).await
 }
 
 /// None marks a usable publication/capture; Some reports retryable capture
 /// failure. A terminal replacement never becomes ready or starts again.
 pub async fn supervise_observed<S: Session, F: Future<Output = Result<S, S::Error>>>(
-    mut start: impl FnMut() -> F,
+    start: impl FnMut() -> F,
     shutdown: impl Future<Output = ()>,
     mut observe: impl FnMut(Option<&S::Error>),
 ) -> Result<(), S::Error> {
+    supervise_reported(start, shutdown, move |report| match report {
+        Report::Ready => observe(None),
+        Report::Unavailable(error) => observe(Some(error)),
+        Report::Starting | Report::Reconnecting | Report::Recovering | Report::Stopped(_) => {}
+    })
+    .await
+}
+
+pub async fn supervise_reported<S: Session, F: Future<Output = Result<S, S::Error>>>(
+    mut start: impl FnMut() -> F,
+    shutdown: impl Future<Output = ()>,
+    mut report: impl FnMut(Report<'_, S::Error>),
+) -> Result<(), S::Error> {
     tokio::pin!(shutdown);
+    report(Report::Starting);
     let mut retry = POLL;
     let mut screen = loop {
         let result = tokio::select! {
             biased;
-            () = &mut shutdown => return Ok(()),
+            () = &mut shutdown => {
+                report(Report::Stopped(Stop::Shutdown));
+                return Ok(());
+            }
             result = start() => result,
         };
         match result {
             Ok(screen) => break screen,
             Err(error) => {
-                observe(Some(&error));
+                report(Report::Unavailable(&error));
                 tracing::warn!(target: "nanocodex2", stage = "native.screen.unavailable", %error,
                 retry_ms = retry.as_millis() as u64,
                 "Native screen unavailable; shell and filesystem remain connected")
@@ -78,52 +140,104 @@ pub async fn supervise_observed<S: Session, F: Future<Output = Result<S, S::Erro
         }
         tokio::select! {
             biased;
-            () = &mut shutdown => return Ok(()),
+            () = &mut shutdown => {
+                report(Report::Stopped(Stop::Shutdown));
+                return Ok(());
+            }
             () = tokio::time::sleep(retry) => {},
         }
         retry = (retry * 2).min(MAX_RETRY);
     };
     if screen.is_finished() {
+        report(Report::Stopped(Stop::Finished));
         return screen.shutdown().await;
     }
-    observe(None);
-    let mut unavailable = false;
+    // Every report reads the session now, never a value cached across an await.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Shown {
+        Ready,
+        Reconnecting,
+        Recovering,
+        Unavailable,
+    }
+    let mut shown: Option<Shown> = None;
+    macro_rules! healthy {
+        () => {{
+            let next = if screen.is_connected() {
+                Shown::Ready
+            } else {
+                Shown::Reconnecting
+            };
+            if shown != Some(next) {
+                shown = Some(next);
+                report(if next == Shown::Ready {
+                    Report::Ready
+                } else {
+                    Report::Reconnecting
+                });
+            }
+        }};
+    }
+    healthy!();
     tracing::info!(target: "nanocodex2", stage = "native.screen.ready", "Native screen is ready");
     retry = POLL;
     let mut delay = POLL;
     loop {
         tokio::select! {
             biased;
-            () = &mut shutdown => return screen.shutdown().await,
+            () = &mut shutdown => {
+                report(Report::Stopped(Stop::Shutdown));
+                return screen.shutdown().await;
+            }
             () = tokio::time::sleep(delay) => {},
         }
         // Terminal publication (including Host replaced) wins over helper death.
         // Never call start again after obtaining a published session.
         if screen.is_finished() {
             tracing::info!(target: "nanocodex2", stage = "native.screen.stopped", "Native screen publisher stopped");
+            report(Report::Stopped(Stop::Finished));
             return screen.shutdown().await;
+        }
+        if shown != Some(Shown::Unavailable) {
+            if screen.capture_lost() {
+                if shown != Some(Shown::Recovering) {
+                    shown = Some(Shown::Recovering);
+                    report(Report::Recovering);
+                }
+            } else if shown != Some(Shown::Recovering) {
+                healthy!();
+            }
         }
         let result = tokio::select! {
             biased;
-            () = &mut shutdown => return screen.shutdown().await,
+            () = &mut shutdown => {
+                report(Report::Stopped(Stop::Shutdown));
+                return screen.shutdown().await;
+            }
             result = screen.maintain() => result,
         };
+        // The session may have been fenced or lost while capture was repaired.
+        if screen.is_finished() {
+            tracing::info!(target: "nanocodex2", stage = "native.screen.stopped", "Native screen publisher stopped");
+            report(Report::Stopped(Stop::Finished));
+            return screen.shutdown().await;
+        }
         delay = match result {
             Ok(recovered) => {
-                if recovered || unavailable {
-                    observe(None);
-                }
-                unavailable = false;
                 if recovered {
+                    // A completed repair is announced again even when the
+                    // visible state did not change, as before.
+                    shown = None;
                     tracing::info!(target: "nanocodex2", stage = "native.screen.recovered", "Native screen capture recovered");
                 } else {
                     retry = POLL;
                 }
+                healthy!();
                 POLL
             }
             Err(error) => {
-                unavailable = true;
-                observe(Some(&error));
+                shown = Some(Shown::Unavailable);
+                report(Report::Unavailable(&error));
                 tracing::warn!(target: "nanocodex2", stage = "native.screen.recovery_failed", %error,
                     retry_ms = retry.as_millis() as u64, "Native screen capture recovery failed");
                 let delay = retry;
@@ -364,5 +478,247 @@ mod tests {
         .await;
         assert_eq!(result, Err("attachment fenced"));
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    fn label<E>(report: &Report<'_, E>) -> &'static str {
+        match report {
+            Report::Starting => "starting",
+            Report::Ready => "ready",
+            Report::Unavailable(_) => "unavailable",
+            Report::Reconnecting => "reconnecting",
+            Report::Recovering => "recovering",
+            Report::Stopped(Stop::Finished) => "stopped:finished",
+            Report::Stopped(Stop::Shutdown) => "stopped:shutdown",
+        }
+    }
+
+    /// Status readers see each attachment start, publication, and the terminal
+    /// stop; a finished publisher is never reported ready again.
+    #[tokio::test(start_paused = true)]
+    async fn reports_starting_ready_and_terminal_stops() {
+        for (finished_before_ready, shutdown, expected) in [
+            (false, false, vec!["starting", "ready", "stopped:finished"]),
+            (true, false, vec!["starting", "stopped:finished"]),
+            (false, true, vec!["starting", "ready", "stopped:shutdown"]),
+        ] {
+            let state = Arc::new(State::default());
+            state
+                .finished
+                .store(finished_before_ready, Ordering::SeqCst);
+            let session = state.clone();
+            let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = reports.clone();
+            let (ready, waiting) = oneshot::channel();
+            let mut ready = Some(ready);
+            let (stop, stopped) = oneshot::channel::<()>();
+            let worker = tokio::spawn(supervise_reported(
+                move || std::future::ready(Ok(Screen(session.clone()))),
+                async move {
+                    let _ = stopped.await;
+                },
+                move |report| {
+                    let label = label(&report);
+                    seen.lock().unwrap().push(label);
+                    if label != "starting" {
+                        if let Some(ready) = ready.take() {
+                            let _ = ready.send(());
+                        }
+                    }
+                },
+            ));
+            waiting.await.unwrap();
+            if shutdown {
+                stop.send(()).unwrap();
+            } else {
+                state.finished.store(true, Ordering::SeqCst);
+            }
+            worker.await.unwrap().unwrap();
+            assert_eq!(*reports.lock().unwrap(), expected);
+        }
+    }
+
+    struct Link(
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<std::sync::atomic::AtomicBool>,
+    );
+    impl Session for Link {
+        type Error = &'static str;
+        fn is_finished(&self) -> bool {
+            self.1.load(Ordering::SeqCst)
+        }
+        fn is_connected(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+        async fn maintain(&mut self) -> Result<bool, Self::Error> {
+            Ok(false)
+        }
+        async fn shutdown(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// A lost published session is reported as reconnecting, never ready, and
+    /// becomes ready again only once it is connected.
+    #[tokio::test(start_paused = true)]
+    async fn reports_reconnecting_until_the_session_is_connected_again() {
+        let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = reports.clone();
+        let (link, done) = (connected.clone(), finished.clone());
+        let worker = tokio::spawn(supervise_reported(
+            move || std::future::ready(Ok(Link(link.clone(), done.clone()))),
+            std::future::pending(),
+            move |report| seen.lock().unwrap().push(label(&report)),
+        ));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        connected.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        connected.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        finished.store(true, Ordering::SeqCst);
+        worker.await.unwrap().unwrap();
+        assert_eq!(
+            *reports.lock().unwrap(),
+            vec![
+                "starting",
+                "ready",
+                "reconnecting",
+                "ready",
+                "stopped:finished"
+            ]
+        );
+    }
+
+    struct Repair(
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<std::sync::atomic::AtomicBool>,
+    );
+    impl Session for Repair {
+        type Error = &'static str;
+        fn is_finished(&self) -> bool {
+            self.1.load(Ordering::SeqCst)
+        }
+        fn capture_lost(&mut self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+        async fn maintain(&mut self) -> Result<bool, Self::Error> {
+            Ok(self.0.swap(false, Ordering::SeqCst))
+        }
+        async fn shutdown(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// Visible capture loss reports recovering before the repair, then ready.
+    #[tokio::test(start_paused = true)]
+    async fn reports_recovering_while_capture_is_repaired() {
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = reports.clone();
+        let (capture, done) = (lost.clone(), finished.clone());
+        let worker = tokio::spawn(supervise_reported(
+            move || std::future::ready(Ok(Repair(capture.clone(), done.clone()))),
+            std::future::pending(),
+            move |report| seen.lock().unwrap().push(label(&report)),
+        ));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        lost.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        finished.store(true, Ordering::SeqCst);
+        worker.await.unwrap().unwrap();
+        assert_eq!(
+            *reports.lock().unwrap(),
+            vec![
+                "starting",
+                "ready",
+                "recovering",
+                "ready",
+                "stopped:finished"
+            ]
+        );
+    }
+
+    /// Capture repair during which the link drops (fence = false) or the
+    /// publisher is fenced (fence = true).
+    struct Racy {
+        lost: Arc<std::sync::atomic::AtomicBool>,
+        connected: Arc<std::sync::atomic::AtomicBool>,
+        finished: Arc<std::sync::atomic::AtomicBool>,
+        fence: bool,
+    }
+    impl Session for Racy {
+        type Error = &'static str;
+        fn is_finished(&self) -> bool {
+            self.finished.load(Ordering::SeqCst)
+        }
+        fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::SeqCst)
+        }
+        fn capture_lost(&mut self) -> bool {
+            self.lost.load(Ordering::SeqCst)
+        }
+        async fn maintain(&mut self) -> Result<bool, Self::Error> {
+            if !self.lost.swap(false, Ordering::SeqCst) {
+                return Ok(false);
+            }
+            if self.fence {
+                self.finished.store(true, Ordering::SeqCst);
+            } else {
+                self.connected.store(false, Ordering::SeqCst);
+            }
+            Ok(true)
+        }
+        async fn shutdown(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// State that changes while a repair is awaited is read afresh: a dropped
+    /// link reports reconnecting and a fence stops, never a stale ready.
+    #[tokio::test(start_paused = true)]
+    async fn repair_never_reports_ready_from_state_cached_before_it() {
+        for (fence, expected) in [
+            (
+                false,
+                vec![
+                    "starting",
+                    "ready",
+                    "recovering",
+                    "reconnecting",
+                    "stopped:finished",
+                ],
+            ),
+            (
+                true,
+                vec!["starting", "ready", "recovering", "stopped:finished"],
+            ),
+        ] {
+            let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = reports.clone();
+            let (l, c, f) = (lost.clone(), connected.clone(), finished.clone());
+            let worker = tokio::spawn(supervise_reported(
+                move || {
+                    std::future::ready(Ok(Racy {
+                        lost: l.clone(),
+                        connected: c.clone(),
+                        finished: f.clone(),
+                        fence,
+                    }))
+                },
+                std::future::pending(),
+                move |report| seen.lock().unwrap().push(label(&report)),
+            ));
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            lost.store(true, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            finished.store(true, Ordering::SeqCst);
+            worker.await.unwrap().unwrap();
+            assert_eq!(*reports.lock().unwrap(), expected, "fence={fence}");
+        }
     }
 }

@@ -47,6 +47,8 @@ struct Cloud {
     account_connections: Arc<AtomicUsize>,
     agent_connections: Arc<AtomicUsize>,
     model_reads: Arc<AtomicUsize>,
+    /// Fixture server tasks that panicked; axum would otherwise swallow them.
+    panics: Arc<AtomicUsize>,
 }
 
 fn credential() -> String {
@@ -69,37 +71,46 @@ async fn account_socket(
 ) -> Response {
     authorize(&headers);
     state.account_connections.fetch_add(1, Ordering::SeqCst);
+    let panics = state.panics.clone();
     ws.on_upgrade(move |mut socket| async move {
-        let mut calls = state.receiver.lock().unwrap().take().expect("a second publisher connected");
-        let mut pending: Option<(String, oneshot::Sender<Value>)> = None;
-        loop {
-            tokio::select! {
-                call = calls.recv(), if pending.is_none() => {
-                    let Some(call) = call else { return };
-                    let id = call.frame["call_id"].as_str().unwrap().to_owned();
-                    pending = Some((id, call.result));
-                    send(&mut socket, call.frame).await;
-                }
-                frame = socket.recv() => {
-                    let Some(Ok(Message::Text(text))) = frame else { return };
-                    let frame: Value = serde_json::from_str(&text).unwrap();
-                    match frame["type"].as_str().unwrap() {
-                        "catalog" => {
-                            send(&mut socket, json!({"type":"ready"})).await;
-                            *state.catalog.lock().unwrap() = Some(frame);
+        let session = std::panic::AssertUnwindSafe(async move {
+            let mut calls = state.receiver.lock().unwrap().take().expect("a second publisher connected");
+            let mut pending: Option<(String, oneshot::Sender<Value>)> = None;
+            loop {
+                tokio::select! {
+                    call = calls.recv(), if pending.is_none() => {
+                        let Some(call) = call else { return };
+                        let id = call.frame["call_id"].as_str().unwrap().to_owned();
+                        pending = Some((id, call.result));
+                        send(&mut socket, call.frame).await;
+                    }
+                    frame = socket.recv() => {
+                        let Some(Ok(message)) = frame else { return };
+                        // The attachment heartbeat is a WebSocket ping (answered by
+                        // the transport); only a closed socket ends this session.
+                        let Message::Text(text) = message else { continue };
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        match frame["type"].as_str().unwrap() {
+                            "catalog" => {
+                                send(&mut socket, json!({"type":"ready"})).await;
+                                *state.catalog.lock().unwrap() = Some(frame);
+                            }
+                            "ping" => send(&mut socket, json!({"type":"pong","nonce":frame["nonce"]})).await,
+                            "diagnostic" | "drain" => {},
+                            "result" => {
+                                let (id, result) = pending.take().expect("unsolicited result");
+                                assert_eq!(frame["call_id"], id);
+                                send(&mut socket, json!({"type":"ack","call_id":id})).await;
+                                let _ = result.send(frame);
+                            }
+                            other => panic!("unexpected account frame {other}: {frame}"),
                         }
-                        "ping" => send(&mut socket, json!({"type":"pong","nonce":frame["nonce"]})).await,
-                        "diagnostic" => {},
-                        "result" => {
-                            let (id, result) = pending.take().expect("unsolicited result");
-                            assert_eq!(frame["call_id"], id);
-                            send(&mut socket, json!({"type":"ack","call_id":id})).await;
-                            let _ = result.send(frame);
-                        }
-                        other => panic!("unexpected account frame {other}: {frame}"),
                     }
                 }
             }
+        });
+        if futures_util::FutureExt::catch_unwind(session).await.is_err() {
+            panics.fetch_add(1, Ordering::SeqCst);
         }
     })
 }
@@ -373,6 +384,7 @@ async fn permission_request_targets_only_the_running_daemon() {
         account_connections: Arc::new(AtomicUsize::new(0)),
         agent_connections: Arc::new(AtomicUsize::new(0)),
         model_reads: Arc::new(AtomicUsize::new(0)),
+        panics: Arc::new(AtomicUsize::new(0)),
     };
     let app = Router::new()
         .route(
@@ -407,7 +419,11 @@ async fn permission_request_targets_only_the_running_daemon() {
         .join("status.json");
     tokio::time::timeout(TIMEOUT, async {
         while !status.exists() || state.catalog.lock().unwrap().is_none() {
-            assert!(daemon.try_wait().unwrap().is_none(), "daemon exited");
+            assert!(
+                daemon.try_wait().unwrap().is_none(),
+                "daemon exited: {}",
+                std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
@@ -476,12 +492,55 @@ async fn permission_request_targets_only_the_running_daemon() {
             executable.canonicalize().unwrap()
         );
         assert!(reply["permissions"]["unsupported"].is_string(), "{reply}");
+        // The daemon answers its own live screen outcome (null until reported).
+        assert!(reply.get("screen").is_some(), "{reply}");
+        // The user-facing check is read-only and reports no OS grant. This
+        // daemon is not the OS service's process, so its published screen
+        // state must never be presented as the service's live screen.
+        let output = tokio::time::timeout(
+            TIMEOUT,
+            command(&home, &origin)
+                .args(["hand", "permissions", "--check", "--json"])
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        eprintln!(
+            "PERMISSIONS CLI check: status={} stdout={stdout}",
+            output.status
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let check: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(check["schema_version"], 1, "{check}");
+        assert_eq!(check["os_consent"], "not_requested", "{check}");
+        assert_eq!(check["permissions"], json!({}), "{check}");
+        assert_eq!(check["input"]["status"], "unknown", "{check}");
+        assert_ne!(check["service"]["pid"], pid, "{check}");
+        if check["service"]["state"] != "running" {
+            assert_eq!(check["screen"]["status"], "unknown", "{check}");
+            assert!(check["next"].is_string(), "{check}");
+        }
     }
     assert!(
         daemon.try_wait().unwrap().is_none(),
         "permission request stopped daemon"
     );
-    daemon.kill().await.unwrap();
+    // SIGTERM lets the daemon stop its private desktop helper; SIGKILL would
+    // orphan it and its X server.
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    if tokio::time::timeout(TIMEOUT, daemon.wait()).await.is_err() {
+        daemon.kill().await.unwrap();
+    }
     server.abort();
 }
 
@@ -499,6 +558,7 @@ async fn background_daemon_survives_two_clients_and_routes_native_cwds() {
         account_connections: Arc::new(AtomicUsize::new(0)),
         agent_connections: Arc::new(AtomicUsize::new(0)),
         model_reads: Arc::new(AtomicUsize::new(0)),
+        panics: Arc::new(AtomicUsize::new(0)),
     };
     let app = Router::new()
         .route(
@@ -654,6 +714,7 @@ async fn late_computer_provider_preserves_daemon_and_running_shell() {
         account_connections: Arc::new(AtomicUsize::new(0)),
         agent_connections: Arc::new(AtomicUsize::new(0)),
         model_reads: Arc::new(AtomicUsize::new(0)),
+        panics: Arc::new(AtomicUsize::new(0)),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -848,4 +909,548 @@ for line in sys.stdin:
     daemon.kill().await.unwrap();
     daemon.wait().await.unwrap();
     server.abort();
+}
+
+/// Lets a journey fence the published screen exactly like a newer host would.
+#[cfg(target_os = "linux")]
+static REPLACE_SCREEN: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// Drops the current screen session without a replacement fence.
+#[cfg(target_os = "linux")]
+static DROP_SCREEN: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// While set, the screen broker is unreachable (503 before upgrade).
+#[cfg(target_os = "linux")]
+static BROKER_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// While set, the broker accepts the catalog but never publishes it.
+#[cfg(target_os = "linux")]
+static WITHHOLD_PUBLICATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The daemon's private desktop helpers (its direct __hand-desktop children).
+#[cfg(target_os = "linux")]
+fn desktop_helpers(daemon: u32) -> Vec<u32> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let parent = stat
+                .rsplit_once(") ")
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u32>().ok());
+            parent == Some(daemon)
+                && std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+                    cmdline
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == b"__hand-desktop")
+                })
+        })
+        .collect()
+}
+
+/// Screen broker fixture: publish the surface once cataloged, answer liveness,
+/// and close with the broker's replacement fence on request.
+#[cfg(target_os = "linux")]
+async fn screen_host(State(state): State<Cloud>, ws: WebSocketUpgrade) -> Response {
+    if BROKER_DOWN.load(Ordering::SeqCst) {
+        return axum::response::IntoResponse::into_response(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let panics = state.panics.clone();
+    ws.on_upgrade(move |mut socket| async move {
+        let session = std::panic::AssertUnwindSafe(async move {
+            if socket
+                .send(Message::Text(
+                    json!({"type":"ready","connection_id":"synthetic-screen"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            loop {
+                let message = tokio::select! {
+                    message = socket.recv() => message,
+                    () = DROP_SCREEN.notified() => return,
+                    () = REPLACE_SCREEN.notified() => {
+                        let _ = socket
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: 1000,
+                                reason: "Host replaced".into(),
+                            })))
+                            .await;
+                        return;
+                    }
+                };
+                let Some(Ok(message)) = message else {
+                    return;
+                };
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                let reply = match frame["type"].as_str() {
+                    Some("catalog") if WITHHOLD_PUBLICATION.load(Ordering::SeqCst) => continue,
+                    Some("catalog") => {
+                        json!({"type":"published","generation":"synthetic-generation"})
+                    }
+                    Some("ping") => json!({"type":"pong","nonce":frame["nonce"]}),
+                    _ => continue,
+                };
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        if futures_util::FutureExt::catch_unwind(session)
+            .await
+            .is_err()
+        {
+            panics.fetch_add(1, Ordering::SeqCst);
+        }
+    })
+}
+
+/// The public `hand permissions --check --json` reports the running service's
+/// own live screen outcome as it moves from pending to unavailable to ready.
+///
+/// Synthetic boundary: the managed service is a loopback fixture, and the OS
+/// service manager exists only inside private user+mount namespaces: a tmpfs
+/// /opt where /opt/nanocodex/current/nanocodex2 is this build's Hand, and a
+/// /usr/bin/systemctl that names the test daemon's PID. The daemon, its private
+/// Xvfb desktop, the CLI and its PID-verified IPC are the shipped executables.
+/// No installed service, user display, or account is read or changed.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "real isolated Linux desktop; requires Xvfb, openbox, xterm, ffmpeg, fonts and unprivileged user+mount namespaces (unshare)"]
+async fn linux_permission_check_reports_live_screen_states() {
+    use std::os::unix::fs::PermissionsExt as _;
+    eprintln!(
+        "Reproduce: cargo test -p nanocodex-bin --test nanocodex2_background_hand linux_permission_check -- --ignored --nocapture"
+    );
+    let (calls, receiver) = mpsc::unbounded_channel();
+    let state = Cloud {
+        calls,
+        receiver: Arc::new(Mutex::new(Some(receiver))),
+        catalog: Arc::new(Mutex::new(None)),
+        origins: Arc::new(Mutex::new(Vec::new())),
+        account_connections: Arc::new(AtomicUsize::new(0)),
+        agent_connections: Arc::new(AtomicUsize::new(0)),
+        model_reads: Arc::new(AtomicUsize::new(0)),
+        panics: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route(
+            "/v1/me",
+            get(|headers: HeaderMap| async move {
+                authorize(&headers);
+                Json(json!({"user":{"id":OWNER}}))
+            }),
+        )
+        .route("/v1/account/tool-host", get(account_socket))
+        .route("/v1/account/hands/host", get(screen_host))
+        .route(
+            "/v1/account/hands/renew",
+            post(|| async { Json(json!({"ok":true})) }),
+        )
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let temporary = tempfile::Builder::new()
+        .prefix("nc-screen-perm-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let home = temporary.path().canonicalize().unwrap();
+    let find = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join(name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| panic!("install {name} before running this journey"))
+    };
+    let xvfb = find("Xvfb");
+    for name in ["openbox", "xterm", "ffmpeg", "unshare"] {
+        find(name);
+    }
+    // The X server is real; only its availability is gated by the test.
+    let bin = home.join("bin");
+    let gate = home.join("gate");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&gate).unwrap();
+    let script = |path: &Path, body: String| {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    script(
+        &bin.join("Xvfb"),
+        format!(
+            "#!/bin/sh\nwhile :; do\n  test -e '{gate}/fail' && exit 1\n  test -e '{gate}/ok' && exec '{xvfb}' \"$@\"\n  sleep 0.05\ndone\n",
+            gate = gate.display(),
+            xvfb = xvfb.display()
+        ),
+    );
+    let path = std::env::join_paths(
+        std::iter::once(bin.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let cli = Path::new(env!("CARGO_BIN_EXE_nanocodex")).to_owned();
+    let hand = cli.with_file_name("nanocodex-hand");
+    assert!(hand.is_file(), "build nanocodex-hand beside the CLI");
+    // Private namespaces: a tmpfs /opt hides any system installation, so the
+    // daemon keeps all state under this HOME and never meets a live Hand.
+    let namespaced = |setup: &str| {
+        let mut command = Command::new("unshare");
+        command
+            .args([
+                "--user",
+                "--map-current-user",
+                "--mount",
+                "--keep-caps",
+                "sh",
+                "-c",
+            ])
+            .arg(format!(
+                "mount -t tmpfs tmpfs /opt && {setup} && exec \"$@\""
+            ))
+            .arg("sh")
+            .arg(&cli)
+            .env_clear()
+            .env("PATH", &path)
+            .env("HOME", &home)
+            .env("CODEX_HOME", home.join(".codex"))
+            .env("NANOCODEX_HOME", &home)
+            .env("NC_API_KEY", credential())
+            .env("NANOCODEX_MANAGED_URL", &origin)
+            .env("NANOCODEX_COMPUTER", "off")
+            .env("NANOCODEX_EXTERNAL_VM_FACTORY", "retained-fixture")
+            .env("NANOCODEX_SCREEN_BACKEND", "x11")
+            .env("LANG", "C.UTF-8")
+            .env("NC_TEST_HAND", &hand)
+            .env("NC_TEST_SYSTEMCTL", home.join("systemctl"))
+            .current_dir(&home)
+            .kill_on_drop(true);
+        command
+    };
+    let daemon_log = std::fs::File::create(home.join("daemon.log")).unwrap();
+    let mut daemon = namespaced("true")
+        .arg("hand")
+        .stdout(Stdio::from(daemon_log.try_clone().unwrap()))
+        .stderr(Stdio::from(daemon_log))
+        .spawn()
+        .unwrap();
+    let pid = daemon.id().unwrap();
+    let status = home
+        .join(".nanocodex/hands")
+        .join(digest(&format!("{origin}\0{OWNER}")))
+        .join("status.json");
+    tokio::time::timeout(TIMEOUT, async {
+        while !status.exists() || state.catalog.lock().unwrap().is_none() {
+            assert!(
+                daemon.try_wait().unwrap().is_none(),
+                "daemon exited: {}",
+                std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("daemon readiness");
+    // The service manager inside the CLI namespace names this daemon.
+    script(
+        &home.join("systemctl"),
+        format!("#!/bin/sh\nprintf 'LoadState=loaded\\nActiveState=active\\nMainPID={pid}\\n'\n"),
+    );
+    let check_setup = "mkdir -p /opt/nanocodex/current && ln -s \"$NC_TEST_HAND\" /opt/nanocodex/current/nanocodex2 && mount --bind \"$NC_TEST_SYSTEMCTL\" /usr/bin/systemctl && { test -d /run/systemd/system || { mount -t tmpfs tmpfs /run && mkdir -p /run/systemd/system; }; }";
+    let check = |json: bool| {
+        let mut command = namespaced(check_setup);
+        command.args(["hand", "permissions", "--check"]);
+        if json {
+            command.arg("--json");
+        }
+        async move {
+            let output = tokio::time::timeout(TIMEOUT, command.output())
+                .await
+                .unwrap()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            assert!(
+                output.status.success(),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            stdout
+        }
+    };
+    let daemon_log = home.join("daemon.log");
+    let until = |expected: &'static str| {
+        let check = &check;
+        let daemon_log = &daemon_log;
+        let panics = &state.panics;
+        async move {
+            tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    assert_eq!(
+                        panics.load(Ordering::SeqCst),
+                        0,
+                        "a fixture task panicked; daemon log:\n{}",
+                        std::fs::read_to_string(daemon_log).unwrap_or_default()
+                    );
+                    let report: Value = serde_json::from_str(check(true).await.trim()).unwrap();
+                    assert_eq!(report["os_consent"], "not_requested", "{report}");
+                    assert_eq!(report["permissions"], json!({}), "{report}");
+                    assert_eq!(report["input"]["status"], "unknown", "{report}");
+                    assert_eq!(report["service"]["state"], "running", "{report}");
+                    assert_eq!(report["service"]["pid"], pid, "{report}");
+                    if report["screen"]["status"] == expected {
+                        break report;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("screen never reported {expected}"))
+        }
+    };
+    // Starting: the private desktop is still starting; nothing is claimed.
+    let pending = until("starting").await;
+    eprintln!("SCREEN starting: {pending}");
+    assert!(pending["screen"]["since_ms"].is_u64(), "{pending}");
+    assert!(pending["next"].is_string(), "{pending}");
+    // Unavailable: the real X server cannot start.
+    std::fs::write(gate.join("fail"), "").unwrap();
+    let unavailable = until("unavailable").await;
+    eprintln!("SCREEN unavailable: {unavailable}");
+    assert!(
+        unavailable["screen"]["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
+        "{unavailable}"
+    );
+    assert!(
+        unavailable["next"].as_str().unwrap().contains("Xvfb"),
+        "{unavailable}"
+    );
+    // Publication outage before the first publication: the desktop starts, the
+    // broker never publishes, and the publisher times out. The healthy private
+    // desktop (and anything running in it) must survive into the next attempt.
+    WITHHOLD_PUBLICATION.store(true, Ordering::SeqCst);
+    std::fs::remove_file(gate.join("fail")).unwrap();
+    std::fs::write(gate.join("ok"), "").unwrap();
+    let helper = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let [helper] = desktop_helpers(pid)[..] {
+                break helper;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("private desktop helper started");
+    let outage = tokio::time::timeout(Duration::from_secs(75), async {
+        loop {
+            let report: Value = serde_json::from_str(check(true).await.trim()).unwrap();
+            if report["screen"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("did not publish"))
+            {
+                break report;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .expect("publication timeout reported");
+    eprintln!("SCREEN unpublished: {outage}");
+    assert_eq!(outage["screen"]["status"], "unavailable", "{outage}");
+    assert_eq!(
+        desktop_helpers(pid),
+        vec![helper],
+        "desktop restarted during the outage"
+    );
+    // Ready: the broker publishes and the same desktop serves the screen.
+    WITHHOLD_PUBLICATION.store(false, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let ready = until("ready").await;
+    assert_eq!(
+        desktop_helpers(pid),
+        vec![helper],
+        "desktop restarted before publication"
+    );
+    eprintln!("SCREEN same private desktop helper {helper} survived the publication outage");
+    eprintln!("SCREEN ready after {:?}: {ready}", started.elapsed());
+    assert!(ready["screen"]["error"].is_null(), "{ready}");
+    assert!(ready["next"].is_null(), "{ready}");
+    let human = check(false).await;
+    eprintln!("SCREEN ready (human):\n{human}");
+    assert_eq!(
+        ready["screen"]["scope"], "capture_and_publication",
+        "{ready}"
+    );
+    assert!(
+        human.contains("Live screen: ready (last reported by the running Hand "),
+        "{human}"
+    );
+    assert!(!human.contains("just now"), "{human}");
+    assert!(
+        human.contains("Mouse and keyboard input: not checked here"),
+        "{human}"
+    );
+    // Post-publication broker outage: capture still works, but nothing is
+    // published, so the screen must not read as ready until it republishes.
+    BROKER_DOWN.store(true, Ordering::SeqCst);
+    DROP_SCREEN.notify_one();
+    let lost = until("reconnecting").await;
+    eprintln!("SCREEN reconnecting: {lost}");
+    assert_eq!(lost["screen"]["reason"], "publication_lost", "{lost}");
+    let outage = std::time::Instant::now();
+    while outage.elapsed() < Duration::from_secs(35) {
+        let report: Value = serde_json::from_str(check(true).await.trim()).unwrap();
+        assert_eq!(report["screen"]["status"], "reconnecting", "{report}");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    assert_eq!(
+        desktop_helpers(pid),
+        vec![helper],
+        "desktop restarted during the outage"
+    );
+    BROKER_DOWN.store(false, Ordering::SeqCst);
+    let republished = until("ready").await;
+    eprintln!(
+        "SCREEN ready again after a {:?} outage: {republished}",
+        outage.elapsed()
+    );
+    assert_eq!(
+        desktop_helpers(pid),
+        vec![helper],
+        "desktop restarted on republish"
+    );
+    // Capture repair: the private desktop dies and its replacement X server is
+    // held back, so the screen reports recovering until it starts again.
+    std::fs::remove_file(gate.join("ok")).unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(helper as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    let recovering = until("recovering").await;
+    eprintln!("SCREEN recovering: {recovering}");
+    assert_eq!(
+        recovering["screen"]["reason"], "capture_repair",
+        "{recovering}"
+    );
+    std::fs::write(gate.join("ok"), "").unwrap();
+    let repaired = until("ready").await;
+    eprintln!("SCREEN ready after capture repair: {repaired}");
+    assert_eq!(
+        desktop_helpers(pid).len(),
+        1,
+        "exactly one replacement desktop"
+    );
+    // A replacement fence is terminal: the shell stays attached, but the
+    // fenced publisher never reports ready again or restarts on its own.
+    REPLACE_SCREEN.notify_one();
+    let stopped = until("stopped").await;
+    eprintln!("SCREEN stopped: {stopped}");
+    assert_eq!(
+        stopped["screen"]["reason"], "publisher_stopped",
+        "{stopped}"
+    );
+    assert_eq!(stopped["next"], "nanocodex hand restart", "{stopped}");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let still: Value = serde_json::from_str(check(true).await.trim()).unwrap();
+    assert_eq!(still["screen"]["status"], "stopped", "{still}");
+    assert!(
+        daemon.try_wait().unwrap().is_none(),
+        "shell attachment must survive the screen fence"
+    );
+    assert_eq!(
+        state.account_connections.load(Ordering::SeqCst),
+        1,
+        "the shell attachment reconnected; daemon log:\n{}",
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+    assert_eq!(
+        state.panics.load(Ordering::SeqCst),
+        0,
+        "a fixture server task panicked"
+    );
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    let _ = tokio::time::timeout(TIMEOUT, daemon.wait()).await;
+    server.abort();
+}
+
+/// Linux uses the Hand's native screen; `computer setup` reports what that
+/// needs on this PATH instead of the macOS-only provider being unsupported.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_computer_setup_reports_native_screen_prerequisites() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = tempfile::tempdir().unwrap();
+    let bin = temporary.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    for name in ["Xvfb", "xterm", "ffmpeg"] {
+        let path = bin.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let setup = |path: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nanocodex"));
+        command
+            .args(["computer", "setup"])
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", temporary.path())
+            .env("NANOCODEX_DIR", temporary.path().join(".nanocodex"))
+            .env_remove("WAYLAND_DISPLAY");
+        command
+    };
+    let output = setup(&bin).output().await.unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "computer setup (openbox missing): status={} stdout={stdout}",
+        output.status
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(receipt["platform"], "linux", "{receipt}");
+    assert_eq!(receipt["provider"], "native_screen", "{receipt}");
+    assert_eq!(receipt["status"], "prerequisites_missing", "{receipt}");
+    assert_eq!(receipt["missing"], json!(["openbox"]), "{receipt}");
+    assert!(
+        receipt["next"].as_str().unwrap().contains("openbox"),
+        "{receipt}"
+    );
+    let path = bin.join("openbox");
+    std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = setup(&bin).output().await.unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "computer setup (all found): status={} stdout={stdout}",
+        output.status
+    );
+    assert!(output.status.success());
+    let receipt: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(receipt["status"], "prerequisites_found", "{receipt}");
+    assert_eq!(receipt["missing"], json!([]), "{receipt}");
+    assert!(
+        !temporary
+            .path()
+            .join(".nanocodex/runtimes/openai-cua/setup-failure.json")
+            .exists()
+    );
 }

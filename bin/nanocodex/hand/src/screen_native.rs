@@ -85,17 +85,58 @@ impl Drop for DesktopChild {
         }
     }
 }
+/// One attachment's healthy private desktop, kept between publication attempts
+/// so a broker outage before the first publication does not restart the
+/// desktop and the apps running in it. Dropping the slot stops that desktop.
+#[derive(Default)]
+pub(crate) struct DesktopSlot {
+    #[cfg(target_os = "linux")]
+    retained: std::sync::Mutex<Option<(DesktopChild, tempfile::TempDir)>>,
+}
+#[cfg(target_os = "linux")]
+impl DesktopSlot {
+    /// Only a still-running helper with its IPC socket is reused.
+    fn take(&self) -> Option<(DesktopChild, tempfile::TempDir)> {
+        let mut retained = self.retained.lock().ok()?.take()?;
+        (matches!(retained.0.0.try_wait(), Ok(None))
+            && retained.1.path().join("hand.sock").exists())
+        .then_some(retained)
+    }
+    fn keep(&self, desktop: DesktopChild, directory: tempfile::TempDir) {
+        if let Ok(mut retained) = self.retained.lock() {
+            *retained = Some((desktop, directory));
+        }
+    }
+}
 impl NativeScreen {
     pub(crate) async fn start(
         target: &AttachmentTarget,
         machine: &AttachmentMachine,
         directory: &Path,
     ) -> Result<Self, ManagedError> {
-        Self::start_with_recordings(
+        Self::start_in(
             target,
             machine,
             directory,
             Some(&directory.join("recordings")),
+            None,
+        )
+        .await
+    }
+    /// Like `start`, reusing `slot`'s private desktop across failed
+    /// publication attempts of the same attachment.
+    pub(crate) async fn start_retaining(
+        target: &AttachmentTarget,
+        machine: &AttachmentMachine,
+        directory: &Path,
+        slot: &DesktopSlot,
+    ) -> Result<Self, ManagedError> {
+        Self::start_in(
+            target,
+            machine,
+            directory,
+            Some(&directory.join("recordings")),
+            Some(slot),
         )
         .await
     }
@@ -105,6 +146,17 @@ impl NativeScreen {
         directory: &Path,
         recording_root: Option<&Path>,
     ) -> Result<Self, ManagedError> {
+        Self::start_in(target, machine, directory, recording_root, None).await
+    }
+    async fn start_in(
+        target: &AttachmentTarget,
+        machine: &AttachmentMachine,
+        directory: &Path,
+        recording_root: Option<&Path>,
+        slot: Option<&DesktopSlot>,
+    ) -> Result<Self, ManagedError> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = slot;
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             let _ = directory;
@@ -195,12 +247,25 @@ impl NativeScreen {
             // sockaddr_un's path limit. Keep ephemeral desktop IPC in a short,
             // atomically created owner-private directory; durable state and
             // recordings remain under the account directory.
-            let desktop_directory = tempfile::Builder::new()
-                .prefix("nanocodex-desktop-")
-                .tempdir_in("/tmp")
-                .map_err(configuration)?;
+            let (desktop, desktop_directory) = match slot.and_then(DesktopSlot::take) {
+                Some(retained) => {
+                    tracing::info!(target: "nanocodex2", stage = "native.screen.desktop_reused",
+                        "Reusing the running private desktop for another publication attempt");
+                    retained
+                }
+                None => {
+                    let desktop_directory = tempfile::Builder::new()
+                        .prefix("nanocodex-desktop-")
+                        .tempdir_in("/tmp")
+                        .map_err(configuration)?;
+                    let desktop = Self::spawn_desktop(
+                        Path::new(machine.workspace()),
+                        desktop_directory.path(),
+                    )?;
+                    (desktop, desktop_directory)
+                }
+            };
             let runtime = desktop_directory.path().to_owned();
-            let desktop = Self::spawn_desktop(Path::new(machine.workspace()), &runtime)?;
             let mut screen = Self {
                 publisher: None,
                 recorder: None,
@@ -210,8 +275,10 @@ impl NativeScreen {
                 _desktop_directory: Some(desktop_directory),
                 workspace: machine.workspace().into(),
             };
+            let mut desktop_ready = false;
             let ready = async {
                 screen.wait_desktop().await?;
+                desktop_ready = true;
                 let recording_runtime = runtime.clone();
                 let video_runtime = runtime.clone();
                 let backend: ScreenBackend = std::sync::Arc::new(move |input| {
@@ -238,6 +305,17 @@ impl NativeScreen {
             }
             .await;
             if let Err(error) = ready {
+                // Publication failed after the desktop became ready: keep the
+                // healthy desktop for this attachment's next attempt. Capture
+                // and helper failures still stop it.
+                if desktop_ready
+                    && screen.publisher.is_none()
+                    && let Some(slot) = slot
+                    && let (Some(desktop), Some(directory)) =
+                        (screen.desktop.take(), screen._desktop_directory.take())
+                {
+                    slot.keep(desktop, directory);
+                }
                 let _ = screen.shutdown().await;
                 return Err(error);
             }
@@ -401,6 +479,27 @@ impl NativeScreen {
             .as_ref()
             .is_none_or(ScreenPublisher::is_finished)
     }
+    pub(crate) fn is_connected(&self) -> bool {
+        self.publisher
+            .as_ref()
+            .is_some_and(ScreenPublisher::is_connected)
+    }
+    /// Owned capture infrastructure that visibly died and needs repair.
+    fn capture_lost(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(wayland) = self.wayland.as_mut() {
+                return wayland.is_finished();
+            }
+            self.desktop
+                .as_mut()
+                .is_none_or(|desktop| !matches!(desktop.0.try_wait(), Ok(None)))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
     pub(crate) async fn shutdown(mut self) -> Result<(), ManagedError> {
         if let Some(recorder) = self.recorder.take() {
             recorder.shutdown().await;
@@ -424,6 +523,12 @@ impl super::screen_supervisor::Session for NativeScreen {
     type Error = ManagedError;
     fn is_finished(&self) -> bool {
         self.is_finished()
+    }
+    fn is_connected(&self) -> bool {
+        self.is_connected()
+    }
+    fn capture_lost(&mut self) -> bool {
+        self.capture_lost()
     }
     async fn maintain(&mut self) -> Result<bool, Self::Error> {
         self.maintain_capture().await
@@ -451,8 +556,9 @@ pub(crate) async fn serve(
     let target = client.account_attachment_target()?;
     let mut signal_result = Ok(());
     let mut shutdown_requested = false;
+    let desktop = DesktopSlot::default();
     let stopped = super::screen_supervisor::supervise_observed(
-        || NativeScreen::start(&target, &machine, &command.state_dir),
+        || NativeScreen::start_retaining(&target, &machine, &command.state_dir, &desktop),
         async {
             signal_result = super::service::shutdown_signal().await;
             shutdown_requested = true;

@@ -84,6 +84,7 @@ pub(crate) enum HandCommand {
     Recover,
     /// Ask the running macOS Hand service to request Screen Recording and
     /// Accessibility consent for its own executable. You confirm in macOS.
+    /// On Linux, report the running Hand's live screen state; nothing is requested.
     Permissions {
         /// Also open the matching System Settings pane for anything not yet allowed.
         #[arg(long, conflicts_with_all = ["check", "guide"])]
@@ -599,6 +600,11 @@ impl Hand {
                 None => crate::update::restart_hand().await,
             },
             HandCommand::Recover => crate::update::recover_hand_update().await,
+            // Nanocodex requests no OS consent on Linux; report what the running
+            // Hand observes instead of failing or implying a grant.
+            HandCommand::Permissions { check, json, .. } if cfg!(target_os = "linux") => {
+                linux_permissions(check, json).await
+            }
             HandCommand::Permissions {
                 check: true, json, ..
             } => check_permissions(json).await,
@@ -638,6 +644,23 @@ async fn ask_daemon_permissions(check: bool) -> Result<(u32, PathBuf, serde_json
     let (Some(pid), Some(executable)) = (state.pid, state.executable) else {
         bail!("The Hand service is not running. Start it with `nanocodex hand start`, then retry.");
     };
+    let reply = daemon_permission_reply(pid, &executable, check).await?;
+    for (key, ..) in PERMISSIONS {
+        if !reply["permissions"][key]["granted"].is_boolean()
+            || !reply["permissions"][key]["requested"].is_boolean()
+        {
+            bail!("The running Hand returned incomplete permission status; no grant was confirmed");
+        }
+    }
+    Ok((pid, executable, reply))
+}
+
+/// One reply from the service's own process over its PID-verified IPC.
+async fn daemon_permission_reply(
+    pid: u32,
+    executable: &std::path::Path,
+    check: bool,
+) -> Result<serde_json::Value> {
     // The running daemon's own executable speaks its own IPC protocol.
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(20),
@@ -653,7 +676,7 @@ async fn ask_daemon_permissions(check: bool) -> Result<(u32, PathBuf, serde_json
             ])
             .arg(pid.to_string())
             .arg("--daemon-executable")
-            .arg(&executable)
+            .arg(executable)
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .output(),
@@ -673,14 +696,7 @@ async fn ask_daemon_permissions(check: bool) -> Result<(u32, PathBuf, serde_json
         .rev()
         .find_map(|line| serde_json::from_str(line).ok())
         .ok_or_else(|| eyre::eyre!("The running Hand returned no permission status"))?;
-    for (key, ..) in PERMISSIONS {
-        if !reply["permissions"][key]["granted"].is_boolean()
-            || !reply["permissions"][key]["requested"].is_boolean()
-        {
-            bail!("The running Hand returned incomplete permission status; no grant was confirmed");
-        }
-    }
-    Ok((pid, executable, reply))
+    Ok(reply)
 }
 
 fn executable_name(executable: &std::path::Path) -> String {
@@ -796,6 +812,211 @@ async fn check_permissions(json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Linux: Nanocodex requests no OS consent, so this never prompts or claims a
+/// grant. It reports the service state and the live screen outcome that the
+/// service's own process answers over its PID-verified IPC. Input is not
+/// exercised here, so it is never reported as ready.
+async fn linux_permissions(check: bool, json: bool) -> Result<()> {
+    let report = linux_permission_report().await;
+    if json {
+        println!("{report}");
+        return Ok(());
+    }
+    println!(
+        "Nanocodex requests no OS permissions on Linux{}. Desktop portal or device prompts, if your session uses them, are outside this check.",
+        if check { "" } else { "; nothing was requested" }
+    );
+    let service = &report["service"];
+    match service["state"].as_str() {
+        Some("running") => println!(
+            "Hand service: running (PID {}, {})",
+            service["pid"],
+            service["executable"]
+                .as_str()
+                .unwrap_or("unknown executable")
+        ),
+        Some("not_running") => println!("Hand service: installed, not running"),
+        Some("not_installed") => println!("Hand service: not installed"),
+        _ => println!(
+            "Hand service: unknown — {}",
+            service["reason"].as_str().unwrap_or("not reported")
+        ),
+    }
+    let screen = &report["screen"];
+    let reported = screen["age_ms"]
+        .as_u64()
+        .map(|age| format!("last reported by the running Hand {}s ago", age / 1000))
+        .unwrap_or_else(|| "last reported by the running Hand".to_owned());
+    let detail = screen["error"]
+        .as_str()
+        .or_else(|| screen["detail"].as_str())
+        .map(|detail| format!(" — {detail}"))
+        .unwrap_or_default();
+    match screen["status"].as_str() {
+        Some(
+            state @ ("starting" | "ready" | "unavailable" | "reconnecting" | "recovering"
+            | "stopped"),
+        ) => {
+            println!("Live screen: {state} ({reported}){detail}")
+        }
+        _ => println!("Live screen: unknown{detail}"),
+    }
+    println!("Mouse and keyboard input: not checked here");
+    if let Some(next) = report["next"].as_str() {
+        println!("Next: {next}");
+    }
+    Ok(())
+}
+
+/// Translate the running Hand's own screen report. Ready means capture works
+/// and the broker currently publishes the screen.
+fn reported_screen(reply: &serde_json::Value) -> (serde_json::Value, Option<&'static str>) {
+    let unknown = |detail: &str| json!({"status": "unknown", "detail": detail});
+    let Some(screen) = reply.get("screen") else {
+        return (
+            unknown("this Hand version does not report its screen"),
+            Some("nanocodex update"),
+        );
+    };
+    if screen.is_null() {
+        return (
+            unknown("the running Hand has not reported its screen yet"),
+            Some("retry in a few seconds; if it persists: nanocodex hand restart"),
+        );
+    }
+    let since_ms = screen["since_ms"].as_u64();
+    let age_ms = since_ms.and_then(|since| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(now.saturating_sub(since))
+    });
+    let (state, detail, next) = match (screen["status"].as_str(), screen["reason"].as_str()) {
+        (Some("starting"), _) => (
+            "starting",
+            Some("the private desktop or Wayland capture is starting"),
+            Some("retry in a few seconds"),
+        ),
+        (Some("ready"), _) => ("ready", None, None),
+        (Some("reconnecting"), _) => (
+            "reconnecting",
+            Some(
+                "capture works, but the live screen connection was lost; the Hand is reconnecting",
+            ),
+            Some("retry in a few seconds; if it persists, check this machine's network"),
+        ),
+        (Some("recovering"), _) => (
+            "recovering",
+            Some("the Hand is restarting its screen capture"),
+            Some("retry in a few seconds"),
+        ),
+        (Some("unavailable"), _) => (
+            "unavailable",
+            None,
+            Some(
+                "run the Hand in your same-user Wayland session, or install Xvfb, openbox, xterm and fonts for its private desktop; it retries on its own",
+            ),
+        ),
+        (Some("stopped"), Some("publisher_stopped")) => (
+            "stopped",
+            Some(
+                "screen publishing ended, for example because another Hand for this machine replaced it",
+            ),
+            Some("nanocodex hand restart"),
+        ),
+        (Some("stopped"), _) => (
+            "stopped",
+            Some("the Hand's connection ended; it reconnects on its own"),
+            Some("retry in a few seconds; if it persists: nanocodex hand restart"),
+        ),
+        _ => {
+            return (
+                unknown("the running Hand reported an unrecognized screen state"),
+                Some("nanocodex update"),
+            );
+        }
+    };
+    (
+        json!({
+            "status": state,
+            "error": screen["error"],
+            "reason": screen["reason"],
+            "detail": detail,
+            "since_ms": since_ms,
+            "age_ms": age_ms,
+            "scope": "capture_and_publication",
+        }),
+        next,
+    )
+}
+
+#[allow(unused_variables, unreachable_code)]
+async fn linux_permission_report() -> serde_json::Value {
+    let unknown = |detail: String| json!({"status": "unknown", "detail": detail});
+    #[cfg(target_os = "linux")]
+    let service = if std::path::Path::new("/run/systemd/system").is_dir() {
+        crate::linux_hand_service::status()
+            .await
+            .map(|status| (status.load_state, status.pid, status.executable))
+            .map_err(|error| format!("{error:#}"))
+    } else {
+        Err(
+            "no systemd service manager here; a Hand started another way is not inspected"
+                .to_owned(),
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let service: std::result::Result<(String, Option<u32>, Option<PathBuf>), String> =
+        Err("not a Linux Hand".to_owned());
+    let (service, screen, next) = match service {
+        Ok((_, Some(pid), Some(executable))) => {
+            let (screen, next) = match daemon_permission_reply(pid, &executable, true).await {
+                Ok(reply) => reported_screen(&reply),
+                Err(error) => (
+                    unknown(format!("{error:#}")),
+                    Some("retry in a few seconds; if it persists: nanocodex hand restart"),
+                ),
+            };
+            (
+                json!({"state": "running", "pid": pid, "executable": executable}),
+                screen,
+                next,
+            )
+        }
+        Ok((_, Some(pid), None)) => (
+            json!({"state": "unknown", "pid": pid, "reason": "the service executable is not reported"}),
+            unknown("the running Hand could not be identified".into()),
+            Some("nanocodex hand status"),
+        ),
+        Ok((load, None, _)) if load == "not-found" => (
+            json!({"state": "not_installed"}),
+            unknown("no Hand service is installed".into()),
+            Some("nanocodex hand install"),
+        ),
+        Ok((_, None, _)) => (
+            json!({"state": "not_running"}),
+            unknown("the Hand service is not running".into()),
+            Some("nanocodex hand start"),
+        ),
+        Err(reason) => (
+            json!({"state": "unknown", "reason": reason}),
+            unknown("the Hand service state is unknown".into()),
+            None,
+        ),
+    };
+    json!({
+        "schema_version": 1,
+        "platform": "linux",
+        "os_consent": "not_requested",
+        "permissions": {},
+        "service": service,
+        "screen": screen,
+        "input": {"status": "unknown", "reason": "not checked by this command"},
+        "next": next,
+    })
 }
 
 /// Explicit `hand permissions`: one request per invocation with full status.
