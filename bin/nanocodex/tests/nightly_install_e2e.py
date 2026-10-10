@@ -45,16 +45,17 @@ GUEST_ASSET = "nanocodex-vm-guest-x86_64-unknown-linux-musl"
 VOICE_ASSET = f"nanocodex-voice-{TRIPLE}.tar.gz"
 CLI_ALIASES = ["nanocodex", "nanocodex2", "nc", "ncl"]
 HAND_ALIASES = ["nanocodex-hand", "nc-hand"]
-ALL_STEPS = ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3", "modes", "old-modes"]
+ALL_STEPS = ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3", "b4", "modes", "old-modes", "c1", "c2", "final-modes"]
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("--old-sha", required=True)
 ap.add_argument("--new-sha", required=True)
+ap.add_argument("--final-sha", help="a later published nightly for the c1/c2 upgrade steps")
 ap.add_argument("--output", type=Path, default=Path("output/nightly-install"))
-ap.add_argument("--steps", default=",".join(s for s in ALL_STEPS if s != "old-modes"))
+ap.add_argument("--steps", default="a1,a2,a3,a4,a5,b1,b2,b3,b4,modes")
 ap.add_argument("--inner", action="store_true", help=argparse.SUPPRESS)
 args = ap.parse_args()
-for sha in (args.old_sha, args.new_sha):
+for sha in (args.old_sha, args.new_sha) + ((args.final_sha,) if args.final_sha else ()):
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         sys.exit(f"expected a full lowercase 40-hex commit, got {sha!r}")
 ART = args.output.absolute()
@@ -63,7 +64,7 @@ STEPS = [s for s in args.steps.split(",") if s]
 for s in STEPS:
     if s not in ALL_STEPS:
         sys.exit(f"unknown step {s}")
-OLD, NEW = args.old_sha, args.new_sha
+OLD, NEW, FINAL = args.old_sha, args.new_sha, args.final_sha
 REAL_HOME = Path(os.environ.get("NIGHTLY_E2E_REAL_HOME") or os.path.expanduser("~"))
 
 
@@ -108,7 +109,7 @@ def outer():
         "mkdir -p /run/systemd/resolve; cp " + shlex.quote(str(ART / "resolv.conf")) + " /run/systemd/resolve/stub-resolv.conf; "
         + ro + "; test ! -e /run/systemd/system; "
         "exec " + shlex.join([sys.executable, os.path.abspath(__file__), "--inner", "--old-sha", OLD, "--new-sha", NEW,
-                              "--output", str(ART), "--steps", ",".join(STEPS)]))
+                              *(["--final-sha", FINAL] if FINAL else []), "--output", str(ART), "--steps", ",".join(STEPS)]))
     env = dict(os.environ, NIGHTLY_E2E_REAL_HOME=str(REAL_HOME))
     started = time.time()
     code = subprocess.call(["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--mount-proc",
@@ -467,11 +468,12 @@ def step_a1():
     check("namespace: hand status reports no Linux Hand owner", hs["exit"] == 0 and '"installed": false' in hs["out"], out=hs["out"], err=hs["err"][-500:])
 
 
-def pointer_names_new():
+def pointer_names_new(sha=None):
+    sha = sha or NEW
     ptr = release("nightly", refresh=True)
-    require("nightly pointer release targets NEW", ptr.get("target_commitish") == NEW, target=ptr.get("target_commitish"))
-    imm = release(f"nightly-{NEW}", refresh=True)
-    require("immutable nightly-NEW exists and targets NEW", imm.get("target_commitish") == NEW and imm.get("tag_name") == f"nightly-{NEW}")
+    require(f"nightly pointer release targets {sha[:12]}", ptr.get("target_commitish") == sha, target=ptr.get("target_commitish"))
+    imm = release(f"nightly-{sha}", refresh=True)
+    require(f"immutable nightly-{sha[:12]} exists and targets it", imm.get("target_commitish") == sha and imm.get("tag_name") == f"nightly-{sha}")
 
 
 def step_a2():
@@ -547,18 +549,17 @@ def step_a5():
     roll_forward(prefix_paths("a"), "prefix A", "a5")
 
 
-def identity_layout(p, snap, label):
-    key = expected_key(NEW)
+def identity_layout(p, snap, label, sha=None, key=None):
+    sha = sha or NEW
+    key = key or expected_key(sha)
     ident_file = p["store"] / "versions" / key / "hand-identity"
     ident = ident_file.read_text().strip() if ident_file.is_file() else None
     link = snap["files"].get(f"versions/{key}/nanocodex2", {})
     stored = snap["files"].get(f"hand-versions/{ident}/nanocodex2", {}) if ident else {}
-    check(f"{label}: NEW Hand stored once under hand-versions/<identity> and linked from the version",
+    check(f"{label}: Hand of {key} stored once under hand-versions/<identity> and linked from the version",
           bool(ident) and link.get("type") == "link" and link.get("target") == f"../../hand-versions/{ident}/nanocodex2"
           and stored.get("type") == "file", identity=ident, link=link, stored=stored,
           hand_versions=sorted({k.split('/')[1] for k in snap['files'] if k.startswith('hand-versions/')}))
-    v = verify_release(NEW)
-    check(f"{label}: stored identity Hand equals the published Hand payload", stored.get("sha256") == v["assets"][HAND_ASSET]["raw_sha256"])
     return ident
 
 
@@ -571,6 +572,9 @@ def step_b1():
     key = verify_installed(p, snap, NEW, "NEW fresh install")
     check("fresh NEW install activates its immutable key", active_key(snap) == key, current=snap["current"])
     ident = identity_layout(p, snap, "NEW fresh install")
+    stored = snap["files"].get(f"hand-versions/{ident}/nanocodex2", {})
+    check("NEW fresh install: stored identity Hand equals the published Hand payload",
+          stored.get("sha256") == verify_release(NEW)["assets"][HAND_ASSET]["raw_sha256"], stored=stored.get("sha256"))
     probes = probe_versions(p, base_env(p)); state["steps"]["b1"]["probes"] = probes; save()
     check_entrypoints(p, probes, NEW, "NEW fresh install")
     for n in CLI_ALIASES + HAND_ALIASES:
@@ -707,7 +711,7 @@ def modes(p, label, sha):
     server, url, reqs = responses_server()
     common = ["--api-key", "synthetic-test-key", "--api-base-url", url, "--responses-transport", "https", "--browser=none",
               "--mcp-defaults", "false", "--web-search", "false", "--image-generation", "false"]
-    unified = sha == NEW
+    unified = sha != OLD
     # OLD (pre-unified) ships the local tree as bin/nanocodex and the managed CLI as bin/nanocodex2.
     ncl = store / ("bin/ncl" if unified else "bin/nanocodex")
     managed = store / ("bin/nanocodex" if unified else "bin/nanocodex2")
@@ -723,7 +727,7 @@ def modes(p, label, sha):
     check(f"{label}: local ncl run completes a turn against the synthetic Responses server",
           r["exit"] == 0 and "ANSWER_LOCAL_RUN_PROMPT" in r["out"] and any("LOCAL_RUN_PROMPT" in json.dumps(q["body"]) for q in reqs[n0:]),
           exit=r["exit"], requests=len(reqs) - n0, out_tail=r["out"][-400:], err_tail=r["err"][-600:])
-    if sha != NEW:
+    if not unified:
         st = run("managed-status", [str(managed), "status"], env, timeout=60)
         state.setdefault("managed", {})[label] = {"status": {"exit": st["exit"], "out": st["out"][-1000:], "err": st["err"][-1000:]}}; save()
         server.shutdown(); return
@@ -765,14 +769,122 @@ def modes(p, label, sha):
     server.shutdown()
 
 
-def step_modes():
+def step_modes(sha=None, tag="NEW"):
+    sha = sha or NEW
     for name in ("a", "b"):
         p = prefix_paths(name)
         snap = snapshot(p)
-        if active_key(snap) == expected_key(NEW):
-            modes(p, f"prefix {name.upper()} NEW", NEW)
+        if active_key(snap) == expected_key(sha):
+            modes(p, f"prefix {name.upper()} {tag}", sha)
         else:
-            log(f"  modes: prefix {name} does not have NEW active ({snap['current']}); skipped")
+            check(f"modes: prefix {name} has {tag} active", False, current=snap["current"])
+
+
+def hand_entries(snap):
+    return sorted({k.split("/")[1] for k in snap["files"] if k.startswith("hand-versions/")})
+
+
+def step_b4():
+    """Canonical Hand reuse: the exact published NEW pair, selected again through the
+    public local-pair selector under a different key, must reuse the same
+    hand-versions/<identity>/nanocodex2 file (same inode), then update --nightly returns."""
+    p = prefix_paths("b")
+    before = snapshot(p)
+    key = expected_key(NEW)
+    require("prefix B has NEW active before the local-pair selection", active_key(before) == key, current=before["current"])
+    ident = (p["store"] / "versions" / key / "hand-identity").read_text().strip()
+    canonical = f"hand-versions/{ident}/nanocodex2"
+    v = verify_release(NEW)
+    pair = p["root"] / "published-pair"
+    shutil.rmtree(pair, ignore_errors=True); pair.mkdir()
+    # Hard links of the installed bytes: the same published payload under a
+    # user-chosen path, without another copy on the shared disk.
+    os.link(p["store"] / "versions" / key / "nanocodex", pair / "nanocodex")
+    os.link(p["store"] / canonical, pair / "nanocodex-hand")
+    for f, logical in (("nanocodex", CLI_ASSET), ("nanocodex-hand", HAND_ASSET)):
+        require(f"published-pair/{f} is the published {logical} payload", file_sha(pair / f) == v["assets"][logical]["raw_sha256"])
+    voice = verify_release(NEW)["assets"][VOICE_ASSET]
+    with http_get(next(a for a in release(f"nightly-{NEW}")["assets"] if a["name"] == VOICE_ASSET)["browser_download_url"]) as r:
+        (pair / VOICE_ASSET).write_bytes(r.read())
+    require("downloaded voice archive matches SHA256SUMS", file_sha(pair / VOICE_ASSET) == voice["manifest_sha256"])
+    r = run("update-path-published-pair", [str(p["store"] / "bin/nanocodex"), "update", "--path", str(pair / "nanocodex"),
+             "--hand-binary", str(pair / "nanocodex-hand"), "--voice-archive", str(pair / VOICE_ASSET)], base_env(p))
+    require("update --path with the published pair exits 0", r["exit"] == 0, out=r["out"][-1500:], err=r["err"][-1500:])
+    snap = snapshot(p)
+    local = active_key(snap)
+    check("local-pair selection activates a distinct local key", bool(local) and local.startswith("local-") and local != key,
+          current=snap["current"], out=r["out"][-600:], err=r["err"][-800:])
+    link = snap["files"].get(f"versions/{local}/nanocodex2", {})
+    check("local version links the canonical identity Hand", link.get("type") == "link" and link.get("target") == "../../" + canonical, link=link)
+    check("canonical identity Hand file reused: same inode, size, mtime and SHA-256", snap["files"].get(canonical) == before["files"].get(canonical),
+          before=before["files"].get(canonical), after=snap["files"].get(canonical))
+    check("no second Hand stored", hand_entries(snap) == hand_entries(before), hand_versions=hand_entries(snap))
+    lid = p["store"] / "versions" / local / "hand-identity"
+    check("local version records the same Hand identity", lid.is_file() and lid.read_text().strip() == ident)
+    check("local version CLI equals the published CLI", snap["files"].get(f"versions/{local}/nanocodex", {}).get("sha256") == v["assets"][CLI_ASSET]["raw_sha256"])
+    arc = p["store"] / "versions" / local / "nanocodex-voice.archive.sha256"
+    bad = [n for n, d in voice["members"].items() if not (p["store"] / "versions" / local / n).is_file() or file_sha(p["store"] / "versions" / local / n) != d]
+    check("local version voice runtime equals the published archive", arc.is_file() and arc.read_text().strip() == voice["manifest_sha256"] and not bad, mismatched=bad)
+    unchanged_files(before, snap, [key], "local-pair selection keeps NEW")
+    probes = probe_versions(p, base_env(p))
+    check_entrypoints(p, probes, NEW, "local-pair selection")
+    back = run("update-nightly-after-path", [str(p["store"] / "bin/nanocodex"), "update", "--nightly"], base_env(p))
+    require("update --nightly after the local selection exits 0", back["exit"] == 0, err=back["err"][-1500:])
+    after = snapshot(p)
+    check("update --nightly returns to the NEW immutable key", active_key(after) == key, current=after["current"], out=back["out"][-500:], err=back["err"][-800:])
+    check("canonical identity Hand still the same file after returning", after["files"].get(canonical) == before["files"].get(canonical))
+    unchanged_files(snap, after, [key, local], "return to nightly")
+    for f in ("nanocodex", "nanocodex-hand", VOICE_ASSET):
+        (pair / f).unlink()
+    pair.rmdir()
+    state["steps"]["b4"] = {"snapshot": after, "local_key": local, "identity": ident, "out": r["out"], "err": r["err"],
+                            "back_out": back["out"], "back_err": back["err"]}; save()
+
+
+def final_upgrade(name, label):
+    require("--final-sha is set", bool(FINAL))
+    p = prefix_paths(name)
+    pointer_names_new(FINAL)
+    before = snapshot(p)
+    new_key = expected_key(NEW)
+    require(f"{label}: NEW active before the final upgrade", active_key(before) == new_key, current=before["current"])
+    r = run("update-nightly-final", [str(p["store"] / "bin/nanocodex"), "update", "--nightly"], base_env(p))
+    require(f"{label}: NEW CLI update --nightly to FINAL exits 0", r["exit"] == 0, out=r["out"][-1500:], err=r["err"][-1500:])
+    snap = snapshot(p)
+    key = verify_installed(p, snap, FINAL, f"{label}: FINAL")
+    check(f"{label}: FINAL immutable key active", active_key(snap) == key, current=snap["current"])
+    unchanged_files(before, snap, versions_of(before), f"{label}: earlier versions retained")
+    ident = identity_layout(p, snap, f"{label}: FINAL", FINAL)
+    prior = (p["store"] / "versions" / new_key / "hand-identity")
+    prior_ident = prior.read_text().strip() if prior.is_file() else None
+    if prior_ident and prior_ident == ident:
+        canonical = f"hand-versions/{ident}/nanocodex2"
+        check(f"{label}: unchanged Hand identity reuses the canonical Hand file (same inode, bytes)",
+              snap["files"].get(canonical) == before["files"].get(canonical) and hand_entries(snap) == hand_entries(before),
+              identity=ident, before=before["files"].get(canonical), after=snap["files"].get(canonical))
+    else:
+        stored = snap["files"].get(f"hand-versions/{ident}/nanocodex2", {})
+        check(f"{label}: FINAL Hand stored under its identity equals the published Hand",
+              stored.get("sha256") == verify_release(FINAL)["assets"][HAND_ASSET]["raw_sha256"],
+              identity=ident, prior_identity=prior_ident, hand_versions=hand_entries(snap))
+    probes = probe_versions(p, base_env(p))
+    check_entrypoints(p, probes, FINAL, f"{label}: FINAL")
+    no_service_side_effects(p, snap, f"{label}: FINAL")
+    state["steps"]["c1" if name == "a" else "c2"] = {"snapshot": snap, "out": r["out"], "err": r["err"], "probes": probes,
+                                                     "identity": ident, "prior_identity": prior_ident}; save()
+
+
+def step_c1():
+    final_upgrade("a", "prefix A")
+
+
+def step_c2():
+    final_upgrade("b", "prefix B")
+
+
+def step_final_modes():
+    require("--final-sha is set", bool(FINAL))
+    step_modes(FINAL, "FINAL")
 
 
 def step_old_modes():

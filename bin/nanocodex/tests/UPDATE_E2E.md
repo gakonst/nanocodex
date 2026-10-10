@@ -122,9 +122,19 @@ session or stops at the login boundary; the transcript records which), and
 checks `hand status`/`nc-hand status` report no owner. Steps may run separately
 (`--steps a1,old-modes` before publication); state lives in OUTPUT/state.json.
 
+Step `b4` hard-links the installed, published NEW CLI and Hand into a separate
+directory, downloads the NEW voice archive (checked against SHA256SUMS), selects
+that exact pair with `update --path CLI --hand-binary HAND --voice-archive ARCHIVE`
+(a distinct `local-*` key), and requires the version to link the existing
+`hand-versions/<identity>/nanocodex2` with the same inode, size, mtime and
+SHA-256 and no second stored Hand; `update --nightly` then returns to the NEW key.
+With `--final-sha`, steps `c1`/`c2` upgrade both prefixes from NEW to a later
+published nightly with `update --nightly` (an unchanged Hand Identity must reuse
+the canonical Hand file) and `final-modes` repeats the start checks.
+
 Not covered: OS-service handover, `--restart-hand`, the running-service Hand
 reuse decision (no service exists in the namespace), cross-version reuse of an
-identical Hand (only when two published nightlies share a Hand Identity), managed
+identical Hand when the final nightly's Hand Identity changed, managed
 work after sign-in, and voice execution.
 
 ## Local-pair runner
