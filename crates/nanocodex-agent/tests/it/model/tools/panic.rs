@@ -82,9 +82,18 @@ impl Service<ResponsesAttempt> for PanicRecoveryService {
                     .map(|item| serde_json::to_value(item).expect("input item serializes"))
                     .collect::<Vec<_>>();
                 assert_eq!(input.len(), 1, "{input:?}");
-                assert_eq!(input[0]["type"], "function_call_output");
+                assert_eq!(input[0]["type"], "custom_tool_call_output");
                 assert_eq!(input[0]["call_id"], "call-panic");
-                assert_eq!(input[0]["output"], "aborted");
+                // The repaired nested panic surfaces as the cell's script error.
+                let output = input[0]["output"].as_array().expect("exec content output");
+                assert_eq!(output.len(), 2, "{input:?}");
+                assert!(
+                    output[0]["text"]
+                        .as_str()
+                        .is_some_and(|header| header.starts_with("Script failed\n")),
+                    "{input:?}"
+                );
+                assert_eq!(output[1]["text"], "Script error:\naborted");
                 final_generation("resp-recovered", "recovered")
             }
             (3, ResponsesAttemptKind::Generation) => {
@@ -100,15 +109,17 @@ impl Service<ResponsesAttempt> for PanicRecoveryService {
     }
 }
 
+// Agents require Code Mode since eda4a21e3; the provider runs as a nested tool.
+const PANIC_CELL: &str = "text(await tools.panic__boom({}));";
+
 fn panic_generation() -> ResponsesOutput {
     let item = serde_json::from_value(json!({
-        "type": "function_call",
+        "type": "custom_tool_call",
         "call_id": "call-panic",
-        "namespace": "panic__",
-        "name": "boom",
-        "arguments": "{}"
+        "name": "exec",
+        "input": PANIC_CELL
     }))
-    .expect("function call item decodes");
+    .expect("exec call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-panic".to_owned(),
         reported_model: None,
@@ -118,10 +129,10 @@ fn panic_generation() -> ResponsesOutput {
         output_items: vec![item],
         code_calls: vec![CodeCall {
             call_id: "call-panic".to_owned(),
-            name: "boom".to_owned(),
-            namespace: Some("panic__".to_owned()),
-            input: "{}".to_owned(),
-            kind: CodeCallKind::Function,
+            name: "exec".to_owned(),
+            namespace: None,
+            input: PANIC_CELL.to_owned(),
+            kind: CodeCallKind::Custom,
         }],
         usage: None,
         time_to_first_event_ns: 0,
@@ -204,10 +215,26 @@ async fn provider_panic_is_repaired_and_the_private_driver_remains_usable() -> R
             _ => {}
         }
     }
-    assert_eq!(tool_results.len(), 1);
-    assert_eq!(tool_results[0]["call_id"], "call-panic");
-    assert_eq!(tool_results[0]["status"], "failed");
-    assert_eq!(tool_results[0]["result"], "aborted");
+    eprintln!("Provider panic tool results: {tool_results:?}");
+    assert_eq!(tool_results.len(), 2, "{tool_results:?}");
+    let nested = tool_results
+        .iter()
+        .find(|result| result["tool"] == "panic__boom")
+        .expect("nested provider result");
+    assert!(
+        nested["call_id"]
+            .as_str()
+            .is_some_and(|call_id| call_id.starts_with("call-panic/")),
+        "{nested}"
+    );
+    assert_eq!(nested["status"], "failed");
+    assert_eq!(nested["result"], "aborted");
+    let cell = tool_results
+        .iter()
+        .find(|result| result["tool"] == "exec")
+        .expect("exec cell result");
+    assert_eq!(cell["call_id"], "call-panic");
+    assert_eq!(cell["status"], "failed");
     assert_eq!(completed_turns, 2);
     assert_eq!(failed_turns, 0);
     assert_eq!(calls.load(Ordering::Relaxed), 4);
