@@ -63,10 +63,11 @@ describe("account meeting preview", () => {
     expect(summary).toBe("Decision: launch Monday.");
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]?.[0]).toBe("@cf/zai-org/glm-5.3");
-    const input = run.mock.calls[0]?.[1] as unknown as { reasoning_effort: string; max_completion_tokens: number;
+    const input = run.mock.calls[0]?.[1] as unknown as { reasoning_effort: string; max_completion_tokens?: number;
       messages: Array<{ role: string; content: string }> };
     expect(input.reasoning_effort).toBe("low");
-    expect(input.max_completion_tokens).toBe(320);
+    // c7d02b6bb removed the artificial 320-token recap ceiling; the route sends no output cap.
+    expect(input.max_completion_tokens).toBeUndefined();
     expect(input.messages.some(message => message.role === "system" && message.content.includes("untrusted data"))).toBe(true);
     expect(input.messages.some(message => message.role === "user" && message.content.includes("Prior recap"))).toBe(true);
   });
