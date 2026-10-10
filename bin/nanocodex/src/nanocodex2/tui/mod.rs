@@ -4395,6 +4395,11 @@ async fn run_inner(
                 let update = app.update(AppEvent::AnimationFrame(Instant::now()));
                 stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
             }
+            // A formula finished after its upload was queued: lay it out and draw.
+            () = components::math::changed() => {
+                let update = app.update(AppEvent::AnimationFrame(Instant::now()));
+                stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+            }
         }
     }
 

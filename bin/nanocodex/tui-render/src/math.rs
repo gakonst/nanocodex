@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::sync::Notify;
+
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatex::{FormulaState, FormulaWidget, GraphicsSupport, PixelSize, Ratatex, TerminalProfile};
 // ratatex exposes 0.29 buffers, converted below into the shared 0.30 renderer.
@@ -36,10 +38,24 @@ static INITIALIZING: AtomicBool = AtomicBool::new(false);
 static UPDATES: AtomicU64 = AtomicU64::new(0);
 /// Set when a layout used a formula that is still rendering.
 static PENDING: AtomicBool = AtomicBool::new(false);
-/// [UPDATES] as read just before the last [drain_commands]. A worker queues its
-/// upload before bumping [UPDATES], so a difference means an upload may have
-/// been queued after the last drain.
-static DRAINED_UPDATES: AtomicU64 = AtomicU64::new(0);
+/// Wakes the TUI event loop after every [UPDATES] bump. A ratatex worker calls
+/// its update callback only after queueing the formula's upload, so the frame
+/// drawn for this wake writes that upload. [Notify::notify_one] stores a permit
+/// while the loop is busy, so a wake that lands mid-frame is not lost.
+static WAKE: Notify = Notify::const_new();
+
+/// Records a renderer change and wakes the event loop, in that order.
+fn updated() {
+    UPDATES.fetch_add(1, Ordering::AcqRel);
+    WAKE.notify_one();
+}
+
+/// Resolves after a formula finishes, uploads are requeued or the renderer
+/// starts. The TUI event loop awaits this alongside input and stream events;
+/// with nothing rendering it stays pending, so idle terminals never wake.
+pub async fn changed() {
+    WAKE.notified().await;
+}
 
 /// Starts terminal detection and the renderer off the input loop. Idempotent.
 pub fn start() {
@@ -53,9 +69,7 @@ pub fn start() {
             let profile = detect();
             if profile.graphics == GraphicsSupport::Kitty {
                 match Ratatex::builder(profile)
-                    .on_update(|| {
-                        UPDATES.fetch_add(1, Ordering::AcqRel);
-                    })
+                    .on_update(updated)
                     .build()
                 {
                     Ok(renderer) => {
@@ -68,7 +82,7 @@ pub fn start() {
                 }
             }
             INITIALIZING.store(false, Ordering::Release);
-            UPDATES.fetch_add(1, Ordering::AcqRel);
+            updated();
         });
     if spawned.is_err() {
         INITIALIZING.store(false, Ordering::Release);
@@ -89,7 +103,6 @@ pub fn shutdown() {
 
 /// Terminal uploads queued by the renderer, in order. Write before the frame.
 pub fn drain_commands(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<u64> {
-    DRAINED_UPDATES.store(UPDATES.load(Ordering::Acquire), Ordering::Release);
     let commands = match RENDERER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -132,17 +145,10 @@ pub fn clear_pending() {
     PENDING.store(false, Ordering::Release);
 }
 
-/// Poll cadence while a formula is rendering or a finished upload has not been
-/// drained yet. A formula can finish after a frame drains uploads but before
-/// that frame's layout. The layout then sees it ready and nothing is pending,
-/// but its upload still needs a frame. Idle terminals never wake for math.
+/// Poll cadence while a formula is rendering; idle terminals never wake for math.
+/// Finished formulas also wake the loop through [changed].
 pub fn deadline(now: Instant) -> Option<Instant> {
-    (pending() || undrained()).then(|| now + Duration::from_millis(33))
-}
-
-/// A formula finished after the last upload drain; the next frame writes it.
-pub fn undrained() -> bool {
-    UPDATES.load(Ordering::Acquire) != DRAINED_UPDATES.load(Ordering::Acquire)
+    pending().then(|| now + Duration::from_millis(33))
 }
 
 pub enum Rendered {

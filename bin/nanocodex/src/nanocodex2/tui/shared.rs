@@ -204,6 +204,10 @@ async fn run_shared_client(client: SharedThreadClient) -> Result<(), ManagedErro
             _ = animation.tick(), if !active.is_empty() || submitting => {
                 request_render(app.update(AppEvent::AnimationFrame(Instant::now())), &mut scheduler);
             }
+            // A formula finished after its upload was queued: lay it out and draw.
+            () = components::math::changed() => {
+                request_render(app.update(AppEvent::AnimationFrame(Instant::now())), &mut scheduler);
+            }
             event = input.next() => match event {
                 Some(Ok(event)) => {
                     let update = app.update(AppEvent::Terminal(event));
