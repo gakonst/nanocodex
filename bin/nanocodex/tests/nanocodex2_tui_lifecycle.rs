@@ -6614,7 +6614,15 @@ async fn copy_journey_expect(fixture: &mut Fixture, command: &str, key: &str, ex
 }
 
 async fn copy_journey_error(fixture: &mut Fixture, command: &str, expected: &str) {
-    fixture.terminal.prompt(command, "\r");
+    // Rejections reuse one persistent toast, so an earlier identical error can
+    // satisfy the wait before this command is read. Submitting clears the
+    // composer in the same render that shows the error, so wait for this
+    // command to appear in the composer and then disappear.
+    fixture.terminal.wait_no_text(command).await;
+    fixture.terminal.prompt(command, "");
+    fixture.terminal.wait_text(command).await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_no_text(command).await;
     fixture.terminal.wait_text(expected).await;
     eprintln!(
         "PTY rejected {command:?}: {}",
@@ -6684,17 +6692,29 @@ async fn terminal_copy_keeps_raw_markdown_and_skips_unfinished_messages() {
     fixture.terminal.input("/copy response");
     fixture.terminal.wait_text("copy response").await;
     fixture.terminal.input("\r");
+    fixture.terminal.wait_no_text("copy response").await;
     fixture.terminal.wait_text("Usage: /copy [N]").await;
 
     // A successful copy is a terminal-input barrier after all rejected commands.
     copy_journey_expect(&mut fixture, "/copy", "\r", second).await;
     let output = fixture.terminal.output.lock().unwrap().clone();
+    let copies = String::from_utf8_lossy(&output)
+        .split("\x1b]52;c;")
+        .skip(1)
+        .map(|rest| {
+            let encoded = rest.split_once('\x07').map_or(rest, |(encoded, _)| encoded);
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|error| format!("<undecodable: {error}>"));
+            decoded.lines().next().unwrap_or_default().to_owned()
+        })
+        .collect::<Vec<_>>();
+    eprintln!("COPY journey OSC52 sequence: {copies:?}");
     assert_eq!(
-        String::from_utf8_lossy(&output)
-            .matches("\x1b]52;c;")
-            .count(),
+        copies.len(),
         6,
-        "errors must not copy and a streamed item must not count"
+        "errors must not copy and a streamed item must not count: {copies:?}"
     );
     // The next real prompt must be the next submission: no copy command may have
     // escaped as input, a queued follow-up, or a live steering request.
