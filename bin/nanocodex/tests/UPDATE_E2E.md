@@ -91,56 +91,73 @@ exercise voice execution or first installation of an OS service.
 
 ```sh
 python3 bin/nanocodex/tests/nightly_install_e2e.py --old-sha PREVIOUS_NIGHTLY_SHA \
-  --new-sha NEW_NIGHTLY_SHA --output output/nightly-install
+  --new-sha NEW_NIGHTLY_SHA [--final-sha LATER_NIGHTLY_SHA] --output output/nightly-install
 ```
-
-Status (WIP): only steps `a1` and `old-modes` have run against a published
-nightly (nightly-2639aec9fadd458adfeeb1ec53395932137c3bc3). The NEW-version steps
-(`a2`–`a5`, `b1`–`b4`, `modes`, `c1`/`c2`, `final-modes`) are pending their
-first run against an actual published second nightly.
 
 Run it only after `nightly-NEW_NIGHTLY_SHA` is published and the `nightly` pointer
 names it. It installs real immutable nightlies with the public installer
-(`curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --no-setup --no-modify-path`
-with `NANOCODEX_RELEASE_TAG=nightly-SHA`) and the shipped `nanocodex update --nightly`.
-No binary is built, copied in or faked. Every installer/CLI process runs in a
-private user + mount + PID namespace with an empty tmpfs `/run` (no systemd, so no
-Hand owner is found or started), read-only binds of `/opt/nanocodex` and the real
-`~/.nanocodex`, and a synthetic HOME/TMPDIR/`NANOCODEX_DIR` with automatic updates
-opted out. Host `nanocodex*` unit state, MainPID, InvocationID, the selected Hand
-hash, `/opt/nanocodex` listing and the real store are captured outside the
-namespace before and after; any difference fails the run.
+(https://nanocodex.paradigm.xyz with `NANOCODEX_RELEASE_TAG=nightly-SHA`, `--no-setup --no-modify-path`)
+and the shipped `nanocodex update --nightly`. No binary is built, copied in or faked.
+Each step fetches the public installer, records its SHA-256 and that of the tagged
+`refs/tags/nightly-SHA/install` it re-executes, and runs exactly that file.
+
+Every installer/CLI process runs in a private user + mount + PID namespace with an
+empty tmpfs `/run` (no systemd, so no Hand owner is found or started), read-only
+binds of `/opt/nanocodex` and the real `~/.nanocodex`, and a synthetic
+HOME/TMPDIR/`NANOCODEX_DIR` with automatic updates opted out. The mounts are made as
+mapped root; the journey then enters a nested user namespace mapping the real
+uid/gid back and re-executes, so every CLI runs as the ordinary unprivileged user
+(`id -u` and `CapEff: 0` are asserted). Host `nanocodex*` unit state, MainPID,
+InvocationID, the selected Hand hash, the `/opt/nanocodex` listing, the real store,
+real-HOME user units, `~/.local/bin`, shell profiles and the crontab are captured
+outside the namespace before and after; any difference fails the run.
 
 Prefix A: install OLD; OLD `update --nightly` downloads NEW; NEW `update --nightly`
 is a cached no-op; roll back with the installer for `nightly-OLD` (cached bundle);
 OLD `update --nightly` reactivates cached NEW. Prefix B: a fresh NEW install by the
 NEW updater (Hand stored once under `hand-versions/<identity>` and linked), rollback
-to OLD, then roll forward. Each step checks the active immutable key
-(`nightly-<sha>-<cli>-<hand>-<guest>` asset IDs), every entrypoint's `--version`
-Commit SHA/Hand Identity and link, and that cached activations rewrite no version
-or Hand file (inode, size, mtime, SHA-256). Each Linux payload is streamed once
-independently: its digest must equal SHA256SUMS and its decompressed bytes (and
-each voice archive member) must equal the installed files and receipts. The
-`modes` step runs `ncl run` and a local TUI turn against a loopback synthetic
-Responses server, starts the managed TUI with an empty HOME (it reaches a managed
-session or stops at the login boundary; the transcript records which), and
-checks `hand status`/`nc-hand status` report no owner. Steps may run separately
-(`--steps a1,old-modes` before publication); state lives in OUTPUT/state.json.
+to OLD, roll forward, then a NEW no-op. Each step checks the active immutable key
+(`nightly-<sha>-<cli>-<hand>-<guest>` asset IDs), every CLI entrypoint's `--version`
+Commit SHA and link, and that cached activations rewrite no version or Hand file
+(inode, nlink, size, mtime, ctime, SHA-256). Hand aliases must run `nanocodex-hand` and
+report the active Hand Identity: nightly Hands record no commit, so unchanged Hand
+bytes are reusable. The published `nanocodex2-TRIPLE.identity` reuse key must equal
+`scripts/release/hand-identity.sh`'s digest of the stored Hand Identity. Each Linux
+payload is streamed once independently: its digest must equal SHA256SUMS and its
+decompressed bytes (and each voice archive member) must equal the installed files
+and receipts.
 
-Step `b4` hard-links the installed, published NEW CLI and Hand into a separate
-directory, downloads the NEW voice archive (checked against SHA256SUMS), selects
-that exact pair with `update --path CLI --hand-binary HAND --voice-archive ARCHIVE`
-(a distinct `local-*` key), and requires the version to link the existing
-`hand-versions/<identity>/nanocodex2` with the same inode, size, mtime and
+Step `b4` copies the installed, published NEW CLI and Hand to a separate directory,
+downloads the NEW voice archive (checked against SHA256SUMS), selects that exact
+pair with `update --path CLI --hand-binary HAND --voice-archive ARCHIVE` (a distinct
+`local-*` key), and requires the version to link the existing
+`hand-versions/<identity>/nanocodex2` with the same inode, nlink, mtime, ctime and
 SHA-256 and no second stored Hand; `update --nightly` then returns to the NEW key.
 With `--final-sha`, steps `c1`/`c2` upgrade both prefixes from NEW to a later
-published nightly with `update --nightly` (an unchanged Hand Identity must reuse
-the canonical Hand file) and `final-modes` repeats the start checks.
+published nightly; from the published reuse keys they report whether the Hand was
+reused (same canonical file) or stored once under a new identity beside the
+untouched previous Hand, and `final-modes` repeats the start checks.
 
-Not covered: OS-service handover, `--restart-hand`, the running-service Hand
-reuse decision (no service exists in the namespace), cross-version reuse of an
-identical Hand when the final nightly's Hand Identity changed, managed
-work after sign-in, and voice execution.
+The `modes` step runs `ncl run` and a local TUI turn against a loopback synthetic
+Responses server, starts the managed CLI with an empty HOME and records which
+boundary it reached (a session, a login prompt still shown by the live process 2 s
+later, or the exact "No account login for this origin" error with no panic);
+`status` must exit 0 with `authenticated: false`. The managed TUI itself is not reached
+without a login. `hand status`/`nc-hand status` must report no owner. Steps may run
+separately; state lives in OUTPUT/state.json and the result in OUTPUT/summary.json.
+
+Rollback to a pre-unified nightly (2639aec and older) uses that release's own
+installer, which knows only `bin/nanocodex` (local tree) and `bin/nanocodex2` (managed
+CLI); the journey asserts those roles by running a local turn and managed `status`.
+NEW-only aliases (`ncl`, `nc`, `nanocodex-hand`, `nc-hand`) are left behind and are
+unsupported until a unified version is activated again; their targets are recorded
+in `summary.json`. Checks named `FINDING` record observed product behaviour (a legacy
+updater's activation of a unified version, and manager copies rewritten by a no-op
+update) rather than fixture faults.
+
+Not covered: OS-service handover, `--restart-hand`, the running-service Hand reuse
+decision (no service exists in the namespace), managed work after sign-in, and
+voice execution.
 
 ## Local-pair runner
 

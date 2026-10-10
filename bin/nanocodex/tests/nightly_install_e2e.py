@@ -90,9 +90,21 @@ def host_receipt():
     except OSError as e:
         r["unit_file_sha256"] = f"unreadable: {e}"
     ps = sh(["ps", "-eo", "pid,lstart,args", "--no-headers"]).stdout.splitlines()
-    r["hand_processes"] = [l.strip() for l in ps if "/opt/nanocodex" in l or "nanocodex-hand-releases" in l]
+    # Match the executable (argv[0], after PID and the 5-field start time) only, so
+    # unrelated shells that merely mention these paths are not counted.
+    r["hand_processes"] = [l.strip() for l in ps
+                           if len(l.split()) > 6 and l.split()[6].startswith(("/opt/nanocodex/", "/mnt/fast/nanocodex-hand-releases/"))]
     real = REAL_HOME / ".nanocodex"
     r["real_store"] = sh(["find", str(real), "-printf", "%P %y %s %i %T@\n"]).stdout if real.exists() else None
+    # Writable real-HOME persistence surfaces a misdirected installer could touch.
+    for rel in (".config/systemd/user", ".local/bin"):
+        d = REAL_HOME / rel
+        r["home:" + rel] = sh(["find", str(d), "-maxdepth", "2", "-printf", "%P %y %s %i %T@\n"]).stdout if d.exists() else None
+    for rel in (".bashrc", ".profile", ".bash_profile", ".zshenv", ".zshrc", ".config/fish/config.fish"):
+        f = REAL_HOME / rel
+        r["home:" + rel] = hashlib.sha256(f.read_bytes()).hexdigest() if f.is_file() else None
+    c = sh(["crontab", "-l"])
+    r["crontab"] = hashlib.sha256((c.stdout + c.stderr).encode()).hexdigest()
     return r
 
 
@@ -110,7 +122,7 @@ def outer():
         + ro + "; test ! -e /run/systemd/system; "
         "exec " + shlex.join([sys.executable, os.path.abspath(__file__), "--inner", "--old-sha", OLD, "--new-sha", NEW,
                               *(["--final-sha", FINAL] if FINAL else []), "--output", str(ART), "--steps", ",".join(STEPS)]))
-    env = dict(os.environ, NIGHTLY_E2E_REAL_HOME=str(REAL_HOME))
+    env = dict(os.environ, NIGHTLY_E2E_REAL_HOME=str(REAL_HOME), NIGHTLY_E2E_UID=str(os.getuid()), NIGHTLY_E2E_GID=str(os.getgid()))
     started = time.time()
     code = subprocess.call(["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--mount-proc",
                             "sh", "-c", setup], env=env)
@@ -276,9 +288,10 @@ def verify_release(sha):
             for m in tf:
                 if m.isfile():
                     members[m.name] = hashlib.sha256(tf.extractfile(m).read()).hexdigest()
-        while hr.raw.read(1 << 20):
+        # The tar reader may stop before the gzip trailer; drain the remainder
+        # through the hashing reader so the archive digest covers every byte.
+        while hr.read(1 << 20):
             pass
-    # The tar stream may stop before the gzip trailer; re-read the remainder digest-safely.
     result["assets"][VOICE_ASSET] = {"asset": a["name"], "id": a["id"], "archive_sha256": hr.h.hexdigest(),
                                      "manifest_sha256": manifest.get(a["name"]), "members": members}
     path.write_text(json.dumps(result, indent=2))
@@ -304,7 +317,7 @@ def file_sha(path):
 def snapshot(p):
     store = p["store"]
     snap = {"current": os.readlink(store / "current") if (store / "current").is_symlink() else None, "files": {}}
-    for top in ("versions", "hand-versions", "bin"):
+    for top in ("versions", "hand-versions", "bin", "updater"):
         base = store / top
         if not base.exists():
             continue
@@ -319,8 +332,8 @@ def snapshot(p):
                     if name in dirnames:
                         dirnames.remove(name)
                 elif path.is_file():
-                    snap["files"][rel] = {"type": "file", "size": st.st_size, "inode": st.st_ino,
-                                          "mtime_ns": st.st_mtime_ns, "sha256": file_sha(path)}
+                    snap["files"][rel] = {"type": "file", "size": st.st_size, "inode": st.st_ino, "nlink": st.st_nlink,
+                                          "mtime_ns": st.st_mtime_ns, "ctime_ns": st.st_ctime_ns, "sha256": file_sha(path)}
     for name in ("pending-update", "explicit-selection", "update-transaction.json", "automatic-updates-disabled"):
         snap[name] = (store / name).read_text().strip() if (store / name).is_file() else None
     snap["systemd_user_units"] = sorted(str(x.relative_to(p["home"])) for x in p["home"].glob(".config/systemd/user/**/*"))
@@ -401,17 +414,43 @@ def check_entrypoints(p, probes, sha, label, unified_expected=True):
               observed=pr)
         if unified_expected:
             check(f"{label}: bin/{name} links ../current/nanocodex", pr.get("link") == "../current/nanocodex", link=pr.get("link"))
+    active = p["store"] / "current" / "hand-identity"
+    # A version activated by a pre-identity updater has no hand-identity file; the
+    # unified CLI still reports the identity of the Hand built with it.
+    ident = active.read_text().strip() if active.is_file() else next(iter(probes.get("nanocodex", {}).get("identity") or []), None)
     for name in HAND_ALIASES:
         pr = probes.get(name, {})
-        check(f"{label}: bin/{name} links the selected Hand and reports Commit SHA {sha[:12]}",
-              pr.get("present") and pr.get("exit") == 0 and pr.get("link") == "../current/nanocodex2" and pr.get("commit") == [sha],
-              observed=pr)
+        # The nightly Hand records no commit (its identity is the reuse key), so the
+        # alias must run the Hand and report the active version's Hand Identity.
+        check(f"{label}: bin/{name} links the selected Hand, runs nanocodex-hand and reports its Hand Identity",
+              pr.get("present") and pr.get("exit") == 0 and pr.get("link") == "../current/nanocodex2"
+              and (pr.get("first_line") or [""])[0].startswith("nanocodex-hand Version:") and ident and pr.get("identity") == [ident],
+              observed=pr, active_identity=ident)
+
+
+def manager_copies_unchanged(before, after, label):
+    """A repeat no-op update must not rewrite the full-size manager copies either."""
+    unchanged_files(before, after, [], f"{label}: FINDING no-op leaves manager copies (versions/nightly, updater/)", ("versions/nightly/", "updater/"))
+
+
+def legacy_activation_entrypoints(p, probes, sha, label):
+    """The OLD (pre-unified) updater activated NEW: it only knows bin/nanocodex and a
+    bin/nanocodex2 that runs current/nanocodex2 (now the Hand daemon)."""
+    pr = probes.get("nanocodex", {})
+    check(f"{label}: bin/nanocodex runs NEW (one Commit SHA {sha[:12]})", pr.get("exit") == 0 and pr.get("commit") == [sha], observed=pr)
+    n2 = probes.get("nanocodex2", {})
+    missing = [n for n in ("nc", "ncl", *HAND_ALIASES) if not probes.get(n, {}).get("present")]
+    check(f"{label}: FINDING legacy-updater activation leaves the managed bin/nanocodex2 entrypoint and NEW aliases coherent",
+          n2.get("commit") == [sha] and n2.get("link") == "../current/nanocodex" and not missing,
+          nanocodex2_link=n2.get("link"), nanocodex2_runs=(n2.get("first_line") or [None])[0], missing_aliases=missing,
+          note="the OLD updater links bin/nanocodex2 -> ../current/nanocodex2, which is the NEW Hand daemon")
 
 
 def check_old_aliases(probes, label):
     """OLD predates the unified CLI: bin/nanocodex is the local tree and
     bin/nanocodex2 the managed CLI. Every present entrypoint must run OLD."""
-    present = {n: pr for n, pr in probes.items() if pr.get("present")}
+    # Only OLD's own entrypoints are asserted; NEW-only aliases are unsupported after a legacy rollback.
+    present = {n: pr for n, pr in probes.items() if pr.get("present") and n in ("nanocodex", "nanocodex2")}
     check(f"{label}: bin/nanocodex and bin/nanocodex2 are present", {"nanocodex", "nanocodex2"} <= set(present), present=sorted(present))
     for name, pr in present.items():
         check(f"{label}: bin/{name} runs OLD (one Commit SHA {OLD[:12]})", pr.get("exit") == 0 and pr.get("commit") == [OLD],
@@ -425,11 +464,11 @@ def record_step(name, p, extra=None):
     return snap
 
 
-def unchanged_files(before, after, keys, label):
+def unchanged_files(before, after, keys, label, prefixes=()):
     """Prove a cached activation rewrote none of the version/Hand files."""
     changed = {}
     for k, v in before["files"].items():
-        if any(k.startswith(f"versions/{key}/") for key in keys) or k.startswith("hand-versions/"):
+        if any(k.startswith(f"versions/{key}/") for key in keys) or k.startswith(("hand-versions/", *prefixes)):
             if after["files"].get(k) != v:
                 changed[k] = {"before": v, "after": after["files"].get(k)}
     check(f"{label}: cached version and Hand files are unchanged (same inode, size, mtime and SHA-256)", not changed,
@@ -437,13 +476,22 @@ def unchanged_files(before, after, keys, label):
 
 
 def installer(p, sha, name):
-    env = dict(base_env(p), NANOCODEX_RELEASE_TAG=f"nightly-{sha}")
-    script = ART / "installer.sh"
-    if not script.exists():
-        with http_get(INSTALLER_URL) as r:
-            script.write_bytes(r.read())
-        log(f"  public installer {INSTALLER_URL} sha256 {hashlib.sha256(script.read_bytes()).hexdigest()}")
-    return run(name, ["bash", "-c", f"set -o pipefail; curl -fsSL {INSTALLER_URL} | bash -s -- --no-setup --no-modify-path"], env, cwd=p["ws"])
+    """Run exactly the public installer bytes fetched for this step. It re-executes
+    the installer from refs/tags/nightly-SHA (immutable), recorded alongside."""
+    tag = f"nightly-{sha}"
+    env = dict(base_env(p), NANOCODEX_RELEASE_TAG=tag)
+    d = ART / "installers"; d.mkdir(exist_ok=True)
+    script = d / f"{counter[0] + 1:03d}-{cur_step[0]}-public-install.sh"
+    with http_get(INSTALLER_URL) as r:
+        script.write_bytes(r.read())
+    tagged = d / f"{tag}-install.sh"
+    if not tagged.exists():
+        with http_get(f"https://raw.githubusercontent.com/{REPO}/refs/tags/{tag}/install") as r:
+            tagged.write_bytes(r.read())
+    digests = {"public": hashlib.sha256(script.read_bytes()).hexdigest(), "tagged": hashlib.sha256(tagged.read_bytes()).hexdigest()}
+    state.setdefault("installers", {})[script.name] = {"url": INSTALLER_URL, "tagged_url": f"refs/tags/{tag}/install", **digests}; save()
+    log(f"  public installer {script.name} sha256 {digests['public']}; tagged {tag} installer sha256 {digests['tagged']}")
+    return run(name, ["bash", str(script), "--no-setup", "--no-modify-path"], env, cwd=p["ws"])
 
 
 def no_service_side_effects(p, snap, label):
@@ -490,7 +538,7 @@ def step_a2():
     check("update --nightly reports the activation with the previous version", key in r["out"] + r["err"] and old_key in r["out"] + r["err"], out=r["out"][-800:])
     unchanged_files(before, snap, [old_key], "OLD retained for rollback")
     probes = probe_versions(p, base_env(p)); state["steps"]["a2"]["probes"] = probes; save()
-    check_entrypoints(p, probes, NEW, "NEW (installed by OLD updater)")
+    legacy_activation_entrypoints(p, probes, NEW, "NEW (activated by OLD updater)")
     no_service_side_effects(p, snap, "NEW via update")
 
 
@@ -502,6 +550,7 @@ def step_a3():
     snap = record_step("a3", p, {"out": r["out"], "err": r["err"]})
     check("repeat update keeps NEW active", active_key(snap) == expected_key(NEW), current=snap["current"])
     unchanged_files(before, snap, versions_of(before), "repeat update --nightly")
+    manager_copies_unchanged(before, snap, "repeat update --nightly")
     check("repeat update created no additional version", versions_of(before) == versions_of(snap), versions=versions_of(snap))
     probes = probe_versions(p, base_env(p)); state["steps"]["a3"]["probes"] = probes; save()
     check_entrypoints(p, probes, NEW, "NEW after its own update --nightly")
@@ -521,6 +570,13 @@ def rollback(p, label, name):
         verify_installed(p, snap, OLD, f"{label}: OLD")
     probes = probe_versions(p, base_env(p))
     check_old_aliases(probes, f"{label}: after rollback")
+    # OLD predates the unified CLI; its legacy installer cannot retire NEW-only
+    # aliases. Record what they now run; they are unsupported after this rollback.
+    residual = {n: {"link": pr.get("link"), "first_line": pr.get("first_line"), "commit": pr.get("commit")}
+                for n, pr in probes.items() if n not in ("nanocodex", "nanocodex2") and pr.get("present")}
+    state.setdefault("legacy_rollback_residual_aliases", {})[label] = residual; save()
+    log(f"  {label}: NEW-only aliases left by the legacy OLD installer (unsupported): {json.dumps(residual)}")
+    modes(p, f"{label} OLD roles", OLD)
     no_service_side_effects(p, snap, label)
     return before, snap, r, probes
 
@@ -540,13 +596,34 @@ def roll_forward(p, label, step):
     check(f"{label}: no new version downloaded", versions_of(before) == versions_of(snap), versions=versions_of(snap))
     unchanged_files(before, snap, versions_of(before), f"{label}: cached roll-forward")
     probes = probe_versions(p, base_env(p))
-    check_entrypoints(p, probes, NEW, f"{label}: NEW after roll-forward")
+    legacy_activation_entrypoints(p, probes, NEW, f"{label}: NEW after roll-forward by OLD updater")
     state["steps"][step] = {"snapshot": snap, "out": r["out"], "err": r["err"], "probes": probes}; save()
     return snap
 
 
 def step_a5():
     roll_forward(prefix_paths("a"), "prefix A", "a5")
+
+
+def published_identity(sha):
+    """The Hand identity a release publishes beside its Linux Hand (absent before identities)."""
+    tag = f"nightly-{sha}"
+    rel, manifest = release(tag), sums(tag)
+    a = next((a for a in rel["assets"] if a["name"] == f"{HAND_ASSET}.identity"), None)
+    if not a:
+        return None
+    with http_get(a["browser_download_url"]) as r:
+        body = r.read()
+    listed = manifest.get(a["name"])
+    check(f"{tag}: published {a['name']} is covered by SHA256SUMS", listed is None or listed == hashlib.sha256(body).hexdigest(),
+          listed=listed, digest=hashlib.sha256(body).hexdigest())
+    fields = body.decode().split()
+    return fields[0] if fields else None
+
+
+def reuse_key(identity, signing="unsigned"):
+    """scripts/release/hand-identity.sh key for a Linux Hand (no packaging inputs)."""
+    return hashlib.sha256(f"hand-identity {identity}\ntarget {TRIPLE}\nsigning {signing}\n".encode()).hexdigest()
 
 
 def identity_layout(p, snap, label, sha=None, key=None):
@@ -572,6 +649,9 @@ def step_b1():
     key = verify_installed(p, snap, NEW, "NEW fresh install")
     check("fresh NEW install activates its immutable key", active_key(snap) == key, current=snap["current"])
     ident = identity_layout(p, snap, "NEW fresh install")
+    pub = published_identity(NEW)
+    check("NEW fresh install: published Hand reuse key is derived from the stored Hand Identity", bool(ident) and reuse_key(ident) == pub,
+          stored_identity=ident, derived_key=reuse_key(ident) if ident else None, published_key=pub)
     stored = snap["files"].get(f"hand-versions/{ident}/nanocodex2", {})
     check("NEW fresh install: stored identity Hand equals the published Hand payload",
           stored.get("sha256") == verify_release(NEW)["assets"][HAND_ASSET]["raw_sha256"], stored=stored.get("sha256"))
@@ -598,6 +678,8 @@ def step_b3():
     require("prefix B: NEW CLI update --nightly (current) exits 0", r["exit"] == 0, err=r["err"][-1500:])
     after = snapshot(p)
     unchanged_files(before, after, versions_of(before), "prefix B: repeat update by NEW")
+    manager_copies_unchanged(before, after, "prefix B: repeat update by NEW")
+    check_entrypoints(p, probe_versions(p, base_env(p)), NEW, "prefix B: NEW's own activation repairs entrypoints")
     state["steps"]["b3"]["repeat"] = {"snapshot": after, "out": r["out"], "err": r["err"]}; save()
 
 
@@ -705,6 +787,18 @@ def registrations(home):
     return regs
 
 
+def managed_status(managed, env, label):
+    st = run("managed-status", [str(managed), "status"], env, timeout=60)
+    state.setdefault("managed", {}).setdefault(label, {})["status"] = {"exit": st["exit"], "out": st["out"][-1000:], "err": st["err"][-1000:]}; save()
+    try:
+        authenticated = json.loads(st["out"]).get("authenticated")
+    except ValueError:
+        authenticated = None
+    check(f"{label}: managed status exits 0 and reports authenticated=false with the empty HOME",
+          st["exit"] == 0 and authenticated is False, exit=st["exit"], out=st["out"][-300:], err=st["err"][-300:])
+    return st
+
+
 def modes(p, label, sha):
     env = base_env(p)
     store = p["store"]
@@ -728,8 +822,7 @@ def modes(p, label, sha):
           r["exit"] == 0 and "ANSWER_LOCAL_RUN_PROMPT" in r["out"] and any("LOCAL_RUN_PROMPT" in json.dumps(q["body"]) for q in reqs[n0:]),
           exit=r["exit"], requests=len(reqs) - n0, out_tail=r["out"][-400:], err_tail=r["err"][-600:])
     if not unified:
-        st = run("managed-status", [str(managed), "status"], env, timeout=60)
-        state.setdefault("managed", {})[label] = {"status": {"exit": st["exit"], "out": st["out"][-1000:], "err": st["err"][-1000:]}}; save()
+        managed_status(managed, env, label)
         server.shutdown(); return
     # Local TUI: registration, then one real model turn rendered in the TUI.
     tui_t = ART / f"{label.replace(' ', '-')}-ncl-tui.txt"
@@ -749,19 +842,32 @@ def modes(p, label, sha):
     # Managed TUI with an empty HOME: either a managed session or an honest login boundary.
     man_t = ART / f"{label.replace(' ', '-')}-managed-tui.txt"
     boundary = re.compile(r"(log ?in|sign ?in|not (signed|logged) in|authenticat)", re.I)
+    first = {}
 
     def managed_until(text, child, write):
         regs = [g for g in registrations(p["home"]) if g.get("pid") == child.pid]
         if regs:
-            return {"registered": regs[0]}
-        return {"login_boundary": boundary.search(text).group(0)} if boundary.search(text) and time.sleep(2) is None and boundary.search(text) else False
+            return {"registered": {k: v for k, v in regs[0].items() if k != "auth_token"}}
+        m = boundary.search(text)
+        if not m or "panicked" in text or child.poll() is not None:
+            first.clear()
+            return False
+        # Only a prompt that is still displayed by a live process >= 2 s later, on
+        # freshly read output, counts as the login boundary.
+        first.setdefault("t", time.monotonic())
+        if time.monotonic() - first["t"] >= 2:
+            line = next((l.strip() for l in text.splitlines() if boundary.search(l)), m.group(0))
+            return {"login_boundary": line, "alive": True}
+        return False
 
     res, code, text = pty_session([str(managed)], env, p["ws"], man_t, managed_until, timeout=45)
+    login_error = next((l.strip() for l in text.splitlines() if "No account login for this origin" in l), None)
+    if not res and login_error and code not in (0, None) and "panicked" not in text:
+        res = {"pre_tui_login_error": login_error, "exit": code}
     state.setdefault("managed", {})[label] = {"result": res, "exit": code, "transcript": man_t.name, "tail": text[-1500:]}; save()
-    check(f"{label}: managed TUI start reaches a managed session or stops at the login boundary (empty HOME)",
-          bool(res), observed=res, exit=code, transcript=man_t.name)
-    st = run("managed-status", [str(managed), "status"], env, timeout=60)
-    state["managed"][label]["status"] = {"exit": st["exit"], "out": st["out"][-1000:], "err": st["err"][-1000:]}; save()
+    check(f"{label}: managed start reaches a session, a live login prompt, or the exact no-account-login error (empty HOME)",
+          bool(res) and "panicked" not in text, observed=res, exit=code, transcript=man_t.name)
+    st = managed_status(managed, env, label)
     hs = run("hand-status", [str(managed), "hand", "status"], env, timeout=60)
     check(f"{label}: hand status reports no Linux Hand owner inside the namespace", hs["exit"] == 0 and '"installed": false' in hs["out"], out=hs["out"])
     nh = run("nc-hand-status", [str(store / "bin/nc-hand"), "status"], env, timeout=60) if (store / "bin/nc-hand").exists() else {"exit": "missing", "out": "", "err": "bin/nc-hand is absent"}
@@ -797,10 +903,11 @@ def step_b4():
     v = verify_release(NEW)
     pair = p["root"] / "published-pair"
     shutil.rmtree(pair, ignore_errors=True); pair.mkdir()
-    # Hard links of the installed bytes: the same published payload under a
-    # user-chosen path, without another copy on the shared disk.
-    os.link(p["store"] / "versions" / key / "nanocodex", pair / "nanocodex")
-    os.link(p["store"] / canonical, pair / "nanocodex-hand")
+    # Independent copies of the installed, published bytes at a user-chosen path
+    # (no hard links, so the canonical file's inode/nlink/ctime stay evidence).
+    shutil.copyfile(p["store"] / "versions" / key / "nanocodex", pair / "nanocodex")
+    shutil.copyfile(p["store"] / canonical, pair / "nanocodex-hand")
+    os.chmod(pair / "nanocodex", 0o755); os.chmod(pair / "nanocodex-hand", 0o755)
     for f, logical in (("nanocodex", CLI_ASSET), ("nanocodex-hand", HAND_ASSET)):
         require(f"published-pair/{f} is the published {logical} payload", file_sha(pair / f) == v["assets"][logical]["raw_sha256"])
     voice = verify_release(NEW)["assets"][VOICE_ASSET]
@@ -857,15 +964,25 @@ def final_upgrade(name, label):
     ident = identity_layout(p, snap, f"{label}: FINAL", FINAL)
     prior = (p["store"] / "versions" / new_key / "hand-identity")
     prior_ident = prior.read_text().strip() if prior.is_file() else None
-    if prior_ident and prior_ident == ident:
+    pub_new, pub_final = published_identity(NEW), published_identity(FINAL)
+    check(f"{label}: published NEW and FINAL reuse keys derive from the stored Hand Identities",
+          bool(prior_ident and ident) and reuse_key(prior_ident) == pub_new and reuse_key(ident) == pub_final,
+          stored=[prior_ident, ident], published=[pub_new, pub_final])
+    branch = "reused" if pub_new == pub_final else "new-identity"
+    state.setdefault("identity_branch", {})[label] = {"branch": branch, "new": pub_new, "final": pub_final}; save()
+    log(f"  {label}: published Hand identity NEW {pub_new} FINAL {pub_final} => branch {branch}")
+    if branch == "reused":
         canonical = f"hand-versions/{ident}/nanocodex2"
         check(f"{label}: unchanged Hand identity reuses the canonical Hand file (same inode, bytes)",
               snap["files"].get(canonical) == before["files"].get(canonical) and hand_entries(snap) == hand_entries(before),
               identity=ident, before=before["files"].get(canonical), after=snap["files"].get(canonical))
     else:
         stored = snap["files"].get(f"hand-versions/{ident}/nanocodex2", {})
-        check(f"{label}: FINAL Hand stored under its identity equals the published Hand",
-              stored.get("sha256") == verify_release(FINAL)["assets"][HAND_ASSET]["raw_sha256"],
+        old_canon = f"hand-versions/{prior_ident}/nanocodex2"
+        check(f"{label}: changed identity stores the FINAL Hand once beside the untouched NEW Hand",
+              stored.get("sha256") == verify_release(FINAL)["assets"][HAND_ASSET]["raw_sha256"]
+              and snap["files"].get(old_canon) == before["files"].get(old_canon)
+              and set(hand_entries(snap)) == set(hand_entries(before)) | {ident},
               identity=ident, prior_identity=prior_ident, hand_versions=hand_entries(snap))
     probes = probe_versions(p, base_env(p))
     check_entrypoints(p, probes, FINAL, f"{label}: FINAL")
@@ -892,9 +1009,35 @@ def step_old_modes():
     modes(p, "prefix A OLD", OLD)
 
 
+def drop_to_real_user():
+    """The outer namespace maps the caller to root only to mount the private /run and
+    read-only binds. Enter a nested user namespace mapping the real uid/gid back, so
+    every installer/CLI runs unprivileged like a real user (no CAP_*, euid != 0)."""
+    import ctypes
+    uid, gid = int(os.environ["NIGHTLY_E2E_UID"]), int(os.environ["NIGHTLY_E2E_GID"])
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.unshare(0x10000000) != 0:  # CLONE_NEWUSER
+        raise OSError(ctypes.get_errno(), "unshare(CLONE_NEWUSER)")
+    Path("/proc/self/setgroups").write_text("deny")
+    Path("/proc/self/uid_map").write_text(f"{uid} 0 1")
+    Path("/proc/self/gid_map").write_text(f"{gid} 0 1")
+    # The namespace owner keeps a full capability set until execve as a nonzero
+    # uid clears it; re-exec so the journey itself runs without capabilities.
+    os.environ["NIGHTLY_E2E_DROPPED"] = "1"
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 def inner():
+    if os.geteuid() == 0 and "NIGHTLY_E2E_UID" in os.environ and "NIGHTLY_E2E_DROPPED" not in os.environ:
+        drop_to_real_user()
+    expected_uid = int(os.environ["NIGHTLY_E2E_UID"]) if "NIGHTLY_E2E_DROPPED" in os.environ else None
     log(f"==== {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} steps={STEPS} old={OLD} new={NEW} uid={os.getuid()}")
     cur_step[0] = "namespace"
+    ident = sh(["id", "-u"]).stdout.strip()
+    cap = next((l.split()[1] for l in Path("/proc/self/status").read_text().splitlines() if l.startswith("CapEff:")), None)
+    check("namespace: journey runs as the real unprivileged uid (id -u), no effective capabilities",
+          expected_uid is not None and ident == str(expected_uid) and os.geteuid() == expected_uid and int(cap, 16) == 0,
+          id_u=ident, expected=expected_uid, cap_eff=cap)
     check("namespace: /run is an empty private tmpfs without systemd", not Path("/run/systemd/system").exists(),
           run=sorted(os.listdir("/run")))
     probe = Path("/opt/nanocodex/.e2e-write-probe")
@@ -917,7 +1060,9 @@ def inner():
         save()
     fails = [c for c in state["checks"] if not c["ok"]]
     summary = {"steps": STEPS, "failed_step": failed, "checks": len(state["checks"]), "failures": len(fails),
-               "failed": [f"{c['step']}: {c['check']}" for c in fails]}
+               "failed": [f"{c['step']}: {c['check']}" for c in fails],
+               "identity_branch": state.get("identity_branch"),
+               "legacy_rollback_residual_aliases": state.get("legacy_rollback_residual_aliases")}
     (ART / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     sys.exit(1 if fails else 0)
