@@ -8,7 +8,8 @@ const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNam
 
 describe("goal continuation races", () => {
   it("preserves a resumed goal's continuation when the paused turn finishes cancellation late", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       const original = goals.create({ objective: "Finish the requested work" });
@@ -28,7 +29,8 @@ describe("goal continuation races", () => {
   });
 
   it("preserves a replacement goal's continuation when a cleared goal's turn is cancelled late", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       goals.create({ objective: "Old work" });
@@ -50,7 +52,8 @@ describe("goal continuation races", () => {
     ["missing output count", { usage: { input_tokens: 10 } }],
     ["missing input count", { usage: { output_tokens: 10 } }],
   ])("stops budgeted continuation with %s even when the model produces a final answer", async (_label, payload) => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       goals.create({ objective: "Finish the requested work", token_budget: 100 });
@@ -68,7 +71,8 @@ describe("goal continuation races", () => {
   });
 
   it("allows budgeted continuation when measured usage is explicitly zero", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const goals = new Goals(state.storage, () => "thread");
       const runtime = new GoalRuntime(state.storage, goals);
       goals.create({ objective: "Finish the requested work", token_budget: 100 });

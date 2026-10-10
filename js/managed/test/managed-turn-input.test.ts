@@ -43,6 +43,7 @@ describe("chunked managed input", () => {
         } },
       } });
       const now = Date.now();
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, last_active
@@ -168,6 +169,7 @@ describe("chunked managed input", () => {
           throw Object.assign(new Error("fixture runtime temporarily unavailable"), { code: "retryable" });
         } },
       } });
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, last_active
@@ -209,7 +211,8 @@ describe("chunked managed input", () => {
   });
 
   it("hydrates each retained row only once", async () => {
-    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const input = JSON.stringify("x".repeat(300_000));
       const reference = storeTurnInput(state.storage, "memo", input);
       const row = lazyTurnInput(state.storage, { id: "memo", input_json: reference });
@@ -220,7 +223,8 @@ describe("chunked managed input", () => {
   });
 
   it("defers hydration and fails closed on missing chunks", async () => {
-    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (_session, state) => {
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (session, state) => {
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       const input = JSON.stringify('x'.repeat(2 * 1024 * 1024));
       const reference = storeTurnInput(state.storage, "lazy", input);
       const row = lazyTurnInput(state.storage, { id: "lazy", input_json: reference, state: "accepted" });

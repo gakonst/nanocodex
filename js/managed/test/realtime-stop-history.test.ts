@@ -8,6 +8,7 @@ it("stopping voice retains its transcript without admitting a backend turn, and 
     const owner = crypto.randomUUID(), organization = crypto.randomUUID(), team = crypto.randomUUID();
     const id = crypto.randomUUID(), voice = crypto.randomUUID(), operation = crypto.randomUUID();
     const capabilities = ["agents:write", "tools:use"];
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
       authorization_epoch,public_origin,runtime_profile,accepted_turns,last_active)
       VALUES(1,?,?,?,?,1,'https://test.example','managed',0,?)`, id, owner, organization, team, Date.now());
