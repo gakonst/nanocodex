@@ -1382,6 +1382,7 @@ impl ClaudeBuilder {
             conversation: Mutex::new(restored.conversation),
             dispatch_fork: std::sync::RwLock::new(None),
             round_boundary: std::sync::RwLock::new(None),
+            boundary_stale: AtomicBool::new(false),
             policy: self.policy,
             admission: Mutex::new(()),
             idle: Notify::new(),
@@ -1634,9 +1635,12 @@ fn top_level_event_fields(
             if let Some(code) = object.get_mut("_nanocodex_code")
                 && let Some(calls) = code.get("calls").and_then(Value::as_array)
             {
+                // Keep the cell lifetime: observers settle nested calls only on
+                // a terminal cell result. Absent means still running.
                 *code = json!({
                     "origin_call_id": code.get("origin_call_id"),
                     "nested_call_count": calls.len(),
+                    "running": code.get("running"),
                 });
             }
             Value::Object(object)
@@ -2583,6 +2587,10 @@ struct State {
     // `conversation`, so a child can resume without replaying finished rounds.
     /// Shares one allocation with [`Self::dispatch_fork`] while tools run.
     round_boundary: std::sync::RwLock<Option<Arc<Snapshot>>>,
+    /// Publishing the latest committed boundary failed, so the retained one
+    /// predates committed history. Checkpoints fail instead of exposing it
+    /// (observers treat a provider-call completion as covering prior rounds).
+    boundary_stale: AtomicBool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     admission: Mutex<()>,
     idle: Notify,
@@ -3175,6 +3183,19 @@ impl State {
             .or_else(|| self.system_blocks.as_ref().map(|blocks| json!(blocks)))
             .or_else(|| (!self.system.is_empty()).then(|| json!(self.system)))
     }
+    /// Publishes the committed boundary checkpoints read while a turn holds
+    /// the conversation. A failed snapshot marks the retained boundary stale.
+    async fn publish_round_boundary(&self, conversation: &Conversation) {
+        match self.snapshot(conversation).await {
+            Ok(boundary) => {
+                *self.round_boundary.write().expect("round boundary lock") =
+                    Some(Arc::new(boundary));
+                self.boundary_stale.store(false, Ordering::SeqCst);
+            }
+            Err(_) => self.boundary_stale.store(true, Ordering::SeqCst),
+        }
+    }
+
     /// Publishes one nested Code Mode receipt, adding its start first unless
     /// a live update already published it.
     fn publish_nested_receipt(
@@ -3753,9 +3774,7 @@ impl State {
         let notices_before = conversation.recovery_notices.len();
         // Publish the pre-turn boundary before mutating; a checkpoint taken
         // during this turn must never wait for the turn to release its lock.
-        if let Ok(boundary) = self.snapshot(&conversation).await {
-            *self.round_boundary.write().expect("round boundary lock") = Some(Arc::new(boundary));
-        }
+        self.publish_round_boundary(&conversation).await;
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
@@ -5011,6 +5030,7 @@ impl State {
             *self.round_boundary.write().expect("round boundary lock") =
                 Some(fork_snapshot.clone());
             *self.dispatch_fork.write().expect("fork boundary lock") = Some(fork_snapshot);
+            self.boundary_stale.store(false, Ordering::SeqCst);
             let fork_boundary = DispatchForkBoundary(&self.dispatch_fork);
             let mut results = vec![None; tool_calls.len()];
             let mut interrupted = false;
@@ -5170,10 +5190,9 @@ impl State {
                     );
                 // This round is now committed history: expose it to checkpoints
                 // taken while the next provider call holds the conversation.
-                if let Ok(boundary) = self.snapshot(conversation).await {
-                    *self.round_boundary.write().expect("round boundary lock") =
-                        Some(Arc::new(boundary));
-                }
+                // Invariant: published before the next provider call, so its
+                // ModelCallCompleted always follows a boundary holding this round.
+                self.publish_round_boundary(conversation).await;
                 if interrupted {
                     return Err(NanocodexError::TurnCancelled);
                 }
@@ -5529,6 +5548,11 @@ impl LifecycleBackend for Driver {
                     (state.snapshot(&conversation).await?, has_conversation)
                 }
                 Err(_) => {
+                    if state.boundary_stale.load(Ordering::SeqCst) {
+                        return Err(unsupported(
+                            "Claude committed boundary is stale after a failed snapshot",
+                        ));
+                    }
                     let boundary = state
                         .dispatch_fork
                         .read()
