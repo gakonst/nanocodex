@@ -30,7 +30,15 @@ def main():
     # tree (run, settings) by nanocodex.
     managed_binary = args.binary.resolve()
     binary = str(managed_binary)
-    if managed_binary.name != 'ncl':
+    if managed_binary.name == 'ncl':
+        (artifact / 'bin').mkdir()
+        managed_binary = artifact / 'bin' / 'nanocodex'
+        try:
+            os.link(binary, managed_binary)
+        except OSError:
+            import shutil
+            shutil.copy2(binary, managed_binary)
+    else:
         alias_dir = artifact / 'bin'
         alias_dir.mkdir()
         alias = alias_dir / 'ncl'
@@ -52,7 +60,19 @@ def main():
         def log_message(self, *_):
             pass
 
+        def do_GET(self):
+            requests.append({'family': 'account', 'path': self.path, 'method': 'GET'})
+            self.send_response(503)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
         def do_POST(self):
+            if not self.path.startswith('/v1/'):
+                requests.append({'family': 'account', 'path': self.path, 'method': 'POST'})
+                self.send_response(503)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             family = 'claude' if self.path == '/v1/messages' else 'codex'
             requests.append({'family': family, 'path': self.path, 'beta': self.headers.get('anthropic-beta'), 'request': request})
@@ -266,9 +286,14 @@ def main():
         out = artifact / name
         out.mkdir()
         command = [str(managed_binary), *argv]
-        result = subprocess.run(command, cwd=out, env=environment(out), capture_output=True, text=True, timeout=30)
+        start = len(requests)
+        # A synthetic account credential and a local control-plane origin: the
+        # settings must be rejected before any account request is made.
+        env = {**environment(out), 'NANOCODEX_API_KEY': 'ncx_live_aaaaaaaaaaaa_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'NANOCODEX_MANAGED_URL': f'http://127.0.0.1:{server.server_port}'}
+        result = subprocess.run(command, cwd=out, env=env, capture_output=True, text=True, timeout=30)
         (out / 'command.json').write_text(json.dumps({'command': command, 'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}, indent=2))
         h.require(result.returncode != 0, name + ': unsupported managed setting succeeded')
+        h.require(len(requests) == start, name + ': unsupported managed setting reached the control plane')
         h.require(expected in result.stderr + result.stdout, name + ': missing actionable error: ' + (result.stderr + result.stdout)[-800:])
         checks.append({'scenario': name, 'passed': True, 'argv': argv, 'error': expected})
 
@@ -286,11 +311,11 @@ def main():
         launch_rejected('launch-sol-none', ['--model', 'gpt-6.1-sol', '--thinking', 'none'], 'gpt-6.1-sol does not support none thinking')
         launch_rejected('launch-claude-pro', ['--claude', '--model', 'opus', '--reasoning-mode', 'pro'], 'does not support pro reasoning mode')
         managed_rejected('managed-run-claude-max', ['run', '--model', 'claude-opus-5-5', '--thinking', 'max', 'Synthetic prompt'], 'on the managed service; supported thinking: low, medium, high')
-        managed_rejected('managed-run-claude-fast', ['run', '--model', 'claude-opus-5-5', '--fast-mode', 'Synthetic prompt'], 'does not support fast mode on the managed service')
-        tui('tui-opus55-launch-fast-xhigh', ['--claude', '--model', 'opus', '--fast-mode', 'true', '--thinking', 'xhigh'], opus55_launch_fast_xhigh)
-        tui('tui-codex-xhigh-to-opus46', ['--model', 'gpt-6.1-sol', '--thinking', 'xhigh'], codex_xhigh_to_opus46)
-        tui('tui-opus55-extended', ['--claude', '--model', 'opus'], opus55_extended)
-        tui('tui-haiku45-fixed', ['--claude', '--model', 'claude-haiku-4-5'], haiku45_fixed)
+        managed_rejected('managed-run-claude-fast', ['run', '--model', 'claude-opus-5-5', '--fast-mode', 'true', 'Synthetic prompt'], 'does not support fast mode on the managed service')
+        tui('tui-o55-fx', ['--claude', '--model', 'opus', '--fast-mode', 'true', '--thinking', 'xhigh'], opus55_launch_fast_xhigh)
+        tui('tui-sol-o46', ['--model', 'gpt-6.1-sol', '--thinking', 'xhigh'], codex_xhigh_to_opus46)
+        tui('tui-o55', ['--claude', '--model', 'opus'], opus55_extended)
+        tui('tui-h45', ['--claude', '--model', 'claude-haiku-4-5'], haiku45_fixed)
         outcome = {'success': True, 'checks': checks, 'provider_requests': len(requests)}
     except Exception as error:
         outcome = {'success': False, 'error': str(error), 'checks': checks}
