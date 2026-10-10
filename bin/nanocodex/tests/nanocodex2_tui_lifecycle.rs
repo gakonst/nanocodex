@@ -8912,11 +8912,8 @@ async fn terminal_math_renders_kitty_images_and_falls_back_to_source() {
     // same before and after, so no screen state proves its upload was written.
     let output = wait_kitty_pngs(&kitty.terminal, 3).await;
     let pngs = kitty_pngs(&output);
-    assert!(
-        pngs.len() >= 3,
-        "expected three formula uploads, got {}",
-        pngs.len()
-    );
+    // Keep the raw stream and screen, and log each upload's pixel size, even
+    // when the count assertion fails.
     renderer_evidence("math-kitty.raw", &output);
     renderer_evidence(
         "math-kitty.screen.txt",
@@ -8928,6 +8925,21 @@ async fn terminal_math_renders_kitty_images_and_falls_back_to_source() {
             .screen()
             .contents()
             .as_bytes(),
+    );
+    let sizes = pngs
+        .iter()
+        .filter_map(|png| png.get(16..24))
+        .map(|ihdr| {
+            let width = u32::from_be_bytes([ihdr[0], ihdr[1], ihdr[2], ihdr[3]]);
+            let height = u32::from_be_bytes([ihdr[4], ihdr[5], ihdr[6], ihdr[7]]);
+            format!("{width}x{height}")
+        })
+        .collect::<Vec<_>>();
+    eprintln!("MATH kitty uploads in order: {sizes:?}");
+    assert!(
+        pngs.len() >= 3,
+        "expected three formula uploads, got {}",
+        pngs.len()
     );
     for (index, png) in pngs.iter().enumerate() {
         renderer_evidence(&format!("math-kitty-formula-{index}.png"), png);
