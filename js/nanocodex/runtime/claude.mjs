@@ -10,7 +10,7 @@ import { createClaudeHost } from './claude-host.mjs';
 const OPTION_KEYS = new Set([
   'toolMode', 'codeEvaluator', 'auth', 'fetch', 'endpoint', 'compatibilityProfile', 'subscriptionIdentity', 'model', 'instructions', 'sessionId', 'tools',
   'harness', 'harnesses', 'subagents', 'serverTools', 'durability', 'durabilityId', 'module', 'maxTokens', 'workspace',
-  'cache', 'adaptiveThinking', 'keepThinking', 'thinking', 'parallelTools', 'clientToolSearch',
+  'cache', 'adaptiveThinking', 'keepThinking', 'fastMode', 'thinking', 'parallelTools', 'clientToolSearch',
   'contextWindowTokens', 'autoCompactWindowTokens', 'autoCompact', 'systemBlocks', 'terminalReceiptRetention',
   'resume',
 ]);
@@ -36,7 +36,7 @@ export function toClaudeConfig(options = {}) {
   for (const key of ['sessionId', 'durabilityId']) if (options[key] !== undefined && (typeof options[key] !== 'string' || !options[key])) throw new TypeError(`Claude ${key} must be non-empty`);
   for (const key of ['maxTokens', 'contextWindowTokens', 'autoCompactWindowTokens']) if (options[key] !== undefined && (!Number.isSafeInteger(options[key]) || options[key] < 1)) throw new TypeError(`Claude ${key} must be a positive safe integer`);
   if (options.maxTokens > 4294967295) throw new TypeError('Claude maxTokens exceeds uint32');
-  for (const key of ['adaptiveThinking', 'keepThinking', 'parallelTools', 'clientToolSearch', 'autoCompact']) if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Claude ${key} must be boolean`);
+  for (const key of ['adaptiveThinking', 'keepThinking', 'fastMode', 'parallelTools', 'clientToolSearch', 'autoCompact']) if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Claude ${key} must be boolean`);
   if (options.autoCompact === false) throw new TypeError('disabling Claude autoCompact is unsupported');
   for (const key of ['instructions', 'workspace']) if (options[key] !== undefined && typeof options[key] !== 'string') throw new TypeError(`Claude ${key} must be a string`);
   if (options.thinking !== undefined && !['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(options.thinking)) throw new TypeError('unsupported Claude thinking');

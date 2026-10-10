@@ -15122,6 +15122,9 @@ function validateManagedDurabilityArchive(value: unknown): ManagedDurabilityArch
     || typeof durability.payload !== "string"
     || !Array.isArray(durability.records) || durability.records.length !== 0
     || !validPortableSubagentsArchive(durability.stateId, durability.subagents)
+    // Journal records travel through the bounded R2 archive, like the root's.
+    || (durability.subagents !== undefined
+      && (durability.subagents as { records: unknown[] }).records.length !== 0)
     || !validManagedPortableArchiveIdentity(archive.managed_durability_records)
     || !identity || Array.isArray(identity)
     || Object.keys(identity).some((key) => ![

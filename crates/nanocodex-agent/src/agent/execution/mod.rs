@@ -162,6 +162,25 @@ pub trait ExecutionPolicy: Send + Sync {
         })
     }
 
+    /// Persists the first checkpoint of a just-created fork, side
+    /// conversation, subagent or restored subagent, so the child is listed
+    /// and resumable before its first turn. A state that already holds a
+    /// checkpoint keeps it: restoring a child never replaces its history.
+    /// The default persists nothing.
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        _snapshot: SessionSnapshot,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Retracts state written only by [`Self::commit_initial_checkpoint`]
+    /// when the child's creation is abandoned, such as a failed atomic batch.
+    /// Never removes history the state held before. The default does nothing.
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Admits a caller-identified operation.
     fn admit<'a>(
         &'a self,
@@ -395,6 +414,25 @@ pub trait ExecutionPolicy: Send + Sync {
                 capability: "commit_checkpoint",
             })
         })
+    }
+
+    /// Persists the first checkpoint of a just-created fork, side
+    /// conversation, subagent or restored subagent, so the child is listed
+    /// and resumable before its first turn. A state that already holds a
+    /// checkpoint keeps it: restoring a child never replaces its history.
+    /// The default persists nothing.
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        _snapshot: SessionSnapshot,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Retracts state written only by [`Self::commit_initial_checkpoint`]
+    /// when the child's creation is abandoned, such as a failed atomic batch.
+    /// Never removes history the state held before. The default does nothing.
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Admits a caller-identified operation.
@@ -942,6 +980,28 @@ impl Execution {
     pub(crate) async fn commit_checkpoint(&self, checkpoint: &CommittedSession) -> Result<()> {
         if let Some(policy) = &self.policy {
             policy.commit_checkpoint(checkpoint.snapshot()).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether a durable policy owns this session's state.
+    pub(crate) fn has_policy(&self) -> bool {
+        self.policy.is_some()
+    }
+
+    pub(crate) async fn commit_initial_checkpoint(
+        &self,
+        checkpoint: &CommittedSession,
+    ) -> Result<()> {
+        if let Some(policy) = &self.policy {
+            policy.commit_initial_checkpoint(checkpoint.snapshot()).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn discard_initial_checkpoint(&self) -> Result<()> {
+        if let Some(policy) = &self.policy {
+            policy.discard_initial_checkpoint().await?;
         }
         Ok(())
     }

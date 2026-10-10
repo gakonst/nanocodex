@@ -571,8 +571,9 @@ pub struct Capabilities {
     pub thinking: Mutability,
     /// When the processing tier may change between Standard and Priority.
     pub service_tier: Mutability,
-    /// Whether [`crate::ServiceTier::Ultrafast`] is accepted, subject to
-    /// [`Self::service_tier`].
+    /// Whether [`crate::ServiceTier::Ultrafast`] is accepted for the session's
+    /// model, subject to [`Self::service_tier`]. Per-model settings come from
+    /// [`crate::HarnessModel::capabilities`].
     pub ultrafast_service_tier: bool,
 }
 

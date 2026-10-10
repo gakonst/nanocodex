@@ -28,10 +28,12 @@ use nanocodex::{
     HarnessFamily, HarnessModel,
     agent::{
         rollout::RolloutConfig,
-        session::{SessionCheckpoint, TranscriptItem},
+        session::{Origin, SessionCheckpoint, TranscriptItem},
     },
 };
-use nanocodex_durability::{BranchPoint, DurableSession, SessionRecord, SessionStore, StoredTurn};
+use nanocodex_durability::{
+    BranchPoint, DurableSession, SessionRecord, SessionStore, StoredSession, StoredTurn,
+};
 
 /// Store written by Claude sessions before both families shared one store.
 fn legacy_store_path(home: &Path) -> PathBuf {
@@ -410,6 +412,121 @@ pub(crate) async fn turns(home: &Path, id: &str) -> Result<(PathBuf, Vec<StoredT
         "session {id} has no durable history under {}",
         home.display()
     ))
+}
+
+/// A user prompt of a durable conversation and the stored turn that recorded it.
+#[derive(Clone, Debug)]
+pub(crate) struct ConversationPrompt {
+    /// Prompt text as the transcript shows it.
+    pub(crate) text: String,
+    /// Durable session holding the turn. A branch, fork or side conversation
+    /// continues kept turns that only its source session stores.
+    pub(crate) session: String,
+    /// Store holding that session.
+    pub(crate) store: PathBuf,
+    /// Durable turn ID, accepted by [`BranchPoint::Before`].
+    pub(crate) turn: String,
+}
+
+/// Whether transcript text is the prompt a turn preview (at most 500
+/// characters of the prompt) summarizes.
+fn same_prompt(text: &str, preview: &str) -> bool {
+    let (text, preview) = (text.trim(), preview.trim());
+    !preview.is_empty()
+        && (text == preview || (preview.chars().count() >= 500 && text.starts_with(preview)))
+}
+
+/// User prompts of a durable session's conversation, oldest first, each with
+/// the stored turn an edit of it branches before. A derived session continues
+/// its source's kept turns, which only the source stores, so they resolve to
+/// the source; synthetic transcript notices (such as a rewind notice) are not
+/// prompts.
+///
+/// # Errors
+///
+/// Fails when the session has no durable state, or a store cannot be read.
+pub(crate) async fn conversation_prompts(home: &Path, id: &str) -> Result<Vec<ConversationPrompt>> {
+    // The session and the sources it continues, newest first.
+    let mut levels: Vec<(String, PathBuf, StoredSession)> = Vec::new();
+    let mut next = Some(id.to_owned());
+    while let Some(current) = next.take() {
+        if levels.len() >= 64 || levels.iter().any(|(session, ..)| *session == current) {
+            break;
+        }
+        let mut found = None;
+        for path in store_paths(home) {
+            let Some(store) = open_existing(&path)? else {
+                continue;
+            };
+            if store.summary(&current).await?.is_some() {
+                found = Some((path, store.load(&current).await?));
+                break;
+            }
+        }
+        let Some((path, stored)) = found else {
+            if levels.is_empty() {
+                return Err(eyre!(
+                    "session {id} has no durable history under {}",
+                    home.display()
+                ));
+            }
+            break;
+        };
+        let lineage = &stored.summary.record.lineage;
+        // A subagent starts clean; every other derived session continues its source.
+        if lineage.origin != Origin::Subagent {
+            next.clone_from(&lineage.parent_session_id);
+        }
+        levels.push((current, path, stored));
+    }
+    let mut prompts: Vec<ConversationPrompt> = Vec::new();
+    for (session, store, stored) in levels.into_iter().rev() {
+        let users: Vec<&str> = stored
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Own turns hold the newest prompts: match them from the end.
+        let mut end = users.len();
+        let mut own = Vec::with_capacity(stored.turns.len());
+        for turn in stored.turns.iter().rev() {
+            let preview = turn.preview.as_deref().unwrap_or_default();
+            let position = users[..end]
+                .iter()
+                .rposition(|text| same_prompt(text, preview));
+            if let Some(position) = position {
+                end = position;
+            }
+            own.push(ConversationPrompt {
+                text: position.map_or_else(|| preview.to_owned(), |p| users[p].to_owned()),
+                session: session.clone(),
+                store: store.clone(),
+                turn: turn.id.clone(),
+            });
+        }
+        own.reverse();
+        // The source's kept prompts appear, in order, before the own turns.
+        let mut cursor = 0;
+        let mut kept = 0;
+        for prompt in &prompts {
+            match users[cursor..end]
+                .iter()
+                .position(|text| same_prompt(text, &prompt.text))
+            {
+                Some(position) => {
+                    cursor += position + 1;
+                    kept += 1;
+                }
+                None => break,
+            }
+        }
+        prompts.truncate(kept);
+        prompts.extend(own);
+    }
+    Ok(prompts)
 }
 
 /// Publishes a new session from a stored boundary of either family.

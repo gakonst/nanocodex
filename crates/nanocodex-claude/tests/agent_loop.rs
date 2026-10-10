@@ -1899,21 +1899,31 @@ async fn fast_mode_applies_per_accepted_turn_on_supported_models() {
         .await
         .unwrap();
 
-    let sonnet = agent("claude-sonnet-4-6");
-    sonnet
-        .prompt("unsupported")
-        .await
-        .unwrap()
-        .result()
-        .await
-        .unwrap();
+    // Explicit fast mode on a model that does not offer it fails before any
+    // request, naming the remedy, instead of silently running at standard speed.
+    let error = Nanocodex::builder(Claude::new(
+        ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        ),
+        "claude-sonnet-4-6",
+    ))
+    .fast_mode(true)
+    .build()
+    .err()
+    .expect("unsupported fast mode must be rejected")
+    .to_string();
+    assert!(
+        error.contains("claude-sonnet-4-6 does not support fast mode"),
+        "{error}"
+    );
+    let error = opus.set_thinking(nanocodex_agent::Thinking::None).await.unwrap_err().to_string();
+    assert!(error.contains("supported thinking: low, medium, high, xhigh, max"), "{error}");
 
     let fast = (Some("fast".to_owned()), true);
     let standard = (None, false);
-    assert_eq!(
-        *received.lock().unwrap(),
-        [fast.clone(), fast, standard.clone(), standard]
-    );
+    assert_eq!(*received.lock().unwrap(), [fast.clone(), fast, standard]);
     server.abort();
 }
 

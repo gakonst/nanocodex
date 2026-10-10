@@ -55,6 +55,9 @@ export class ManagedPortabilityArchive {
       CREATE TABLE IF NOT EXISTS managed_durability_record_export (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_key TEXT NOT NULL, complete INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS managed_durability_subagent_record_export (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_key TEXT NOT NULL, complete INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS managed_portability_manifests (
         kind TEXT PRIMARY KEY CHECK (kind IN ('events', 'realtime', 'durability')),
         last_key TEXT,
@@ -76,21 +79,36 @@ export class ManagedPortabilityArchive {
     `);
   }
 
-  /** Seals at most sixteen immutable records; a restart repeats the same object. */
+  /**
+   * Seals at most sixteen immutable records; a restart repeats the same object.
+   * The root's records seal first, then those of its durable task-tree journal
+   * (\`<stateId>:subagents\`), so content-addressed child checkpoints travel
+   * through the same bounded archive as the root's execution records.
+   */
   async sealDurabilityRecords(stateId: string): Promise<boolean> {
+    if (!await this.#sealRecords("managed_durability_record_export", stateId, "records", "durable_record_page")) return false;
+    return this.#sealRecords(
+      "managed_durability_subagent_record_export",
+      subagentsStateId(stateId),
+      "subagent-records",
+      "durable_subagent_record_page",
+    );
+  }
+
+  async #sealRecords(table: string, stateId: string, directory: string, objectKind: string): Promise<boolean> {
     const progress = this.#storage.sql.exec<{ last_key: string; complete: number }>(
-      "SELECT last_key, complete FROM managed_durability_record_export WHERE singleton = 1",
+      `SELECT last_key, complete FROM ${table} WHERE singleton = 1`,
     ).toArray()[0];
     if (progress?.complete === 1) return true;
     const records = await createCloudflareDurabilityStore(this.#storage).scanRecords(stateId, progress?.last_key ?? "", 16);
     if (records.length) {
       const body = encoder.encode(JSON.stringify(records));
       const digest = await sha256Hex(body);
-      const key = `${prefix(this.#storageId, "durability")}records/${digest}.json`;
+      const key = `${prefix(this.#storageId, "durability")}${directory}/${digest}.json`;
       const stored = await this.#bucket.put(key, body, {
         onlyIf: { etagDoesNotMatch: "*" }, sha256: digest,
         httpMetadata: { contentType: "application/json" },
-        customMetadata: { kind: "durable_record_page", sha256: digest, version: String(VERSION) },
+        customMetadata: { kind: objectKind, sha256: digest, version: String(VERSION) },
       });
       if (!stored) {
         const existing = await this.#bucket.head(key);
@@ -99,7 +117,7 @@ export class ManagedPortabilityArchive {
     }
     const complete = records.length < 16;
     this.#storage.sql.exec(
-      "INSERT INTO managed_durability_record_export (singleton, last_key, complete) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET last_key = excluded.last_key, complete = excluded.complete",
+      `INSERT INTO ${table} (singleton, last_key, complete) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET last_key = excluded.last_key, complete = excluded.complete`,
       records.at(-1)?.key ?? progress?.last_key ?? "", complete ? 1 : 0,
     );
     return complete;
@@ -210,9 +228,10 @@ export class ManagedPortabilityArchive {
       assertOwnership();
       if (kind === "durability") {
         const records = JSON.parse(new TextDecoder().decode(body));
-        const stateId = this.#storage.sql.exec<{ state_id: string }>(
+        const rootStateId = this.#storage.sql.exec<{ state_id: string }>(
           "SELECT state_id FROM managed_durability_record_import WHERE singleton = 1",
         ).one().state_id;
+        const stateId = item.kind === "durable_subagent_record_page" ? subagentsStateId(rootStateId) : rootStateId;
         await createCloudflareDurabilityStore(this.#storage).importRecords(stateId, records);
         assertOwnership();
       }
@@ -272,6 +291,7 @@ export class ManagedPortabilityArchive {
     this.#storage.sql.exec(`
       DELETE FROM managed_durability_record_import;
       DELETE FROM managed_durability_record_export;
+      DELETE FROM managed_durability_subagent_record_export;
       DELETE FROM managed_portability_manifests;
       DELETE FROM managed_portability_adoptions;
     `);
@@ -323,12 +343,20 @@ export class ManagedPortabilityArchive {
   }
 }
 
+/** A durable root's task-tree journal is its companion state. */
+function subagentsStateId(stateId: string): string {
+  return `${stateId}:subagents`;
+}
+
 function prefix(storageId: string, kind: ManagedPortableArchiveKind): string {
   return `agents/${storageId}/managed-${kind}/`;
 }
 
 function validObject(kind: ManagedPortableArchiveKind, suffix: string, objectKind: string): boolean {
-  if (kind === "durability") return /^records\/[0-9a-f]{64}\.json$/.test(suffix) && objectKind === "durable_record_page";
+  if (kind === "durability") {
+    return (/^records\/[0-9a-f]{64}\.json$/.test(suffix) && objectKind === "durable_record_page")
+      || (/^subagent-records\/[0-9a-f]{64}\.json$/.test(suffix) && objectKind === "durable_subagent_record_page");
+  }
   if (kind === "realtime") {
     return /^by-id\/[0-9a-f]{64}\.json$/.test(suffix)
       && objectKind === "managed_realtime_receipt";

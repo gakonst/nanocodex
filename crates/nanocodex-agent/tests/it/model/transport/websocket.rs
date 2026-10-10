@@ -533,7 +533,14 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
         .map_err(|_| eyre!("first request was not observed"))?;
     let queued = agent.prompt("queued prompt").await?;
     agent.set_thinking(Thinking::High).await?;
-    agent.set_service_tier(ServiceTier::Ultrafast).await?;
+    // Luna does not offer Ultrafast; the explicit request fails without
+    // changing the tier, and the offered Fast tier applies.
+    let rejected = agent.set_service_tier(ServiceTier::Ultrafast).await.unwrap_err();
+    assert!(
+        rejected.to_string().contains("supported tiers: standard, fast"),
+        "{rejected}"
+    );
+    agent.set_service_tier(ServiceTier::Fast).await?;
     release_first
         .send(())
         .map_err(|()| eyre!("first request release receiver dropped"))?;
@@ -568,7 +575,7 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     assert_eq!(checkpoint.model(), HarnessModel::Codex(Model::Luna));
     assert_eq!(checkpoint.thinking(), Thinking::High);
     let mut encoded = serde_json::to_value(&checkpoint)?;
-    assert_eq!(encoded["payload"]["service_tier"], "ultrafast");
+    assert_eq!(encoded["payload"]["service_tier"], "fast");
     let fields = encoded["payload"]
         .as_object_mut()
         .ok_or_else(|| eyre!("checkpoint payload was not an object"))?;

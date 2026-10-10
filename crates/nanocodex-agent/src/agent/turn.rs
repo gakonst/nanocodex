@@ -441,12 +441,10 @@ impl SpawnOptions {
                 "model does not belong to selected harness".into(),
             ));
         }
-        if let (Some(model), Some(thinking)) = (self.harness_model, self.thinking)
-            && !model.supports_thinking(thinking)
-        {
-            return Err(NanocodexError::InvalidRequest(
-                "model does not support selected thinking".into(),
-            ));
+        if let (Some(model), Some(thinking)) = (self.harness_model, self.thinking) {
+            model
+                .capabilities(crate::ModelTransport::Native)
+                .check_thinking(thinking)?;
         }
         Ok(())
     }
