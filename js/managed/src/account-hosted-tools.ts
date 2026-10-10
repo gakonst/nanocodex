@@ -1402,13 +1402,28 @@ function validInvocationResult(result: unknown): result is InvocationResult {
 function handErrorClass(error: unknown, phase: "transport" | "decode"): string {
   const name = error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "Error";
   const text = error instanceof Error ? error.message : String(error);
+  const flags = durableObjectErrorFlags(error);
+  // Runtime-provided properties first; message text only as a fallback.
   const category = name === "AbortError" ? "aborted"
     : phase === "decode" || name === "SyntaxError" ? "decode_failed"
+    : flags.overloaded ? "overloaded"
+    : flags.durable_object_reset ? "object_reset"
     : /timed? ?out|deadline/i.test(text) ? "timeout"
-    : /durable object|reset because|code was updated|object.*(reset|evict)/i.test(text) ? "object_reset"
     : /overload|too many|exceeded/i.test(text) ? "overloaded"
+    : /durable object|reset because|code was updated|object.*(reset|evict)/i.test(text) ? "object_reset"
     : /network|connection|disconnect|socket|econn|stream|lost/i.test(text) ? "network_lost" : "other";
   return `${name}/${category}`;
+}
+
+/**
+ * Safe boolean properties Cloudflare attaches to Durable Object stub errors.
+ * A thrown stub is broken for later calls; idempotent reads use a fresh stub,
+ * and an overloaded object is never retried.
+ */
+function durableObjectErrorFlags(error: unknown): { retryable: boolean; overloaded: boolean; durable_object_reset: boolean; remote: boolean } {
+  const value = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  return { retryable: value.retryable === true, overloaded: value.overloaded === true,
+    durable_object_reset: value.durableObjectReset === true, remote: value.remote === true };
 }
 
 /** Fixed class plus bounded sanitized cause, e.g. "TypeError/network_lost: Network connection lost". */
@@ -1503,8 +1518,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     const key = JSON.stringify([sessionId, turnId]);
     const targets = this.#turnTargets.get(key);
     this.#turnTargets.delete(key);
-    await Promise.all([...targets?.values() ?? []].map(async target => {
-      const response = await target.fetch("https://account-tools.internal/turn-ended", {
+    // A stored stub may be broken by an object reset since the call; use a fresh one.
+    await Promise.all([...targets?.keys() ?? []].map(async () => {
+      const response = await this.#namespace.getByName(this.#ownerId).fetch("https://account-tools.internal/turn-ended", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ owner_id: this.#ownerId, frame: {
           type: "turn_ended", session_id: sessionId, turn_id: turnId, hook_event_name: hookEventName,
@@ -1659,15 +1675,35 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       && !value.inventory_unknown_ids?.includes(machineId)
       && !value.machines.some(entry => entry.machine.id !== machineId)
       && (computer || (value.machines.length === 1 && value.machines[0]?.online === true));
-    let snapshot = await lookup();
+    let snapshot: unknown;
+    let interrupted: { error_class: string; error_flags: ReturnType<typeof durableObjectErrorFlags> } | undefined;
+    const recordLookup = (outcome: string) => {
+      if (!interrupted) return;
+      // The sanitized initial cause is retained even when the retry succeeds.
+      try { console.info({ type: "hand.selected_lookup.reconcile", hand_id: machineId, thread_id: this.#threadId,
+        session_id: context.sessionId, ...interrupted, outcome }); }
+      catch { /* Diagnostics never change routing. */ }
+    };
+    try { snapshot = await lookup(); }
+    catch (error) {
+      // Read-only and idempotent: an interrupted lookup (object reset or deploy)
+      // gets the same one bounded retry, through a fresh stub. Never overloaded.
+      const cause = (error as { cause?: unknown }).cause;
+      interrupted = { error_class: handErrorDetail(cause, "transport"), error_flags: durableObjectErrorFlags(cause) };
+      if (signal?.aborted || interrupted.error_flags.overloaded) { recordLookup("not_retried"); throw error; }
+      snapshot = undefined;
+    }
     if (generation !== this.#generation || !this.#allowed(context)) throw new Error("Hand authorization changed during lookup");
     if (!routable(snapshot)) {
       // A Hand socket replacement briefly unpublishes the route. Retry one
       // fresh lookup after a short bounded wait before failing the call.
-      await abortableDelay(SELECTED_ROUTE_RETRY_MS, signal);
-      snapshot = await lookup();
+      try {
+        await abortableDelay(SELECTED_ROUTE_RETRY_MS, signal);
+        snapshot = await lookup();
+      } catch (error) { recordLookup("retry_failed"); throw error; }
       if (generation !== this.#generation || !this.#allowed(context)) throw new Error("Hand authorization changed during lookup");
-      if (!routable(snapshot)) throw new Error("Selected Hand route unavailable");
+      if (!routable(snapshot)) { recordLookup("unroutable"); throw new Error("Selected Hand route unavailable"); }
+      recordLookup("recovered");
     }
     // Replace only this machine's screen routes; unrelated catalogs and cells survive.
     // A lookup that omitted screens keeps this machine's retained screen routes.
@@ -1963,7 +1999,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     } catch (error) {
       timing.fetch_ms = performance.now() - startedAt;
       // Never re-POST /invoke after possible dispatch: reconcile its receipt.
-      return this.#afterLostResponse(target, invocation, routePolicy, context, "transport", error, failed);
+      return this.#afterLostResponse(invocation, routePolicy, context, "transport", error, failed);
     }
     const responseAt = performance.now();
     timing.fetch_ms = responseAt - startedAt;
@@ -1986,7 +2022,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         try { reconcile = (await response.json<{ reconcile?: unknown }>()).reconcile === "receipt"; }
         catch { /* An unrecognized gateway failure stays an unknown outcome below. */ }
         if (reconcile) {
-          return this.#afterLostResponse(target, invocation, routePolicy, context, "transport",
+          return this.#afterLostResponse(invocation, routePolicy, context, "transport",
             new Error("Shared Hand owner connection lost"), failed);
         }
       } else {
@@ -2056,7 +2092,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       if (!validInvocationResult(result)) throw new Error("invalid account hand result");
     } catch (error) {
       observeHandCall("account.decode", name, responseAt, "ambiguous", context.callId, correlation);
-      return this.#afterLostResponse(target, invocation, routePolicy, context, "decode", error, failed);
+      return this.#afterLostResponse(invocation, routePolicy, context, "decode", error, failed);
     } finally {
       timing.decode_ms = performance.now() - responseAt;
     }
@@ -2111,7 +2147,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
    * call identity's receipt is read. /invoke is never posted again here.
    */
   async #afterLostResponse(
-    target: DurableObjectStub<AccountHostedTools>,
     invocation: InvocationRequest,
     routePolicy: "refresh" | "fixed" | "screen",
     context: InvocationContext,
@@ -2124,20 +2159,24 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     const telemetryError = sanitizedHandError(error);
     const detail = handErrorDetail(error, phase);
     const lost = phase === "decode" ? "Hand response could not be decoded" : "Hand connection failed after possible dispatch";
+    const flags = durableObjectErrorFlags(error);
     const record = (outcome: string, fields: Readonly<Record<string, unknown>> = {}) => {
       // The sanitized initial cause is retained even when recovery succeeds.
       try { console.info({ type: "hand.receipt.reconcile", tool: invocation.name, session_id: invocation.session_id,
         thread_id: invocation.thread_id, turn_id: invocation.turn_id, source_call_id: invocation.call_id,
-        hand_id: invocation.machine_id, phase, error_class: detail, error: telemetryError, outcome, ...fields }); }
+        hand_id: invocation.machine_id, phase, error_class: detail, error: telemetryError, error_flags: flags, outcome, ...fields }); }
       catch { /* Diagnostics never change the reconciled outcome. */ }
     };
-    if (context.signal?.aborted) { record("cancel_requested"); return this.#cancelAfterLoss(target, invocation, failed, detail); }
+    if (context.signal?.aborted) { record("cancel_requested"); return this.#cancelAfterLoss(invocation, failed, detail); }
     // Every route (owned, shared and screen) reconciles through the original
     // identity's receipt on its owner ledger; nothing is ever re-posted.
     let recovery: HandReceiptFailure = "receipt_unauthorized";
     let recoveryError: string | undefined;
-    if (this.#allowed(context)) {
-      const reconciled = await this.#reconcileReceipt(target, invocation, context, failed, detail);
+    if (flags.overloaded) {
+      // Cloudflare: an overloaded object must not receive retries, including receipt reads.
+      recovery = "receipt_unreachable"; recoveryError = detail; record(recovery, { polls: 0 });
+    } else if (this.#allowed(context)) {
+      const reconciled = await this.#reconcileReceipt(invocation, context, failed, detail);
       if ("result" in reconciled) { record("recovered", { polls: reconciled.polls }); return reconciled.result; }
       record(reconciled.reason, { polls: reconciled.polls, ...(reconciled.error === undefined ? {} : { recovery_error: reconciled.error }) });
       recovery = reconciled.reason;
@@ -2159,8 +2198,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       { error: detail, recovery, ...(recoveryError === undefined ? {} : { recovery_error: recoveryError }) });
   }
 
+  /**
+   * A fresh stub to the same owner object for each receipt read or cancel
+   * delivery. A stub whose call threw (object reset, deploy, disconnect) stays
+   * broken; the object name, ledger and pinned call runtime never change.
+   */
+  #ownerStub(): DurableObjectStub<AccountHostedTools> { return this.#namespace.getByName(this.#ownerId); }
+
   async #cancelAfterLoss(
-    target: DurableObjectStub<AccountHostedTools>,
     invocation: InvocationRequest,
     failed: (message: string, status: "ambiguous" | "unavailable", preAdmission?: boolean, reason?: HandFailureReason,
       extra?: Readonly<Record<string, unknown>>) => unknown,
@@ -2171,7 +2216,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     for (let attempt = 0; attempt < HAND_CANCEL_DELIVERY_ATTEMPTS && cancel === "unconfirmed"; attempt++) {
       if (attempt > 0) await abortableDelay(HAND_RECEIPT_RETRY_MS * attempt);
       try {
-        cancel = await fetchResponseWithDeadline(target, "https://account-tools.internal/cancel-invocation", {
+        cancel = await fetchResponseWithDeadline(this.#ownerStub(), "https://account-tools.internal/cancel-invocation", {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ owner_id: invocation.owner_id, session_id: invocation.session_id, call_id: invocation.call_id,
             machine_id: invocation.machine_id, name: invocation.name, route_token: invocation.route_token }),
@@ -2180,8 +2225,16 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           const value = await response.json<{ cancel?: unknown }>().catch(() => undefined);
           return typeof value?.cancel === "string" && /^[a-z_]{1,32}$/.test(value.cancel) ? value.cancel : "unconfirmed";
         });
-      } catch { /* Retry; delivery remains unconfirmed. */ }
+      } catch (error) {
+        // Retry through a fresh stub; never retry an overloaded object.
+        if (durableObjectErrorFlags(error).overloaded) break;
+      }
     }
+    // Delivery state only: no inputs, outputs or credentials.
+    try { console.info({ type: "hand.receipt.cancel", tool: invocation.name, session_id: invocation.session_id,
+      thread_id: invocation.thread_id, turn_id: invocation.turn_id, source_call_id: invocation.call_id,
+      hand_id: invocation.machine_id, error_class: detail, cancel }); }
+    catch { /* Diagnostics never change the cancellation outcome. */ }
     if (cancel === "fenced" || cancel === "not_dispatched") {
       // Ledger-backed: the call never reached the Hand and now cannot start.
       return failed(`The call was cancelled before it started on the Hand (${detail}); it was fenced so it can never run, and nothing was resent.`,
@@ -2198,7 +2251,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
 
   /** Bounded receipt-only polling of the original call identity on its original shard and runtime. */
   async #reconcileReceipt(
-    target: DurableObjectStub<AccountHostedTools>,
     invocation: InvocationRequest,
     context: InvocationContext,
     failed: (message: string, status: "ambiguous" | "unavailable", preAdmission?: boolean, reason?: HandFailureReason,
@@ -2213,7 +2265,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     const admissionEnd = startedAt + HAND_RECONNECT_ADMISSION_WAIT_MS + HAND_RECEIPT_DEADLINE_GRACE_MS;
     const correlation = { session_id: invocation.session_id, thread_id: invocation.thread_id, turn_id: invocation.turn_id };
     for (let poll = 0; poll < HAND_RECEIPT_MAX_POLLS; poll++) {
-      if (context.signal?.aborted) return { result: await this.#cancelAfterLoss(target, invocation, failed, detail), polls: poll };
+      if (context.signal?.aborted) return { result: await this.#cancelAfterLoss(invocation, failed, detail), polls: poll };
       if (!this.#allowed(context)) return { reason: "receipt_unauthorized", polls: poll };
       if (Date.now() >= budgetEnd) return { reason: "receipt_deadline", polls: poll };
       const polledAt = Date.now();
@@ -2223,7 +2275,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // Each read is bounded by the remaining absolute budget as well.
         reply = await withHardDeadline("Hand receipt reconciliation",
           Math.max(1, Math.min(HAND_RECEIPT_FETCH_TIMEOUT_MS, budgetEnd - Date.now())), async signal => {
-          const response = await target.fetch("https://account-tools.internal/invoke-receipt", {
+          const response = await this.#ownerStub().fetch("https://account-tools.internal/invoke-receipt", {
             method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ ...invocation, wait_ms: Math.max(0, Math.min(HAND_RECEIPT_WAIT_MS, budgetEnd - Date.now())) }),
             // Aborting a receipt read never cancels the call itself.
@@ -2236,6 +2288,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       } catch (error) {
         if (context.signal?.aborted) continue;
         const sanitized = handErrorDetail(error, "transport");
+        if (durableObjectErrorFlags(error).overloaded) return { reason: "receipt_unreachable", error: sanitized, polls: poll + 1 };
         if (++transportFailures >= HAND_RECEIPT_MAX_TRANSPORT_FAILURES) return { reason: "receipt_unreachable", error: sanitized, polls: poll + 1 };
         try { await abortableDelay(HAND_RECEIPT_RETRY_MS * 2 ** (transportFailures - 1), context.signal); } catch { /* Cancellation is handled above. */ }
         continue;
@@ -2256,7 +2309,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       }
       if (reply.status === 200 && validInvocationResult(value)) {
         // Cancellation and authority are rechecked after the await, before any output is returned.
-        if (context.signal?.aborted) return { result: await this.#cancelAfterLoss(target, invocation, failed, detail), polls: poll + 1 };
+        if (context.signal?.aborted) return { result: await this.#cancelAfterLoss(invocation, failed, detail), polls: poll + 1 };
         if (!this.#allowed(context)) return { reason: "receipt_unauthorized", polls: poll + 1 };
         observeHandCall("account.receipt", invocation.name, pollStarted, "ok", invocation.call_id, correlation);
         return { result: this.#brandedResult(value, invocation.name, invocation.machine_id), polls: poll + 1 };

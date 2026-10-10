@@ -19,6 +19,15 @@ const DIRECTIVE = /HAND_STEP (\{.*\})/;
 // hop so a shared call is never faulted twice:
 //   managed: managed session -> its account /invoke (the outer hop),
 //   shared:  recipient account -> owner account /shared-invoke (the inner hop).
+// A reset fault is a real workerd object reset (ctx.abort), the same failure a
+// deploy or eviction produces: every caller stub connected to the old instance
+// is broken and the Hand WebSocket is disconnected. It applies to the managed
+// /invoke hop (after the call is dispatched) or, armed once, to a selected-Hand
+// /snapshot lookup (before it answers).
+// SYNTHETIC overload fault: workerd cannot overload an object on demand, so the
+// managed /invoke hop throws an error carrying Cloudflare's overloaded=true
+// property after the call was dispatched. Receipt reads and cancellations that
+// reach this object are counted (fixture.account_request), never altered.
 // The owner's in-object forward of a shared call (session "shared:<hash>") is
 // never faulted. Markers in the call input select a fault; inputs without a
 // free-text field (an empty write_stdin poll) use a one-shot armed fault.
@@ -27,6 +36,16 @@ export class AccountHostedTools extends ShippedAccountHostedTools {
   async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/__fault') { this.#armed.push(await request.json()); return Response.json({ armed: this.#armed.length }); }
+    if (path === '/snapshot') {
+      const index = this.#armed.findIndex(arm => arm.hop === 'snapshot');
+      const body = index >= 0 ? await request.clone().json().catch(() => ({})) : undefined;
+      if (index >= 0 && typeof body?.machine_id === 'string') {
+        this.#armed.splice(index, 1);
+        console.info({ type: 'fixture.network_fault', fault: 'reset', hop: 'snapshot', name: 'snapshot' });
+        this.ctx.abort('synthetic account object reset');
+      }
+    }
+    if (path === '/invoke-receipt' || path === '/cancel-invocation') console.info({ type: 'fixture.account_request', path });
     if (path !== '/invoke' && path !== '/shared-invoke') return super.fetch(request);
     const body = await request.clone().text();
     let parsed; try { parsed = JSON.parse(body); } catch { return super.fetch(request); }
@@ -34,6 +53,8 @@ export class AccountHostedTools extends ShippedAccountHostedTools {
     const hop = path === '/shared-invoke' ? 'shared' : String(invocation?.session_id ?? '').startsWith('shared:') ? 'owner' : 'managed';
     let fault;
     if (hop === 'managed' && body.includes('__LOSE_ACCOUNT_RESPONSE__')) fault = 'lose_response';
+    else if (hop === 'managed' && body.includes('__RESET_ACCOUNT_OBJECT__')) fault = 'reset';
+    else if (hop === 'managed' && body.includes('__OVERLOAD_ACCOUNT_OBJECT__')) fault = 'synthetic_overload';
     else if (hop === 'managed' && body.includes('__TRUNCATE_ACCOUNT_RESPONSE__')) fault = 'truncate_response';
     else if (hop === 'shared' && body.includes('__LOSE_SHARED_HOP_RESPONSE__')) fault = 'lose_response';
     else {
@@ -44,6 +65,18 @@ export class AccountHostedTools extends ShippedAccountHostedTools {
     if (!fault) return super.fetch(request);
     const answered = super.fetch(request);
     console.info({ type: 'fixture.network_fault', fault, hop, name: invocation?.name });
+    if (fault === 'synthetic_overload') {
+      answered.then(response => response.body?.cancel(), () => {});
+      await new Promise(resolve => setTimeout(resolve, 700));
+      throw Object.assign(new Error('Durable Object is overloaded (synthetic fixture fault).'), { overloaded: true, retryable: false });
+    }
+    if (fault === 'reset') {
+      // Reset only after the call is durably dispatched and running on the Hand.
+      answered.catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 700));
+      this.ctx.abort('synthetic account object reset');
+      return await answered;
+    }
     if (fault === 'truncate_response') {
       const response = await answered;
       await response.body?.cancel();
