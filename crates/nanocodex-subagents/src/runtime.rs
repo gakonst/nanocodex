@@ -65,6 +65,8 @@ pub(super) struct ChildSession {
     pub(super) in_flight_calls: Vec<durable::InFlightCall>,
     /// Observed calls dropped by the retention bound this turn.
     pub(super) in_flight_omitted: u32,
+    /// Commit state of omitted live calls, so checkpoints also retire them.
+    pub(super) in_flight_progress: durable::OmittedProgress,
     /// Journal-restored children need a fresh host binding before execution.
     announce: bool,
 }
@@ -157,6 +159,13 @@ struct AgentScope {
     /// Shutdown saved the durable pre-teardown tree; later Closing/Closed
     /// transitions are live-only and must never reach the journal.
     journal_frozen: bool,
+}
+
+/// Evidence a checkpoint commits, bound to the turn it was taken from.
+struct CommittedCalls {
+    revision: u64,
+    call_ids: Vec<String>,
+    omitted: u32,
 }
 
 /// One root journal value and the checkpoint records (key, JSON) it newly references.
@@ -1512,11 +1521,17 @@ impl Registry {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&key);
                 let harness = registry.running_harness(&key.0, key.1).await;
+                // Also taken before the snapshot, which therefore commits them.
+                let commits = registry.committable_calls(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
-                    registry.record_checkpoint(&key.0, key.1, snapshot);
+                    if registry.record_checkpoint(&key.0, key.1, snapshot)
+                        && let Some(commits) = commits
+                    {
+                        registry.retire_committed(&key.0, key.1, commits).await;
+                    }
                     if progressed {
                         registry.reset_resume_attempts(&key.0, key.1).await;
                     }
@@ -1541,6 +1556,81 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// A provider call began from a committed step holding every result the
+    /// live runtime has settled so far; the next checkpoint captures them.
+    async fn commit_boundary(&self, root_session_id: &str, id: AgentId) {
+        let mut state = self.state.lock().await;
+        let Some(session) = state
+            .scopes
+            .get_mut(root_session_id)
+            .and_then(|scope| scope.sessions.get_mut(&id))
+        else {
+            return;
+        };
+        for call in &mut session.in_flight_calls {
+            if call.live && call.settled {
+                call.committable = true;
+            }
+        }
+        let progress = &mut session.in_flight_progress;
+        progress.committable = progress.committable.saturating_add(progress.settled);
+        progress.settled = 0;
+    }
+
+    /// Calls a checkpoint captured from now on commits, for its active turn.
+    async fn committable_calls(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> Option<CommittedCalls> {
+        let state = self.state.lock().await;
+        let session = state
+            .scopes
+            .get(root_session_id)
+            .and_then(|scope| scope.sessions.get(&id))?;
+        let revision = session.active_instruction_revision?;
+        let call_ids = session
+            .in_flight_calls
+            .iter()
+            .filter(|call| call.live && call.committable)
+            .map(|call| call.call_id.clone())
+            .collect::<Vec<_>>();
+        let omitted = session.in_flight_progress.committable;
+        (!call_ids.is_empty() || omitted > 0).then_some(CommittedCalls {
+            revision,
+            call_ids,
+            omitted,
+        })
+    }
+
+    /// Drops calls whose results a recorded checkpoint now holds. Ordered
+    /// after the checkpoint, so a journal never has the pruned evidence
+    /// without the checkpoint that replaces it.
+    async fn retire_committed(&self, root_session_id: &str, id: AgentId, commits: CommittedCalls) {
+        {
+            let mut state = self.state.lock().await;
+            let Some(session) = state
+                .scopes
+                .get_mut(root_session_id)
+                .and_then(|scope| scope.sessions.get_mut(&id))
+            else {
+                return;
+            };
+            // A newer turn has its own evidence.
+            if session.active_instruction_revision != Some(commits.revision) {
+                return;
+            }
+            session
+                .in_flight_calls
+                .retain(|call| !(call.live && commits.call_ids.contains(&call.call_id)));
+            let progress = &mut session.in_flight_progress;
+            let omitted = commits.omitted.min(progress.committable);
+            progress.committable -= omitted;
+            session.in_flight_omitted = session.in_flight_omitted.saturating_sub(omitted);
+        }
+        self.changed();
     }
 
     /// A resumed child journaled a checkpoint after finishing a tool call in
@@ -1574,6 +1664,35 @@ impl Registry {
             tool: String,
             #[serde(default)]
             arguments: Option<Value>,
+            #[serde(default)]
+            parent_call_id: Option<String>,
+            /// Codex Code Mode cell lifetime.
+            #[serde(default)]
+            cell: Option<Cell>,
+            /// Claude reports the cell under metadata._nanocodex_code.
+            #[serde(default)]
+            metadata: Option<Value>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Cell {
+            origin_call_id: String,
+            running: bool,
+        }
+        impl Call {
+            /// The Code Mode cell this result observed: its original exec
+            /// call and whether it is still running. Claude omits running for
+            /// a cell that may produce more updates.
+            fn cell(&self) -> Option<(&str, bool)> {
+                if let Some(cell) = &self.cell {
+                    return Some((cell.origin_call_id.as_str(), cell.running));
+                }
+                let code = self.metadata.as_ref()?.get("_nanocodex_code")?;
+                let origin = code.get("origin_call_id")?.as_str()?;
+                Some((
+                    origin,
+                    code.get("running").and_then(Value::as_bool) != Some(false),
+                ))
+            }
         }
         let Some(call) = payload
             .as_ref()
@@ -1598,21 +1717,62 @@ impl Registry {
                             &call.call_id,
                             &call.tool,
                             call.arguments.as_ref(),
+                            parent_call(&call.call_id, call.parent_call_id.as_deref()),
                         ),
                     );
-                    session.in_flight_omitted = session.in_flight_omitted.saturating_add(evicted);
+                    for call in &evicted {
+                        session.in_flight_progress.evicted(call);
+                    }
+                    session.in_flight_omitted = session
+                        .in_flight_omitted
+                        .saturating_add(u32::try_from(evicted.len()).unwrap_or(u32::MAX));
                 }
                 // Kept, not removed: a result reaches the restored history only
-                // once a later checkpoint commits it.
+                // once a later checkpoint commits it (see commit_boundary).
                 AgentEventKind::ToolResult => {
-                    let Some(existing) = session
+                    let cell = call.cell();
+                    let top_level =
+                        parent_call(&call.call_id, call.parent_call_id.as_deref()).is_none();
+                    if let Some(existing) = session
                         .in_flight_calls
                         .iter_mut()
                         .find(|existing| existing.call_id == call.call_id)
-                    else {
-                        return;
-                    };
-                    existing.result_recorded = true;
+                    {
+                        existing.result_recorded = true;
+                        if existing.live && existing.parent_call_id.is_none() {
+                            // A yielded exec keeps running: its output is in
+                            // the conversation, but the cell is not finished.
+                            if matches!(cell, Some((origin, true)) if origin == call.call_id) {
+                                existing.yielded = true;
+                            } else {
+                                existing.settled = true;
+                            }
+                        }
+                    }
+                    // Only a terminal cell result (from its exec or a later
+                    // wait) reports the cell's nested work as finished. Nested
+                    // results never enter the conversation themselves, and a
+                    // yielded cell is lost with its runtime.
+                    if top_level && let Some((origin, false)) = cell {
+                        for listed in &mut session.in_flight_calls {
+                            if !listed.live {
+                                continue;
+                            }
+                            if listed.parent_call_id.as_deref() == Some(origin)
+                                && listed.result_recorded
+                            {
+                                listed.settled = true;
+                            } else if listed.call_id == origin && listed.yielded {
+                                // Settled by this terminal result once it commits.
+                                listed.yielded = false;
+                                listed.settled = true;
+                            }
+                        }
+                        if let Some(count) = session.in_flight_progress.nested.remove(origin) {
+                            session.in_flight_progress.settled =
+                                session.in_flight_progress.settled.saturating_add(count);
+                        }
+                    }
                 }
                 _ => return,
             }
@@ -2049,6 +2209,7 @@ impl Registry {
                 resume_attempts: 0,
                 in_flight_calls: Vec::new(),
                 in_flight_omitted: 0,
+                in_flight_progress: durable::OmittedProgress::default(),
                 announce: false,
             },
         )?;
@@ -2093,6 +2254,7 @@ impl Registry {
                 if !matches!(session.status, AgentStatus::Interrupted) {
                     session.in_flight_calls.clear();
                     session.in_flight_omitted = 0;
+                    session.in_flight_progress = durable::OmittedProgress::default();
                 }
                 session.next_instruction_revision = revision;
                 session.active_instruction_revision = Some(revision);
@@ -2170,6 +2332,7 @@ impl Registry {
             session.resume_attempts = 0;
             session.in_flight_calls.clear();
             session.in_flight_omitted = 0;
+            session.in_flight_progress = durable::OmittedProgress::default();
             let submitted_output = session.submitted_output.take();
             // Acceptance belongs to this turn even if cancellation/close wins settlement.
             // Keep its evidence, without claiming the interrupted execution completed.
@@ -3211,6 +3374,7 @@ impl ChildSession {
             resume_attempts: 0,
             in_flight_calls: Vec::new(),
             in_flight_omitted: 0,
+            in_flight_progress: durable::OmittedProgress::default(),
             announce: true,
         }
     }
@@ -3275,11 +3439,14 @@ pub(super) fn forward_events(
         }
         while let Some(event) = events.recv().await {
             // Each provider call starts from a committed step (prompt plus all
-            // finished tool results), and each tool batch begins at one.
-            let progress = matches!(
+            // finished tool results), and each tool batch begins at one. Claude
+            // reports only a provider call's completion, still before any tool
+            // of the round it returned runs.
+            let boundary = matches!(
                 event.kind,
-                AgentEventKind::ModelCallStarted | AgentEventKind::ToolCall
+                AgentEventKind::ModelCallStarted | AgentEventKind::ModelCallCompleted
             );
+            let progress = boundary || event.kind == AgentEventKind::ToolCall;
             let completed_tool = event.kind == AgentEventKind::ToolResult;
             let kind = event.kind;
             let payload = matches!(kind, AgentEventKind::ToolCall | AgentEventKind::ToolResult)
@@ -3296,6 +3463,9 @@ pub(super) fn forward_events(
                 registry
                     .track_in_flight(&root_session_id, id, &kind, &payload)
                     .await;
+                if boundary {
+                    registry.commit_boundary(&root_session_id, id).await;
+                }
                 if completed_tool {
                     registry
                         .completed_tools
@@ -3312,6 +3482,14 @@ pub(super) fn forward_events(
             registry.runtime_closed(&root_session_id, id).await;
         }
     })
+}
+
+/// Enclosing Code Mode cell of a nested call. Claude events name it; Codex
+/// nested call IDs embed it as "PARENT/code-N".
+fn parent_call<'a>(call_id: &'a str, parent_call_id: Option<&'a str>) -> Option<&'a str> {
+    parent_call_id
+        .filter(|parent| !parent.is_empty())
+        .or_else(|| call_id.split_once("/code-").map(|(parent, _)| parent))
 }
 
 fn send_update(
@@ -3913,6 +4091,7 @@ mod tests {
             resume_attempts: 0,
             in_flight_calls: Vec::new(),
             in_flight_omitted: 0,
+            in_flight_progress: crate::durable::OmittedProgress::default(),
             announce: false,
         }
     }

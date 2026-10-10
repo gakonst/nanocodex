@@ -1582,6 +1582,7 @@ impl ClaudeBuilder {
             parallel_safe_tools: self.parallel_safe_tools,
             conversation: Mutex::new(restored.conversation),
             round_boundary: std::sync::RwLock::new(round_boundary),
+            boundary_stale: AtomicBool::new(false),
             #[cfg(not(target_family = "wasm"))]
             rollout,
             policy: self.policy,
@@ -1837,9 +1838,12 @@ fn top_level_event_fields(
             if let Some(code) = object.get_mut("_nanocodex_code")
                 && let Some(calls) = code.get("calls").and_then(Value::as_array)
             {
+                // Keep the cell lifetime: observers settle nested calls only on
+                // a terminal cell result. Absent means still running.
                 *code = json!({
                     "origin_call_id": code.get("origin_call_id"),
                     "nested_call_count": calls.len(),
+                    "running": code.get("running"),
                 });
             }
             Value::Object(object)
@@ -2835,6 +2839,11 @@ struct State {
     // turn holds `conversation`, so they never wait for the active turn and
     // never observe partial output or unmatched tool calls.
     round_boundary: std::sync::RwLock<Arc<Snapshot>>,
+    /// Publishing the latest committed boundary failed, so the retained one
+    /// predates committed history. Checkpoints and forks that would read it
+    /// fail instead of exposing it (observers treat a provider-call
+    /// completion as covering prior rounds); a successful publish clears it.
+    boundary_stale: AtomicBool,
     // Codex-compatible mirror of every settled turn, when configured.
     #[cfg(not(target_family = "wasm"))]
     rollout: Option<rollout::Mirror>,
@@ -3445,10 +3454,12 @@ impl State {
             conversation_id: self.conversation_id.clone(),
         }
     }
-    /// Records the latest committed boundary for non-blocking checkpoints and forks.
+    /// Records the latest committed boundary for non-blocking checkpoints and
+    /// forks, clearing any stale mark left by a failed publish.
     fn publish_boundary(&self, snapshot: Snapshot) -> Arc<Snapshot> {
         let snapshot = Arc::new(snapshot);
         *self.round_boundary.write().expect("round boundary lock") = Arc::clone(&snapshot);
+        self.boundary_stale.store(false, Ordering::SeqCst);
         snapshot
     }
     /// Attaches the boundary a completed turn committed to its result.
@@ -3475,6 +3486,11 @@ impl State {
                 return Err(NanocodexError::AgentStopped);
             }
             return self.snapshot(&conversation).await;
+        }
+        if self.boundary_stale.load(Ordering::SeqCst) {
+            return Err(unsupported(
+                "Claude committed boundary is stale after a failed snapshot",
+            ));
         }
         let boundary: Arc<Snapshot> = Arc::clone(
             &*self
@@ -3673,6 +3689,19 @@ impl State {
             .or_else(|| self.system_blocks.as_ref().map(|blocks| json!(blocks)))
             .or_else(|| (!self.system.is_empty()).then(|| json!(self.system)))
     }
+    /// Publishes the committed boundary checkpoints read while a turn holds
+    /// the conversation. A failed snapshot marks the retained boundary stale.
+    /// Returns the published boundary, or `None` after marking it stale.
+    async fn publish_round_boundary(&self, conversation: &Conversation) -> Option<Arc<Snapshot>> {
+        match self.snapshot(conversation).await {
+            Ok(boundary) => Some(self.publish_boundary(boundary)),
+            Err(_) => {
+                self.boundary_stale.store(true, Ordering::SeqCst);
+                None
+            }
+        }
+    }
+
     /// Publishes one nested Code Mode receipt, adding its start first unless
     /// a live update already published it.
     fn publish_nested_receipt(
@@ -4252,9 +4281,7 @@ impl State {
         let notices_before = conversation.recovery_notices.len();
         // Publish the pre-turn boundary before mutating; a checkpoint taken
         // during this turn must never wait for the turn to release its lock.
-        if let Ok(boundary) = self.snapshot(&conversation).await {
-            self.publish_boundary(boundary);
-        }
+        self.publish_round_boundary(&conversation).await;
         let mut result = self
             .run_locked(&mut conversation, &request, speed, &cancel)
             .await;
@@ -4358,8 +4385,7 @@ impl State {
         }
         // The settled conversation is the next committed boundary. A completed
         // turn retains it so callers can checkpoint or fork at exactly this turn.
-        if let Ok(snapshot) = self.snapshot(&conversation).await {
-            let snapshot = self.publish_boundary(snapshot);
+        if let Some(snapshot) = self.publish_round_boundary(&conversation).await {
             result = result.map(|completed| self.retain_boundary(completed, snapshot));
         }
         let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -5690,9 +5716,9 @@ impl State {
                     );
                 // This round is now committed history: expose it to checkpoints
                 // taken while the next provider call holds the conversation.
-                if let Ok(boundary) = self.snapshot(conversation).await {
-                    self.publish_boundary(boundary);
-                }
+                // Invariant: published before the next provider call, so its
+                // ModelCallCompleted always follows a boundary holding this round.
+                self.publish_round_boundary(conversation).await;
                 if interrupted {
                     return Err(NanocodexError::TurnCancelled);
                 }
@@ -6460,9 +6486,7 @@ impl LifecycleBackend for Driver {
                             "manual-compact",
                         )
                         .await;
-                    if let Ok(snapshot) = state.snapshot(&context).await {
-                        state.publish_boundary(snapshot);
-                    }
+                    state.publish_round_boundary(&context).await;
                     if let (Some(policy), Some(id)) = (&state.policy, operation) {
                         if result
                             .as_ref()

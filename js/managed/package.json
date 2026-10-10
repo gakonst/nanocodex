@@ -60,6 +60,7 @@
     "test:hand-owner-restart": "node --test test/hand-owner-restart-journey.test.mjs",
     "test:hand-ledger-memory": "node --test test/hand-ledger-memory-journey.test.mjs",
     "test:hand-communication": "node --test test/hand-communication-journey.test.mjs",
+    "test:hand-result-size": "node --test test/hand-result-size-journey.test.mjs",
     "test:hand-selected-route-retry": "node --test test/hand-selected-route-retry-journey.test.mjs",
     "test:hand-leased-recovery": "node --test test/hand-leased-recovery-journey.test.mjs",
     "test:hosted-tools": "vitest run --config vitest.hosted-tools.config.ts",
