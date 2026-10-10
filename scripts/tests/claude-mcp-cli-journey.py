@@ -202,8 +202,14 @@ try {
                         block = {"type": "tool_use", "id": "frozen-call", "name": "mcp__http__inspect", "input": {"message": "image"}}
                     elif index == 4:
                         receipt = [b for m in request["messages"] for b in m["content"] if b.get("type") == "tool_result" and b.get("tool_use_id") == "frozen-call"][-1]
-                        require(receipt.get("is_error") is True, "same-name replacement was not rejected")
-                        require("admission was lost during recovery" in text_of(receipt), "missing recovery admission denial: " + text_of(receipt))
+                        # The killed process never received a response for the frozen
+                        # request, so frozen-call comes from a response generated fresh
+                        # after recovery. Its model receipt commits before dispatch, so
+                        # it runs once against the cell's current catalog (f1e2983d2);
+                        # only an unreceipted exec from a replayed response is refused.
+                        require(receipt.get("is_error") is not True, "fresh post-recovery exec was refused: " + text_of(receipt))
+                        require("admission was lost during recovery" not in text_of(receipt), "fresh post-recovery exec reported lost admission")
+                        require(nested_result(receipt)["structuredContent"]["structuredContent"] == {"marker": "image"}, "fresh post-recovery exec lost its MCP result: " + text_of(receipt))
                         block = {"type":"tool_use", "id":"fresh-discovery", "name":"ToolSearch", "input":{"query":"select:mcp__http__inspect"}}
                     else:
                         require(index == 5, "unexpected recovery inference request")
@@ -255,7 +261,7 @@ try {
     threading.Thread(target=server.serve_forever, daemon=True).start()
     command = [str(binary), "run", "--claude", "--model", "claude-sonnet-5-5", "--thinking", "medium", "--claude-api-key", "synthetic-claude-key", "--claude-messages-url", f"http://127.0.0.1:{server.server_port}/v1/messages", "--cwd", str(workspace), "--rollouts", "false", "--browser=none", "--mcp-defaults", "false", "--mcp-codex-config", "false", "--web-search", "false", "--image-generation", "false", "--subagents", "false", "--memory", "false", "--mcp", f"http=http://127.0.0.1:{server.server_port}/mcp", "--mcp-bearer-env", "http=SYNTHETIC_MCP_TOKEN", "--mcp-stdio", f"stdio={shutil.which('node')}", "--mcp-arg", f"stdio={root}/crates/nanocodex-oai-tools/tests/fixtures/mcp-stdio-server.mjs", "--claude-hooks", str(hooks), "--local-durability", str(artifact / "session.sqlite"), "--local-durability-state-id", "native-mcp-journey-" + artifact.name, "--request-id", "native-mcp-operation", "Exercise native MCP tools and resources."]
     environment = {**os.environ, "NANOCODEX_COMPUTER": "off", "SYNTHETIC_MCP_TOKEN": "synthetic-mcp-configuration-token"}
-    (artifact / "scenario.json").write_text(json.dumps({"command": command, "shell_command": shlex.join(command), "environment_overrides": {"NANOCODEX_COMPUTER":"off","SYNTHETIC_MCP_TOKEN":"synthetic-mcp-configuration-token"}, "expected": "default exec/wait only; nested MCP HTTP+stdio exact schema, native image/error/structured metadata, resources, validation, terminal replay, restored pending exec denial, and active-cell schema drift"}, indent=2))
+    (artifact / "scenario.json").write_text(json.dumps({"command": command, "shell_command": shlex.join(command), "environment_overrides": {"NANOCODEX_COMPUTER":"off","SYNTHETIC_MCP_TOKEN":"synthetic-mcp-configuration-token"}, "expected": "default exec/wait only; nested MCP HTTP+stdio exact schema, native image/error/structured metadata, resources, validation, terminal replay, a fresh post-recovery exec dispatched once against the current catalog, and active-cell schema drift"}, indent=2))
     outcome = {"success": False}
     try:
         result = subprocess.run(command, cwd=workspace, env=environment, capture_output=True, timeout=90)
@@ -296,8 +302,10 @@ try {
         require(resumed.returncode == 0, f"frozen reopen failed: {resumed.stderr.decode(errors='replace')}")
         require(not errors, "; ".join(errors))
         require(b"frozen-mcp-journey-complete" in resumed.stdout, "frozen journey incomplete")
-        require(sum(r["method"] == "tools/call" for r in rpc) == 4, "same-name replacement or replay dispatched an effect")
-        require(len((workspace / "hooks.jsonl").read_text().splitlines()) == hooks_before, "changed schema ran replacement hooks")
+        recovered_calls = [r["params"]["arguments"] for r in rpc if r["method"] == "tools/call"][4:]
+        require(recovered_calls == [{"message": "image"}], "recovery must dispatch only the fresh post-recovery call, once: " + json.dumps(recovered_calls))
+        recovered_hooks = [json.loads(line) for line in (workspace / "hooks.jsonl").read_text().splitlines()][hooks_before:]
+        require([(e["hook_event_name"], e["tool_input"].get("message")) for e in recovered_hooks] == [("PreToolUse", "image"), ("PostToolUse", "image")], "recovery hooks differ from one fresh call: " + json.dumps(recovered_hooks)[:500])
         phase["name"] = "code-mode"
         remote.update(removed=False, schema=SCHEMA)
         code_command = [str(artifact / "code-mode.sqlite") if v == str(artifact / "session.sqlite") else v for v in command[:-1]] + ["Refresh a same-name MCP schema inside an active cell, reject stale dispatch, then use the new schema in a fresh cell."]
@@ -314,7 +322,7 @@ try {
         require(len(code_messages) == 5, "wrong Code Mode inference count")
         code_hooks = [json.loads(line) for line in (workspace / "hooks.jsonl").read_text().splitlines()]
         require(not any(event.get("tool_input", {}).get("message") == "stale-schema" for event in code_hooks), "stale cell ran replacement hooks")
-        outcome.update(success=True, requests=len(messages), recovery_requests=len(recovery_messages), mcp_requests=len(rpc), checks=len(steps), code_mode_schema_drift=True, code_mode_requests=len(code_messages), restored_pending_exec_denied=True, default_code_mode_only=True)
+        outcome.update(success=True, requests=len(messages), recovery_requests=len(recovery_messages), mcp_requests=len(rpc), checks=len(steps), code_mode_schema_drift=True, code_mode_requests=len(code_messages), fresh_recovered_exec_dispatched_once=True, default_code_mode_only=True)
     except Exception as error:
         outcome["error"] = str(error)
         raise
