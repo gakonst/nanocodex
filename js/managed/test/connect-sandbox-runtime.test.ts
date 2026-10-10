@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { DEFAULT_OPENAI_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 import type { DurableAgentSession } from "../src/index";
 
@@ -70,7 +70,8 @@ it("routes an explicitly scoped Connect turn only to its Cloudflare mounts", asy
     expect((await request("/create", {
       session_id: crypto.randomUUID(), owner_id: principal.userId, organization_id: principal.organizationId,
       team_id: principal.teamId, authorization_epoch: 1, public_origin: "https://nanocodex.example",
-      settings: DEFAULT_AGENT_SETTINGS, configuration: {},
+      // Connect grants may not use Claude (claude_forbidden), now the default (398726862).
+      settings: DEFAULT_OPENAI_AGENT_SETTINGS, configuration: {},
     })).status).toBe(200);
     for (const [slot, name, owner] of [[0, "personal", undefined], [1, "foreign", `0x${"b".repeat(64)}`], [2, "own", grantId]] as const) {
       state.storage.sql.exec(`INSERT INTO managed_mounts VALUES (?, 'cloudflare', ?, ?, ?, ?, 'mounted', 1, 1)`,
