@@ -18,6 +18,14 @@ resolves and verifies assets from the corresponding immutable release. Raw
 executables remain only on the rolling release so pre-compression updaters can
 cross the format transition.
 
+The immutable manifest includes both compressed and decompressed executable
+checksums. The raw checksum lets the installer reuse its verified running
+bootstrap without downloading it again; the raw executable need not be a
+release attachment. Publication verifies compressed assets before unpacking
+them, then verifies every raw checksum. For manual verification of downloaded
+compressed assets on Linux, `sha256sum --check --strict --ignore-missing SHA256SUMS`
+checks the files present; unpack an executable and repeat to check its raw bytes.
+
 Each native nightly and stable release builds both role binaries per target in
 one invocation (`cargo build --features nanocodex-bin/tempo`, with the release
 profile selected by the workflow). The workspace defaults select the CLI and
