@@ -267,11 +267,13 @@ pub async fn start_agents_observed(
     observe_session: impl Fn(&str) + Send + Sync + 'static,
 ) -> AgentToolResult<Vec<AgentStartReport>> {
     registry.register_handle(parent.clone());
-    registry.await_restored(session_id).await?;
+    // Held until the batch's IDs are reserved, so concurrent spawns keep call order.
+    let admission = registry.admit_spawn(session_id).await?;
     let prepared = prepare_batch(tasks)?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
+    drop(admission);
     let host_context = registry.host_context_for_session(session_id).await;
     let children = if let Some(router) = registry.spawn_router() {
         // Resolve all choices before creating a child. No initial turn runs until
@@ -489,7 +491,8 @@ async fn start_child(
         return Err("child caller identity must match its native parent handle".into());
     }
     registry.register_handle(parent.clone());
-    registry.await_restored(session_id).await?;
+    // Held until the ID is reserved, so concurrent spawns keep call order.
+    let admission = registry.admit_spawn(session_id).await?;
     let AgentTask {
         role,
         task,
@@ -498,6 +501,7 @@ async fn start_child(
     let contract = OutputContract::compile(&output_schema)?;
     let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
+    drop(admission);
     let id = reservation.id;
     let host_context = match host_context {
         Some(host_context) => Some(host_context),

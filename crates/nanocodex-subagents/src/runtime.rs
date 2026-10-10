@@ -125,6 +125,10 @@ pub struct Registry {
     journals: std::sync::RwLock<HashMap<String, Arc<dyn SubagentStore>>>,
     /// Per-root restoration outcome. Pending and failed roots must never be saved.
     restored: std::sync::Mutex<HashMap<String, RestorationOutcome>>,
+    /// Per-root FIFO spawn admission for adopted journals. The restoration
+    /// gate is a watch, which wakes concurrent waiters in no defined order;
+    /// spawns queue here instead, so agent IDs follow call order.
+    spawn_admission: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     journal_writer: std::sync::atomic::AtomicBool,
     /// Orders background snapshots and the final pre-teardown journal flush.
     journal_write_lock: tokio::sync::Mutex<()>,
@@ -1108,6 +1112,7 @@ impl Registry {
             store: std::sync::RwLock::new(None),
             journals: std::sync::RwLock::new(HashMap::new()),
             restored: std::sync::Mutex::new(HashMap::new()),
+            spawn_admission: std::sync::Mutex::new(HashMap::new()),
             journal_writer: std::sync::atomic::AtomicBool::new(false),
             journal_write_lock: tokio::sync::Mutex::new(()),
             checkpoints: std::sync::Mutex::new(HashMap::new()),
@@ -1153,6 +1158,10 @@ impl Registry {
             }
             restored.insert(root.clone(), gate);
         }
+        self.spawn_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root.clone(), Arc::new(tokio::sync::Mutex::new(())));
         self.journals
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1188,6 +1197,37 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// Admits a spawn under `session_id`'s root: waits for its restoration in
+    /// call order. Hold the guard until the spawn's agent IDs are reserved.
+    ///
+    /// Concurrent spawns waiting on [`Self::await_restored`] alone would resume
+    /// (and reserve IDs) in the restoration watch's wake order, not their own.
+    /// Each queues on its root's FIFO admission lock first, in the same poll
+    /// that obtained the root under the FIFO state lock, so arrival order holds.
+    pub(crate) async fn admit_spawn(
+        &self,
+        session_id: &str,
+    ) -> std::io::Result<Option<tokio::sync::OwnedMutexGuard<()>>> {
+        let root = self
+            .state
+            .lock()
+            .await
+            .root_session_id(session_id)
+            .to_owned();
+        let admission = self
+            .spawn_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&root)
+            .cloned();
+        let guard = match admission {
+            Some(admission) => Some(admission.lock_owned().await),
+            None => None,
+        };
+        self.await_restored(session_id).await?;
+        Ok(guard)
     }
 
     /// Waits until an adopted root's journaled tree is restored.
@@ -4287,6 +4327,137 @@ mod tests {
         let lineage = nanocodex_agent::Lineage::root("root");
         let checkpoint = agent.snapshot(&lineage).unwrap();
         crate::durable::restored_session(agent, checkpoint).unwrap()
+    }
+
+    /// Root journal whose load stays pending until released, holding the
+    /// adopted root's restoration gate open.
+    struct GatedJournal {
+        opened: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl nanocodex_agent::backend::ChildJournalStore for GatedJournal {
+        fn load(&self) -> nanocodex_agent::backend::BackendFuture<std::io::Result<Option<String>>> {
+            let opened = Arc::clone(&self.opened);
+            Box::pin(async move {
+                let _permit = opened.acquire().await;
+                Ok(None)
+            })
+        }
+
+        fn save(
+            &self,
+            _payload: String,
+            _records: Vec<Arc<str>>,
+        ) -> nanocodex_agent::backend::BackendFuture<std::io::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn load_record(
+            &self,
+            key: String,
+        ) -> nanocodex_agent::backend::BackendFuture<std::io::Result<String>> {
+            Box::pin(async move { Err(std::io::Error::other(format!("no record {key}"))) })
+        }
+    }
+
+    /// Spawns admitted while a durable root's journal is still being restored
+    /// queue behind its restoration gate, whose watch wakes waiters by shard
+    /// rather than arrival. Agent IDs must still follow call order.
+    #[tokio::test]
+    async fn spawns_behind_journal_restoration_reserve_ids_in_call_order() {
+        const SPAWNS: u64 = 8;
+        let (registry, _, _updates) = super::channel(usize::try_from(SPAWNS).unwrap());
+        let opened = Arc::new(tokio::sync::Semaphore::new(0));
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let factory_registry = registry.clone();
+        let openai = OpenAi::builder("test-key")
+            .service(|| PendingService {
+                called: Arc::new(Notify::new()),
+            })
+            .build()
+            .unwrap();
+        let (root, _events) = Nanocodex::builder(openai)
+            .child_journal(nanocodex_agent::backend::ChildJournal::new(Arc::new(
+                GatedJournal {
+                    opened: Arc::clone(&opened),
+                },
+            )))
+            .tools_factory(move |handle| {
+                capture
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(|| handle.clone());
+                // Adopting the journal starts its (gated) restoration.
+                factory_registry.register_handle(handle);
+                nanocodex_oai_tools::Tools::builder()
+                    .without_defaults()
+                    .build()
+            })
+            .build()
+            .unwrap();
+        let root_id = root.session_id().to_owned();
+        let parent = captured.lock().unwrap().clone().unwrap();
+        // Each spawn is its own task, as separate host calls are: tasks resume
+        // in wake order, unlike one future polling its children by index.
+        let spawns = (0..SPAWNS)
+            .map(|index| {
+                let (parent, registry, root_id) =
+                    (parent.clone(), Arc::clone(&registry), root_id.clone());
+                tokio::spawn(async move {
+                    crate::start_agent(
+                        &parent,
+                        &registry,
+                        &root_id,
+                        crate::AgentTask {
+                            role: format!("child-{index}"),
+                            task: format!("ordered task {index}"),
+                            output_schema: json!({"type": "object"}),
+                        },
+                    )
+                    .await
+                })
+            })
+            .collect::<Vec<_>>();
+        let spawns = futures_util::future::join_all(spawns);
+        let release = async {
+            // Every spawn is admitted and waiting before restoration completes.
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                registry
+                    .restored
+                    .lock()
+                    .unwrap()
+                    .get(&root_id)
+                    .is_some_and(|gate| gate.borrow().is_none()),
+                "restoration must still be pending while the spawns wait"
+            );
+            opened.add_permits(1);
+        };
+        let (reports, ()) = timeout(Duration::from_secs(10), async {
+            tokio::join!(spawns, release)
+        })
+        .await
+        .expect("spawns must finish once restoration completes");
+        let assigned = reports
+            .into_iter()
+            .map(|report| {
+                let report = report.unwrap().unwrap();
+                (report.role, report.agent_id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            assigned,
+            (0..SPAWNS)
+                .map(|index| (format!("child-{index}"), AgentId::new(index + 1)))
+                .collect::<Vec<_>>()
+        );
+        for (_, id) in assigned {
+            registry.close(&root_id, id).await.unwrap();
+        }
+        root.shutdown().await.unwrap();
     }
 
     #[tokio::test]
