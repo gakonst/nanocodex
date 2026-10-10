@@ -3622,6 +3622,41 @@ fn forward_subagent_updates(
                         );
                     }
                 }
+                SubagentUpdate::Completion {
+                    id,
+                    status,
+                    revision,
+                } => {
+                    let session_id = sessions
+                        .borrow()
+                        .get(&(root_session_id.clone(), id))
+                        .cloned();
+                    // The host deduplicates by (agent, completion_revision).
+                    // Only a delivered completion is acknowledged; otherwise
+                    // the registry announces it again after its next restore.
+                    if let Some(session_id) = session_id
+                        && let Ok(mut encoded) = serde_json::to_value(&status)
+                    {
+                        if let Some(object) = encoded.as_object_mut() {
+                            object.insert("completion_revision".into(), revision.into());
+                        }
+                        match host_subagent_status(&session_id, &encoded.to_string()) {
+                            Ok(()) => {
+                                if let Some(registry) = registry.upgrade() {
+                                    let root = root_session_id.clone();
+                                    spawn_local(async move {
+                                        registry.acknowledge_completion(&root, id, revision).await;
+                                    });
+                                }
+                            }
+                            Err(error) => report_subagent_host_error(
+                                "forwarding a subagent completion",
+                                &session_id,
+                                &error,
+                            ),
+                        }
+                    }
+                }
                 SubagentUpdate::Message(_) => {}
             }
         }

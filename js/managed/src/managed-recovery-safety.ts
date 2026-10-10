@@ -111,7 +111,13 @@ export class ManagedRecoverySafety {
 /** Account-private host journal: guest source cannot select or clear receipts.
  * Scope to the original session/operation/model/cell/ordinal, never projected turn identities.
  * Retain unknown intents and receipts after settlement for reconciliation. */
-export function createManagedCodeEffectJournal(storage: DurableObjectStorage): CodeEffectJournal {
+export type ManagedCodeEffectJournalOptions = Readonly<{
+  /** Synchronous, inside the transaction that commits this receipt: anything
+   * it writes is durable exactly when the receipt is. Must not throw. */
+  onCommitted?: (context: CodeEffectContext, receipt: CodeEffectReceipt) => void;
+}>;
+
+export function createManagedCodeEffectJournal(storage: DurableObjectStorage, options: ManagedCodeEffectJournalOptions = {}): CodeEffectJournal {
   storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_code_effect_runtime (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1), generation TEXT NOT NULL
   );
@@ -387,6 +393,7 @@ export function createManagedCodeEffectJournal(storage: DurableObjectStorage): C
           (effect_key, chunk_index, receipt_json) VALUES (?, ?, ?)`, key, count++, chunk);
         storage.sql.exec(`UPDATE managed_code_effects SET state = 'completed', receipt_chunks = ?, completed_at = ?
           WHERE effect_key = ?`, count, Date.now(), key);
+        options.onCommitted?.(context, receipt);
       });
       await storage.sync();
       assertOwner();

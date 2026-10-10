@@ -114,6 +114,8 @@ import {
 import type {
   AgentEvent,
   AgentSessionContext,
+  CodeEffectContext,
+  CodeEffectReceipt,
   EventWatcher,
   NamedTool,
   PromptInput,
@@ -1452,6 +1454,86 @@ function dropStaleSubagentStatus(rootSessionId: string, sessionId: string, reaso
     console.warn({ type: "managed.subagent_status_dropped", reason, root_session_id: rootSessionId, session_id: sessionId });
   }
   return undefined;
+}
+
+// Durable outbox of root-child completions: one row per logical completion,
+// keyed by (child session, instruction revision of the turn that completed).
+// The lifecycle callback records the row before it returns, so the registry's
+// acknowledgement (which clears its journaled pending_completion) implies the
+// row: both live in this object's SQLite storage, which commits writes in
+// order. A row is settled only by (a) admission of its deterministic wake turn
+// or (b) the parent turn being terminal after a COMMITTED root wait_agent or
+// list_agents receipt reported exactly (child, revision); receipt_committed is
+// written in the same transaction as that receipt. A live wait report alone
+// never settles anything. Settled rows stay as tombstones, so a completion
+// re-announced after a restart cannot reopen a decided one.
+const SUBAGENT_COMPLETIONS_TABLE = `CREATE TABLE IF NOT EXISTS managed_subagent_completions (
+  session_id TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  receipt_committed INTEGER NOT NULL DEFAULT 0, settled TEXT,
+  PRIMARY KEY (session_id, revision))`;
+
+type SubagentCompletionRow = { session_id: string; revision: number; receipt_committed: number };
+
+export function subagentCompletionRevision(event: unknown): number | undefined {
+  const status = (event as { status?: unknown } | null)?.status;
+  const revision = status && typeof status === "object" ? (status as { completion_revision?: unknown }).completion_revision : undefined;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : undefined;
+}
+
+/** Completed agents a wait_agent/list_agents receipt reported, with the
+ * revision of the turn whose result it showed. Anything else reports none. */
+export function reportedSubagentCompletions(name: string, receipt: unknown): { agentId: string; revision: number }[] {
+  if ((name !== "wait_agent" && name !== "list_agents") || !receipt || typeof receipt !== "object") return [];
+  const wire = receipt as Record<string, unknown>;
+  if (wire.success !== true || wire.thrown === true) return [];
+  const candidates: unknown[] = [wire.structured_result, wire.value, wire.output];
+  if (typeof wire.output === "string") {
+    try { candidates.push(JSON.parse(wire.output)); } catch { /* plain text output */ }
+  }
+  for (const candidate of candidates) {
+    const agents = (candidate as { agents?: unknown } | null)?.agents;
+    if (!Array.isArray(agents)) continue;
+    return agents.flatMap(agent => {
+      const entry = agent as { agent_id?: unknown; status?: { state?: unknown }; completion_revision?: unknown } | null;
+      return entry && entry.status?.state === "completed"
+        && Number.isSafeInteger(entry.agent_id) && Number.isSafeInteger(entry.completion_revision)
+        && (entry.completion_revision as number) >= 0
+        ? [{ agentId: String(entry.agent_id), revision: entry.completion_revision as number }] : [];
+    });
+  }
+  return [];
+}
+
+function recordSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  storage.sql.exec("INSERT OR IGNORE INTO managed_subagent_completions (session_id, revision, created_at) VALUES (?, ?, ?)",
+    sessionId, revision, Date.now());
+}
+
+function markSubagentCompletionReceipt(storage: DurableObjectStorage, sessionId: string, revision: number): void {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  storage.sql.exec(`INSERT INTO managed_subagent_completions (session_id, revision, created_at, receipt_committed)
+    VALUES (?, ?, ?, 1) ON CONFLICT(session_id, revision) DO UPDATE SET receipt_committed = 1`,
+  sessionId, revision, Date.now());
+}
+
+function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): void {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  storage.sql.exec("UPDATE managed_subagent_completions SET settled = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
+    reason, sessionId, revision);
+}
+
+function subagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): SubagentCompletionRow & { settled: string | null } | undefined {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  return storage.sql.exec<SubagentCompletionRow & { settled: string | null }>(
+    "SELECT session_id, revision, receipt_committed, settled FROM managed_subagent_completions WHERE session_id = ? AND revision = ?",
+    sessionId, revision).toArray()[0];
+}
+
+function pendingSubagentCompletions(storage: DurableObjectStorage): SubagentCompletionRow[] {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  return storage.sql.exec<SubagentCompletionRow>(
+    "SELECT session_id, revision, receipt_committed FROM managed_subagent_completions WHERE settled IS NULL ORDER BY created_at").toArray();
 }
 
 /** Managed half of the private live Cloudflare subagent lifecycle. */
@@ -4593,7 +4675,10 @@ export class DurableAgentSession extends DurableComputerObject {
       this.#operations.record(event, this.#sessionId());
       this.#finishedRunAgent = this.#openToolCalls.observe(event) ?? this.#finishedRunAgent;
     });
-    this.#codeEffectJournal = createManagedCodeEffectJournal(this.ctx.storage);
+    this.#codeEffectJournal = createManagedCodeEffectJournal(this.ctx.storage, {
+      // Runs inside the receipt's own commit transaction.
+      onCommitted: (context, receipt) => this.#observeSubagentReceipt(context, receipt),
+    });
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
       this.ctx.storage,
       this.env.NANOCODEX_HISTORY,
@@ -6342,6 +6427,15 @@ export class DurableAgentSession extends DurableComputerObject {
       this.#scheduleRecovery();
       return;
     }
+    if (this.#session() !== undefined && pendingSubagentCompletions(this.ctx.storage).length > 0) {
+      // Recorded completions outlive the runtime that received them.
+      try {
+        if (!this.#agent) await this.#ensureAgent();
+        await this.#drainSubagentCompletions();
+      } catch (error) {
+        console.warn({ type: "managed.subagent_completion_drain_failed", error_kind: errorKind(error) });
+      }
+    }
     if (!this.#agent && !this.#agentPromise && this.#session() !== undefined
       && this.ctx.storage.kv.get(SUBAGENTS_ACTIVE_KEY) === true) {
       // Eviction or a deploy dropped a runtime that still owned children.
@@ -6350,6 +6444,7 @@ export class DurableAgentSession extends DurableComputerObject {
       try {
         await this.#ensureAgent();
         console.info({ type: "managed.subagents_recovered" });
+        await this.#drainSubagentCompletions();
       } catch (error) {
         console.warn({ type: "managed.subagent_recovery_failed", error_kind: errorKind(error) });
       }
@@ -10134,7 +10229,10 @@ export class DurableAgentSession extends DurableComputerObject {
       const admitted = this.#managedTurn(current.id);
       if (admitted && (admitted.state === "cancelling" || admitted.retry_at !== null)) break;
     }
-    try { if (this.#goalRuntime.pending()) await this.#continueGoal(); } finally { await this.#scheduleNextAlarm(); }
+    try {
+      if (this.#goalRuntime.pending()) await this.#continueGoal();
+      if (pendingSubagentCompletions(this.ctx.storage).length > 0) await this.#drainSubagentCompletions();
+    } finally { await this.#scheduleNextAlarm(); }
   }
 
   #prepareActiveConversation(authorization: TurnAuthorization): void {
@@ -11657,8 +11755,17 @@ export class DurableAgentSession extends DurableComputerObject {
         subagentLifecycle: (event: unknown) => {
           const completed = applyManagedSubagentLifecycle(this.ctx.storage, bindings, event);
           if (completed?.parentAgentId === null) {
-            this.ctx.waitUntil(this.#track(this.#continueAfterSubagent(completed, bindings, runtimeGeneration)).catch(error => {
-              if (error instanceof ManagedRequestError && error.code === "subagent_continuation_superseded") return;
+            const revision = subagentCompletionRevision(event);
+            if (revision === undefined) {
+              // Every root-child completion carries its turn revision.
+              console.warn({ type: "managed.subagent_completion", action: "unrevisioned", agent_id: completed.agentId });
+              return;
+            }
+            // Recorded before this callback returns: the registry treats a
+            // returned delivery as acknowledged and stops re-announcing it.
+            recordSubagentCompletion(this.ctx.storage, completed.sessionId, revision);
+            console.info({ type: "managed.subagent_completion", action: "received", agent_id: completed.agentId, revision });
+            this.ctx.waitUntil(this.#track(this.#decideSubagentCompletion(completed.sessionId, revision)).catch(error => {
               console.warn({ type: "managed.subagent_continuation_failed", error_kind: errorKind(error) });
             }));
           }
@@ -12135,41 +12242,109 @@ export class DurableAgentSession extends DurableComputerObject {
     return id;
   }
 
-  async #continueAfterSubagent(
-    child: ManagedSubagentAuthorizationRow,
-    bindings: ManagedSubagentBindings,
-    runtimeGeneration: number,
-  ): Promise<void> {
+  /** A root wait_agent/list_agents receipt is committing (same transaction). */
+  #observeSubagentReceipt(context: CodeEffectContext, receipt: CodeEffectReceipt): void {
+    try {
+      const reported = reportedSubagentCompletions(context.name, receipt);
+      if (reported.length === 0) return;
+      for (const { agentId, revision } of reported) {
+        // Only the root conversation's own direct children: a child session's
+        // receipts and nested agents never decide a root wake.
+        const child = [...this.#subagentBindings.authorizations.values()].find(row =>
+          row.root_session_id === context.sessionId && row.agentId === agentId && row.parentAgentId === null);
+        if (!child) continue;
+        markSubagentCompletionReceipt(this.ctx.storage, child.sessionId, revision);
+        console.info({ type: "managed.subagent_completion", action: "receipt_committed", agent_id: agentId, revision, tool: context.name });
+      }
+    } catch (error) {
+      // Never fail the receipt itself: without the mark the parent is woken,
+      // a duplicate notice rather than a lost one.
+      console.warn({ type: "managed.subagent_receipt_observation_failed", error_kind: errorKind(error) });
+    }
+  }
+
+  /**
+   * Decides one recorded root-child completion. A runtime transition keeps it
+   * for a later drain; a parent with any turn in flight, recovering or queued
+   * defers it until that turn is terminal (each terminal turn reschedules
+   * recovery, which drains). For an idle parent it settles after the parent
+   * durably observed it (committed receipt) or after admitting exactly one
+   * deterministic wake turn.
+   */
+  async #decideSubagentCompletion(sessionId: string, revision: number): Promise<void> {
     const session = this.#session();
     if (!session) return;
-    // Match the CLI: a completion wakes only an idle parent. Active turns can
-    // inspect their children themselves, including through wait_agent.
-    const canContinue = () => this.#runtimeOwnershipGeneration === runtimeGeneration && this.#agent !== undefined
-      && !this.#deleting && !this.#deleted && !this.#streamError
-      && !this.#durabilityExported && this.#durabilityImportState !== "pending"
-      && this.#subagentBindings === bindings && bindings.authorizations.get(child.sessionId) === child
-      && this.#session()?.authorization_epoch === session.authorization_epoch
-      && this.#session()?.accepted_turns === session.accepted_turns
-      && this.#recoverableTurnCount() === 0 && this.#turns.size === 0;
-    if (!canContinue()) return;
+    const bindings = this.#subagentBindings;
+    const runtimeGeneration = this.#runtimeOwnershipGeneration;
+    const child = bindings.authorizations.get(sessionId);
+    const decide = (action: string) => console.info({ type: "managed.subagent_completion", action, agent_id: child?.agentId ?? null,
+      revision, turns: this.#turns.size, recoverable: this.#recoverableTurnCount() });
+    const settle = (reason: string) => { decide("settled_" + reason); settleSubagentCompletion(this.ctx.storage, sessionId, revision, reason); };
+    const row = () => subagentCompletion(this.ctx.storage, sessionId, revision);
+    if (row()?.settled !== null) return;
+    // The restored registry rebinds the child before re-announcing it.
+    if (!child) { decide("kept_unbound"); return; }
+    if (child.parentAgentId !== null) { settle("nested"); return; }
+    const transient = () => this.#runtimeOwnershipGeneration !== runtimeGeneration || this.#agent === undefined
+      || this.#deleting || this.#deleted || this.#streamError || this.#durabilityExported
+      || this.#durabilityImportState === "pending" || this.#subagentBindings !== bindings;
+    // Including a turn replayed by restart recovery: its outcome decides.
+    const busy = () => this.#turns.size > 0 || this.#recoverableTurnCount() > 0;
+    const hold = (): boolean => {
+      if (transient()) { decide("kept_transient"); return true; }
+      if (busy()) { decide("deferred_busy"); return true; }
+      return false;
+    };
+    if (hold()) return;
+    // One logical completion admits at most one wake turn, across restarts.
+    const id = `subagent:${(await hashManagedInput(`${child.sessionId}:${revision}`)).slice(0, 48)}`;
+    if (await this.#findManagedTurn(id)) { settle("woken"); return; }
+    if (row()?.settled !== null) return;
+    if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
     const source = await this.#findManagedTurn(child.host_context_ref);
-    if (!source || source.state !== "completed" || !canContinue()) return;
+    if (hold()) return;
+    if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
+    if (!source || source.state !== "completed") { settle("source_not_completed"); return; }
     // A later cancellation/failure must not be undone by an older child's result.
     const latest = this.ctx.storage.sql.exec<{ state: string }>(
       "SELECT state FROM managed_turns ORDER BY rowid DESC LIMIT 1",
     ).toArray()[0];
-    if (latest && latest.state !== "completed") return;
+    if (latest && latest.state !== "completed") { settle("latest_not_completed"); return; }
+    const canContinue = () => !transient() && !busy()
+      && bindings.authorizations.get(child.sessionId)?.host_context_ref === child.host_context_ref
+      && this.#session()?.authorization_epoch === session.authorization_epoch
+      && this.#session()?.accepted_turns === session.accepted_turns
+      && row()?.settled === null && row()?.receipt_committed !== 1;
     const input: PromptInput = `[Subagent ${child.agentId} completed]
 
 A direct subagent completed after the previous turn ended. Continue the current task by inspecting its structured result. Call list_agents with include_completed=true, find agent ${child.agentId}, integrate and verify the relevant findings, finish any remaining work, and then respond to the user. Do not merely repeat the raw subagent result.
 
 <subagent_completion agent_id="${child.agentId}" />`;
-    const id = `subagent:${crypto.randomUUID()}`;
-    await this.#submitManagedTurn(id, input, await hashManagedInput(input), null, true,
-      parseTurnAuthorization(child.authorization_json), () => {
-        if (!canContinue()) throw new ManagedRequestError(409, "subagent_continuation_superseded",
-          "the parent changed before subagent continuation admission");
-      }, undefined, "unknown", {}, false);
+    try {
+      await this.#submitManagedTurn(id, input, await hashManagedInput(input), null, true,
+        parseTurnAuthorization(child.authorization_json), () => {
+          if (!canContinue()) throw new ManagedRequestError(409, "subagent_continuation_superseded",
+            "the parent changed before subagent continuation admission");
+        }, undefined, "unknown", {}, false);
+    } catch (error) {
+      if (error instanceof ManagedRequestError && error.code === "subagent_continuation_superseded") {
+        // Re-decided by the next drain (after the turn that superseded it).
+        decide("kept_superseded");
+        return;
+      }
+      throw error;
+    }
+    settle("woken");
+  }
+
+  /** Re-evaluates recorded root-child completions whose wake was not decided. */
+  async #drainSubagentCompletions(): Promise<void> {
+    if (!this.#agent) return;
+    for (const row of pendingSubagentCompletions(this.ctx.storage)) {
+      await this.#decideSubagentCompletion(row.session_id, row.revision).catch(error => {
+        console.warn({ type: "managed.subagent_completion_drain_failed", error_kind: errorKind(error) });
+      });
+    }
   }
 
   async #continueGoal(): Promise<void> {
@@ -14536,6 +14711,7 @@ A direct subagent completed after the previous turn ended. Continue the current 
     if (this.#deleting || !this.#sessionId()) return;
     const now = Date.now();
     const targets: number[] = [];
+    if (pendingSubagentCompletions(this.ctx.storage).length > 0) targets.push(now + MAX_RETRY_DELAY_MS);
     const presentationAlarm = presentationRetryAt(this.ctx.storage);
     if (presentationAlarm !== undefined) targets.push(Math.max(now + 1, presentationAlarm));
     const webhookAlarm = this.#operations.nextAlarm();

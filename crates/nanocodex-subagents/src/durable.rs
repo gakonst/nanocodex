@@ -300,6 +300,16 @@ pub(super) struct PersistedAgent {
     /// it rather than running the child again. Older readers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) accepted_output: Option<Value>,
+    /// Instruction revision of the turn that accepted accepted_output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) accepted_revision: Option<u64>,
+    /// Completion announced to the host but not yet acknowledged. Restores
+    /// announce it again; the host deduplicates by (agent, revision).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pending_completion: Option<u64>,
+    /// Instruction revision of the turn that produced this terminal status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) settled_revision: Option<u64>,
 }
 
 /// Bounded evidence of one tool call observed during a turn. A call observed
@@ -588,6 +598,11 @@ pub(super) fn persist_agent(
             .active
             .then(|| session.submitted_output.clone())
             .flatten(),
+        accepted_revision: (session.active && session.submitted_output.is_some())
+            .then_some(session.active_instruction_revision)
+            .flatten(),
+        pending_completion: session.pending_completion,
+        settled_revision: session.settled_revision,
     })
 }
 
@@ -619,6 +634,10 @@ pub(super) fn restored_session(
     agent: PersistedAgent,
 ) -> std::io::Result<(ChildSession, bool, bool)> {
     let contract = OutputContract::compile(&agent.output_schema)?;
+    let accepted_revision = agent.accepted_revision;
+    let pending_completion = agent.pending_completion;
+    let settled_revision = agent.settled_revision;
+    let root_child = agent.descriptor.parent.is_none();
     let snapshot = agent.snapshot()?;
     // A referenced record is loaded only when the child next runs, so a
     // restored task tree does not decode every idle conversation at once.
@@ -631,6 +650,7 @@ pub(super) fn restored_session(
     // An accepted result is that turn's logical completion: never rerun it.
     let accepted = running.then_some(agent.accepted_output).flatten();
     let in_flight = running && accepted.is_none();
+    let completed_by_acceptance = accepted.is_some();
     let exhausted = in_flight && recoverable && agent.resume_attempts >= MAX_RESUME_ATTEMPTS;
     let evidence = in_flight_evidence(&agent.in_flight_calls, agent.in_flight_omitted);
     let status = if terminal {
@@ -681,6 +701,21 @@ pub(super) fn restored_session(
         session.binding_task = task;
     }
     session.resume_attempts = resume_attempts;
+    // A turn completed by its accepted result is a new logical completion,
+    // keyed by that turn's own revision (never a later delegation's).
+    let accepted_revision = accepted_revision.unwrap_or(agent.next_instruction_revision);
+    session.settled_revision = if completed_by_acceptance {
+        Some(accepted_revision)
+    } else {
+        settled_revision
+    };
+    session.pending_completion = if !root_child {
+        None
+    } else if completed_by_acceptance {
+        Some(accepted_revision)
+    } else {
+        pending_completion
+    };
     session.journaled_runtime = journaled;
     // Retain until the turn settles: a second loss before then is still unknown.
     if in_flight {

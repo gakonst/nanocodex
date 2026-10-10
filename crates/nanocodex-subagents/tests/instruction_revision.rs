@@ -126,7 +126,19 @@ fn assert_receipt(input: &[Value], call_id: &str, accepted: bool, status: &str) 
         .iter()
         .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == call_id)
         .expect("submission result must reach the next request");
-    let output: Value = serde_json::from_str(&exec_text(item)).unwrap();
+    let mut output: Value = serde_json::from_str(&exec_text(item)).unwrap();
+    // These fixtures install no journal, so an acceptance is never durable.
+    if accepted {
+        assert_eq!(output["durable"], json!(false));
+        output.as_object_mut().unwrap().remove("durable");
+        assert!(
+            output["note"]
+                .as_str()
+                .unwrap()
+                .contains("Do not submit again")
+        );
+        output.as_object_mut().unwrap().remove("note");
+    }
     assert_eq!(output, json!({"accepted": accepted, "status": status}));
 }
 

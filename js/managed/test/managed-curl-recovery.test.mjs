@@ -116,11 +116,24 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: a follow-up turn's history still contains its predecessor's marker.
-  const markers = ['CURL_DTASK_NEW', 'CURL_DTASK_ORIG', 'CURL_ROOT_DTASK', 'CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_YIELD_TASK', 'CURL_ROOT_YIELD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
+  const markers = ['CURL_NEST_LEAF', 'CURL_NEST_PARENT', 'CURL_ROOT_NEST', 'CURL_IDLE_TASK', 'CURL_ROOT_IDLE', 'CURL_DTASK_NEW', 'CURL_DTASK_ORIG', 'CURL_ROOT_DTASK', 'CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_YIELD_TASK', 'CURL_ROOT_YIELD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
   const baselines = {};
   // Delegated-task journey state (3g): owner losses before and after the
   // child's result for its newest delegation is accepted.
-  const dtask = { kills: 0, submits: 0, calls: [] };
+  const dtask = { kills: 0, submits: 0, calls: [], root: [], lastRootCall: null, waitAtLoss2: null };
+  // A completed child result shown in a tool output (not the task text, which
+  // also names the expected token).
+  const showsCompleted = (item, token) => new RegExp('state\\W+completed\\W+output\\W+' + token + '|output\\W+' + token + '\\W+state\\W+completed').test(JSON.stringify(item ?? null));
+  // Host outbox decisions for agent 1 at one completion revision, from one
+  // workerd process log (console objects: type, action, agent_id, revision).
+  const outboxLog = async (process, action, revision) => {
+    const text = await readFile(join(output, 'workerd-' + process + '.log'), 'utf8').catch(() => '');
+    return (text.match(new RegExp("action: '" + action + "',\\s*agent_id: '1',\\s*revision: " + revision + '\\b', 'g')) ?? []).length;
+  };
+  // Nested completion journey state (3i): root -> parent child -> leaf.
+  const nest = { leafKilled: false, parentKilled: false, leafSubmits: 0, parentSubmits: 0, leaf: [], parent: [], root: [] };
+  // Idle-parent completion journey state (3h).
+  const idle = { childKilled: false, wakeKilled: false, child: [], root: [] };
   const delegate = (task, marker) => [
     () => exec(marker + '-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl child', task, model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
     () => exec(marker + '-wait', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
@@ -184,10 +197,61 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
           () => exec('dtask-wait-orig', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
           () => exec('dtask-delegate', 'text(await tools.send_agent_message({agent_id:1,purpose:"delegate",message:"CURL_DTASK_NEW: submit NEW_OK."}));'),
         ];
-        if (outputs.length < steps.length) return steps[outputs.length]();
+        dtask.root.push({ process: processNumber, outputs: outputs.map(item => item.call_id),
+          completed_new: outputs.filter(item => showsCompleted(item, 'NEW_OK')).map(item => item.call_id) });
+        if (outputs.length < steps.length) { dtask.lastRootCall = ['dtask-spawn', 'dtask-wait-orig', 'dtask-delegate'][outputs.length]; return steps[outputs.length](); }
         const seen = JSON.stringify(outputs.slice(steps.length));
-        if (/NEW_OK|without a valid submit_result/.test(seen) || outputs.length >= steps.length + 8) return say('DTASK_ROOT_DONE');
+        if (/NEW_OK|without a valid submit_result/.test(seen) || outputs.length >= steps.length + 8) { dtask.lastRootCall = null; return say('DTASK_ROOT_DONE'); }
+        dtask.lastRootCall = 'dtask-wait-' + outputs.length;
         return exec('dtask-wait-' + outputs.length, 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));');
+      }
+      case 'CURL_ROOT_NEST': {
+        nest.root.push({ process: processNumber, outputs: outputs.map(item => item.call_id),
+          completed_nest: outputs.filter(item => showsCompleted(item, 'NEST_GOT_LEAF')).map(item => item.call_id) });
+        if (outputs.length === 0) return exec('nest-root-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl nest parent', task: 'CURL_NEST_PARENT: spawn one leaf child, wait for its result, then submit a token naming it.', model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));');
+        if (outputs.some(item => showsCompleted(item, 'NEST_GOT_LEAF')) || outputs.length > 12) return say('NEST_ROOT_DONE');
+        return exec('nest-root-wait-' + outputs.length, 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));');
+      }
+      case 'CURL_NEST_PARENT': {
+        // The leaf marker is assembled at run time so this cell's source (which
+        // restart evidence may quote) never names the leaf scenario.
+        const sawLeaf = outputs.some(item => showsCompleted(item, 'LEAF_RESULT_9'));
+        const submitted = outputs.some(item => item.call_id === 'nest-submit');
+        nest.parent.push({ process: processNumber, saw_leaf: sawLeaf, submitted, outputs: outputs.map(item => item.call_id) });
+        if (outputs.length === 0) return exec('nest-spawn', 'text(await tools.spawn_agent({role:"Curl nest leaf",task:"CURL_NEST_" + "LEAF: submit the leaf token.",model:"sol",thinking:"low",output_contract:{kind:"string"}}));');
+        if (!sawLeaf) return outputs.length > 12 ? say('NEST_PARENT_GAVE_UP') : exec('nest-wait-' + outputs.length, 'text(await tools.wait_agent({agent_ids:[2],timeout_ms:20000}));');
+        // Loss 2: the leaf result is delivered and the parent's next provider call is in flight.
+        if (!nest.parentKilled) { nest.parentKilled = true; return 'kill'; }
+        if (!submitted) { nest.parentSubmits++; return exec('nest-submit', 'text(await tools.submit_result({output:"NEST_GOT_" + "LEAF"}));'); }
+        return say('NEST_PARENT_DONE');
+      }
+      case 'CURL_NEST_LEAF': {
+        const submitted = outputs.some(item => item.call_id === 'nest-leaf-submit');
+        nest.leaf.push({ process: processNumber, submitted });
+        if (!submitted) { nest.leafSubmits++; return exec('nest-leaf-submit', 'text(await tools.submit_result({output:"LEAF_RESULT_9"}));'); }
+        // Loss 1: the leaf result is accepted and its final provider call is in flight.
+        if (!nest.leafKilled) { nest.leafKilled = true; return 'kill'; }
+        return say('NEST_LEAF_DONE');
+      }
+      case 'CURL_ROOT_IDLE': {
+        const wakes = users.filter(item => JSON.stringify(item.content ?? null).includes('<subagent_completion agent_id=')).length;
+        idle.root.push({ process: processNumber, wakes, outputs: outputs.map(item => item.call_id) });
+        // The first turn delegates and ends: the parent is idle when the child finishes.
+        if (wakes === 0) return outputs.length === 0
+          ? exec('idle-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl idle child', task: 'CURL_IDLE_TASK: submit IDLE_OK.', model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));')
+          : say('IDLE_ROOT_DELEGATED');
+        // Loss 2: the wake turn's provider call is in flight.
+        if (!idle.wakeKilled) { idle.wakeKilled = true; return 'kill'; }
+        if (!outputs.some(item => item.call_id === 'idle-list')) return exec('idle-list', 'text(await tools.list_agents({include_completed:true}));');
+        return say('IDLE_WOKEN');
+      }
+      case 'CURL_IDLE_TASK': {
+        const submitted = outputs.some(item => item.call_id === 'idle-submit');
+        idle.child.push({ process: processNumber, submitted });
+        if (!submitted) return exec('idle-submit', 'text(await tools.submit_result({output:"IDLE_OK"}));');
+        // Loss 1: the result is accepted and the child's final call is in flight.
+        if (!idle.childKilled) { idle.childKilled = true; return 'kill'; }
+        return say('IDLE_CHILD_DONE');
       }
       case 'CURL_DTASK_ORIG': return outputs.length === 0 ? exec('dtask-orig-submit', 'text(await tools.submit_result({output:"ORIG_OK"}));') : say('ORIG_DONE');
       case 'CURL_DTASK_NEW': {
@@ -199,7 +263,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
         if (!submitted && dtask.kills === 0) { dtask.kills++; return 'kill'; }
         if (!submitted) { dtask.submits++; return exec('dtask-new-submit', 'text(await tools.submit_result({output:"NEW_OK"}));'); }
         // Loss 2: the result was accepted; the final provider call is in flight.
-        if (dtask.kills === 1) { dtask.kills++; return 'kill'; }
+        if (dtask.kills === 1) { dtask.kills++; dtask.waitAtLoss2 = dtask.lastRootCall; return 'kill'; }
         // A model shown its accepted receipt just finishes (it may not resubmit).
         return say('DTASK_NEW_DONE');
       }
@@ -760,7 +824,12 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     const dtaskHistory = await history('dtask-history', dtaskRun.agent_id);
     const rootCalls = modelCalls.filter(call => call.scenario === 'CURL_ROOT_DTASK');
     const rootSeen = JSON.stringify(rootCalls.at(-1)?.last_output ?? null);
-    const wakeTurns = new Set(modelCalls.filter(call => /subagent_completion agent_id/.test(call.last_instruction)).map(call => call.process)).size;
+    // Wake turns of one root scenario (other journeys' roots are separate agents).
+    const wakeCalls = scenario => modelCalls.filter(call => call.scenario === scenario && /subagent_completion agent_id/.test(call.last_instruction));
+    const wakeTurns = wakeCalls('CURL_ROOT_DTASK').length;
+    // 3d-3f roots end their turn after an outcome-unknown wait, before their
+    // resumed child finishes: each idle root is woken exactly once.
+    const delegatedWakes = Object.fromEntries(['CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_ROOT_YIELD'].map(scenario => [scenario, wakeCalls(scenario).length]));
     summary.dtask = { terminal: dtaskDone.state, kills: dtask.kills, submits: dtask.submits, child_calls: dtask.calls, accepted_loss_process: acceptedLoss,
       root_last_output: rootSeen.slice(0, 600), wake_turns: wakeTurns };
     const firstResume = dtask.calls.find(call => call.resumed);
@@ -772,8 +841,80 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.match(rootSeen, /NEW_OK/, 'the waiting parent receives the accepted result');
     assert.doesNotMatch(rootSeen, /without a valid submit_result/, 'the accepted result is not replaced by a missing-result failure');
     assert.equal(wakeTurns, 0, 'an active waiting parent gets no duplicate idle continuation');
+    summary.dtask.delegated_wakes = delegatedWakes;
+    assert.deepEqual(delegatedWakes, { CURL_ROOT_COMMITTED: 1, CURL_ROOT_CLAUDE_COMMITTED: 1, CURL_ROOT_YIELD: 1 }, 'an idle root is woken exactly once by a child finishing after its turn');
+    // The root wait in flight at loss 2 never committed a receipt; the result
+    // surfaces exactly once, through a later wait whose receipt committed.
+    const finalDtaskRoot = dtask.root.at(-1);
+    summary.dtask.root_calls = dtask.root;
+    summary.dtask.wait_at_loss_2 = dtask.waitAtLoss2;
+    assert.ok(dtask.waitAtLoss2?.startsWith('dtask-wait-'), 'the root was waiting when the accepted child lost its owner: ' + dtask.waitAtLoss2);
+    assert.ok(finalDtaskRoot.outputs.includes(dtask.waitAtLoss2), 'the interrupted root wait has a terminal result');
+    // That wait's receipt never committed before the loss; the result was
+    // delivered by a receipt committed after the restart, which settled the
+    // outbox row instead of waking the parent.
+    const acceptedRevision = 3;
+    const receiptsAtLoss = await outboxLog(acceptedLoss, 'receipt_committed', acceptedRevision);
+    const receiptsAfter = await outboxLog(acceptedLoss + 1, 'receipt_committed', acceptedRevision);
+    const settledAfter = await outboxLog(acceptedLoss + 1, 'settled_receipt_committed', acceptedRevision);
+    summary.dtask.outbox = { receipts_at_loss: receiptsAtLoss, receipts_after: receiptsAfter, settled_after: settledAfter };
+    assert.equal(receiptsAtLoss, 0, 'no root wait receipt for the accepted completion committed before the loss');
+    assert.ok(receiptsAfter >= 1, 'a root wait receipt for exactly (child, revision) committed after the restart');
+    assert.equal(settledAfter, 1, 'the outbox row settled on that committed receipt');
+    assert.equal(finalDtaskRoot.completed_new.length, 1, 'the accepted result surfaces to the waiting parent exactly once: ' + JSON.stringify(finalDtaskRoot));
     assert.deepEqual(openToolCalls(dtaskHistory), [], 'every call has a terminal result');
     assert.equal(dtaskDone.state, 'completed', JSON.stringify(dtaskDone));
+
+    // 3h. An idle parent is woken exactly once by its child's accepted result,
+    // across a loss after acceptance and a second loss during the wake turn.
+    const idleRun = (await curl('idle-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_ROOT_IDLE: spawn a child and end the turn.', settings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const idleBase = kills.length;
+    await waitFor('idle child loss after acceptance', () => kills.length === idleBase + 1 && !fixture, 30_000);
+    const childLoss = kills.at(-1).process;
+    await start();
+    // Nothing is admitted: the durable alarm rebuilds the runtime holding the child.
+    await waitFor('idle wake turn loss', () => kills.length === idleBase + 2 && !fixture, 100_000, 200);
+    await start();
+    await waitFor('idle wake turn finished', () => idle.root.some(call => call.outputs.includes('idle-list') && call.wakes > 0), 60_000, 200);
+    assert.equal((await terminal('idle-first-terminal', idleRun.agent_id, idleRun.turn_id)).state, 'completed', 'the delegating turn ended before the child finished');
+    const idleHistory = await history('idle-history', idleRun.agent_id);
+    const idleWakeTurns = new Set(idleHistory.data.filter(row => row.event?.type === 'input.accepted'
+      && JSON.stringify(row.event.payload ?? {}).includes('subagent_completion agent_id')).map(row => row.turn_id ?? row.event?.request_id)).size;
+    const finalRoot = idle.root.at(-1);
+    const listed = JSON.stringify(modelCalls.filter(call => call.scenario === 'CURL_ROOT_IDLE').at(-1)?.last_output ?? null);
+    summary.idle = { child_calls: idle.child, root_calls: idle.root, child_loss_process: childLoss, wake_turns: idleWakeTurns, listed: listed.slice(0, 400) };
+    assert.deepEqual(idle.child.filter(call => call.process > childLoss), [], 'the accepted child result is never rerun');
+    assert.equal(finalRoot.wakes, 1, 'the woken parent conversation holds exactly one completion notice');
+    assert.equal(idleWakeTurns, 1, 'exactly one wake turn was admitted across both losses');
+    assert.match(listed, /IDLE_OK/, 'the wake turn sees the accepted child result');
+    assert.deepEqual(openToolCalls(idleHistory), [], 'every call has a terminal result');
+
+    // 3i. Nested completion: a leaf's accepted result reaches its parent child
+    // across a loss after the leaf's acceptance and a second loss right after
+    // the parent received it, then reaches the waiting root once, never waking it.
+    const nestRun = (await curl('nest-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_ROOT_NEST: delegate to a parent child that delegates to a leaf.', settings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const nestBase = kills.length;
+    await waitFor('nest leaf loss after acceptance', () => kills.length === nestBase + 1 && !fixture);
+    const leafLoss = kills.at(-1).process;
+    await start(); await turnState('nest-after-loss-1', nestRun.agent_id, nestRun.turn_id);
+    await waitFor('nest parent loss after its leaf result', () => kills.length === nestBase + 2 && !fixture);
+    const parentLoss = kills.at(-1).process;
+    await start(); await turnState('nest-after-loss-2', nestRun.agent_id, nestRun.turn_id);
+    const nestDone = await terminal('nest-terminal', nestRun.agent_id, nestRun.turn_id);
+    const nestHistory = await history('nest-history', nestRun.agent_id);
+    const nestWakes = modelCalls.filter(call => call.scenario === 'CURL_ROOT_NEST' && /subagent_completion agent_id/.test(call.last_instruction)).length;
+    const finalNestRoot = nest.root.at(-1);
+    summary.nest = { terminal: nestDone.state, leaf_calls: nest.leaf, parent_calls: nest.parent, root_calls: nest.root, leaf_loss_process: leafLoss, parent_loss_process: parentLoss, wake_calls: nestWakes };
+    assert.equal(nest.leafSubmits, 1, 'the leaf result is accepted exactly once');
+    assert.deepEqual(nest.leaf.filter(call => call.process > leafLoss), [], 'the accepted leaf result is never rerun');
+    assert.ok(!nest.parent.some(call => call.saw_leaf && call.process === leafLoss), 'the leaf turn had not settled before loss 1');
+    assert.ok(nest.parent.some(call => call.saw_leaf && call.process === parentLoss), 'the parent child received the leaf result after loss 1');
+    assert.ok(nest.parent.some(call => call.saw_leaf && call.process > parentLoss), 'the parent child still holds the leaf result after loss 2');
+    assert.equal(nest.parentSubmits, 1, 'the parent child submits once');
+    assert.equal(finalNestRoot.completed_nest.length, 1, 'the root sees the nested result exactly once: ' + JSON.stringify(finalNestRoot));
+    assert.equal(nestWakes, 0, 'the waiting root is never woken for it');
+    assert.deepEqual(openToolCalls(nestHistory), [], 'every root call has a terminal result');
+    assert.equal(nestDone.state, 'completed', JSON.stringify(nestDone));
 
     // 4. A child whose every inference dies with its owner exhausts bounded
     // automatic recovery; the root reaches a terminal and the agent stays usable.
