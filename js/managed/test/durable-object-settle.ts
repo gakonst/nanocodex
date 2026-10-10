@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterAll } from "vitest";
 
 // Workaround for a teardown deadlock in @cloudflare/vitest-pool-workers 0.19.1
