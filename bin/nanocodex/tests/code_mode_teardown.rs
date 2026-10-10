@@ -2,6 +2,9 @@
 //! completes or is interrupted must close every nested call it started. Only
 //! Responses inference is synthetic.
 #![cfg(unix)]
+#[path = "support/local_cli.rs"]
+mod local_cli;
+
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
 use eyre::{Result, eyre};
@@ -39,7 +42,8 @@ async fn run_cli(interrupt: bool) -> Result<Vec<Value>> {
     let (stalled_tx, stalled_rx) = oneshot::channel();
     let server = tokio::spawn(serve(listener, interrupt, stalled_tx));
     let workspace = tempfile::tempdir()?;
-    let child = Command::new(env!("CARGO_BIN_EXE_nanocodex"))
+    // The local agent tree (and its run --browser flags) is selected by the ncl name.
+    let child = Command::new(local_cli::local_cli())
         .current_dir(workspace.path())
         .env("HOME", workspace.path())
         .env("CODEX_HOME", workspace.path().join(".codex"))
