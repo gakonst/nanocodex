@@ -2,8 +2,8 @@ use super::super::{load::validate_legacy_history_mode, wire::*};
 use super::*;
 
 pub(in crate::rollout) struct RolloutWriter {
-    file: tokio::fs::File,
-    pub(super) committed_bytes: Arc<AtomicU64>,
+    file: File,
+    pub(in crate::rollout) committed_bytes: Arc<AtomicU64>,
     pub(in crate::rollout) pending: Option<RolloutCommit>,
     written_revision: Option<u64>,
     written_len: usize,
@@ -20,7 +20,7 @@ pub(in crate::rollout) struct RolloutWriter {
 
 impl RolloutWriter {
     pub(in crate::rollout) fn new(
-        file: tokio::fs::File,
+        file: File,
         initial_window_id: String,
         workspace: PathBuf,
     ) -> Self {
@@ -42,7 +42,7 @@ impl RolloutWriter {
         }
     }
 
-    pub(super) fn resumed(file: tokio::fs::File, state: ResumeWriterState) -> Self {
+    pub(super) fn resumed(file: File, state: ResumeWriterState) -> Self {
         Self {
             file,
             committed_bytes: Arc::new(AtomicU64::new(0)),
@@ -61,68 +61,95 @@ impl RolloutWriter {
         }
     }
 
-    pub(super) async fn run(
+    pub(in crate::rollout) async fn run(
         mut self,
         mut commands: mpsc::Receiver<RolloutCommand>,
     ) -> (io::Result<()>, Option<oneshot::Sender<io::Result<()>>>) {
         while let Some(command) = commands.recv().await {
-            match command {
-                RolloutCommand::Input { input, result } => {
-                    let start = self.file.metadata().await.map(|m| m.len());
-                    let outcome = match start {
-                        Ok(start) => {
-                            let outcome = async {
-                                self.write_event(CodexEvent::InputAccepted(&input)).await?;
-                                self.file.flush().await?;
-                                self.file.sync_data().await?;
-                                self.committed_bytes
-                                    .store(self.file.metadata().await?.len(), Ordering::Release);
-                                Ok(())
-                            }
-                            .await;
-                            if outcome.is_err() {
-                                match self.rollback(start).await {
-                                    Ok(()) => outcome,
-                                    Err(error) => Err(error),
-                                }
-                            } else {
-                                outcome
-                            }
-                        }
-                        Err(error) => Err(error),
-                    };
-                    drop(result.send(outcome));
+            if matches!(&command, RolloutCommand::Shutdown { .. }) {
+                commands.close();
+            }
+            // One owned blocking segment per command, not per JSONL record or
+            // metadata/flush/sync operation. No pool thread waits on the channel.
+            let task = tokio::task::spawn_blocking(move || {
+                let (outcome, shutdown) = self.process(command);
+                (self, outcome, shutdown)
+            })
+            .await;
+            match task {
+                Ok((writer, outcome, shutdown)) => {
+                    self = writer;
+                    if shutdown.is_some() {
+                        return (outcome, shutdown);
+                    }
                 }
-                RolloutCommand::Commit { commit, result } => {
-                    self.pending = Some(*commit);
-                    drop(result.send(self.persist_pending().await));
-                }
-                RolloutCommand::Flush { result } => {
-                    drop(result.send(self.flush().await));
-                }
-                RolloutCommand::Shutdown { result } => {
-                    commands.close();
-                    return (self.flush().await, Some(result));
-                }
+                Err(error) => return (Err(io::Error::other(error)), None),
             }
         }
-        (self.flush().await, None)
-    }
-
-    pub(in crate::rollout) async fn flush(&mut self) -> io::Result<()> {
-        if self.pending.is_some() {
-            self.persist_pending().await
-        } else {
-            self.file.flush().await?;
-            self.file.sync_data().await
+        match tokio::task::spawn_blocking(move || self.flush()).await {
+            Ok(outcome) => (outcome, None),
+            Err(error) => (Err(io::Error::other(error)), None),
         }
     }
 
-    pub(in crate::rollout) async fn persist_pending(&mut self) -> io::Result<()> {
+    fn process(
+        &mut self,
+        command: RolloutCommand,
+    ) -> (io::Result<()>, Option<oneshot::Sender<io::Result<()>>>) {
+        match command {
+            RolloutCommand::Input { input, result } => {
+                let start = self.file.metadata().map(|m| m.len());
+                let outcome = match start {
+                    Ok(start) => {
+                        let outcome = (|| {
+                            self.write_event(CodexEvent::InputAccepted(&input))?;
+                            self.file.flush()?;
+                            self.file.sync_data()?;
+                            self.committed_bytes
+                                .store(self.file.metadata()?.len(), Ordering::Release);
+                            Ok(())
+                        })();
+                        if outcome.is_err() {
+                            match self.rollback(start) {
+                                Ok(()) => outcome,
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            outcome
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                drop(result.send(outcome));
+            }
+            RolloutCommand::Commit { commit, result } => {
+                self.pending = Some(*commit);
+                drop(result.send(self.persist_pending()));
+            }
+            RolloutCommand::Flush { result } => {
+                drop(result.send(self.flush()));
+            }
+            RolloutCommand::Shutdown { result } => {
+                return (self.flush(), Some(result));
+            }
+        }
+        (Ok(()), None)
+    }
+
+    pub(in crate::rollout) fn flush(&mut self) -> io::Result<()> {
+        if self.pending.is_some() {
+            self.persist_pending()
+        } else {
+            self.file.flush()?;
+            self.file.sync_data()
+        }
+    }
+
+    pub(in crate::rollout) fn persist_pending(&mut self) -> io::Result<()> {
         let Some(commit) = self.pending.take() else {
             return Ok(());
         };
-        let persisted = self.append_with_retry(&commit).await;
+        let persisted = self.append_with_retry(&commit);
         match persisted {
             Ok(()) => Ok(()),
             Err(source) => {
@@ -132,10 +159,10 @@ impl RolloutWriter {
         }
     }
 
-    async fn append_with_retry(&mut self, commit: &RolloutCommit) -> io::Result<()> {
+    fn append_with_retry(&mut self, commit: &RolloutCommit) -> io::Result<()> {
         let prepared = self.prepare_append(commit)?;
-        let original_len = self.file.metadata().await?.len();
-        let first_error = match self.write_prepared(&prepared).await {
+        let original_len = self.file.metadata()?.len();
+        let first_error = match self.write_prepared(&prepared) {
             Ok(()) => {
                 self.apply_prepared(prepared);
                 return Ok(());
@@ -143,14 +170,14 @@ impl RolloutWriter {
             Err(source) => source,
         };
 
-        self.rollback(original_len).await?;
-        match self.write_prepared(&prepared).await {
+        self.rollback(original_len)?;
+        match self.write_prepared(&prepared) {
             Ok(()) => {
                 self.apply_prepared(prepared);
                 Ok(())
             }
             Err(second) => {
-                self.rollback(original_len).await?;
+                self.rollback(original_len)?;
                 Err(io::Error::new(
                     second.kind(),
                     format!(
@@ -268,7 +295,7 @@ impl RolloutWriter {
         }
     }
 
-    async fn write_prepared(&mut self, prepared: &PreparedAppend) -> io::Result<()> {
+    fn write_prepared(&mut self, prepared: &PreparedAppend) -> io::Result<()> {
         #[cfg(test)]
         if self.injected_write_failures > 0 {
             self.injected_write_failures -= 1;
@@ -280,40 +307,36 @@ impl RolloutWriter {
             started_at: turn.started_at,
             model_context_window: None,
             collaboration_mode_kind: "default",
-        })
-        .await?;
+        })?;
         if let Some(user_message) = &turn.user_message {
-            self.write_event(CodexEvent::UserMessage(user_message))
-                .await?;
+            self.write_event(CodexEvent::UserMessage(user_message))?;
         }
         match &prepared.records {
             PreparedRecords::Items { history, start } => {
-                self.write_turn_context(turn, prepared.model).await?;
+                self.write_turn_context(turn, prepared.model)?;
                 for item in history.iter_from(*start) {
-                    write_async_line(
+                    write_file_line(
                         &mut self.file,
                         &RolloutLine {
                             timestamp: timestamp(),
                             item: RolloutItem::ResponseItem(item),
                         },
-                    )
-                    .await?;
+                    )?;
                 }
             }
             PreparedRecords::Compacted(compacted) => {
-                write_async_line(
+                write_file_line(
                     &mut self.file,
                     &RolloutLine {
                         timestamp: timestamp(),
                         item: RolloutItem::Compacted(compacted),
                     },
-                )
-                .await?;
-                self.write_turn_context(turn, prepared.model).await?;
+                )?;
+                self.write_turn_context(turn, prepared.model)?;
             }
         }
         if prepared.write_state {
-            write_async_line(
+            write_file_line(
                 &mut self.file,
                 &RolloutLine {
                     timestamp: timestamp(),
@@ -326,16 +349,14 @@ impl RolloutWriter {
                         },
                     }),
                 },
-            )
-            .await?;
+            )?;
         }
         if let Some(message) = turn.final_message.as_deref() {
             self.write_event(CodexEvent::AgentMessage {
                 message,
                 phase: "final_answer",
                 memory_citation: None,
-            })
-            .await?;
+            })?;
         }
         match turn.status {
             RolloutTurnStatus::Completed => {
@@ -346,8 +367,7 @@ impl RolloutWriter {
                     completed_at: turn.completed_at,
                     duration_ms: turn.duration_ms,
                     time_to_first_token_ms: None,
-                })
-                .await?;
+                })?;
             }
             RolloutTurnStatus::Interrupted => {
                 self.write_event(CodexEvent::TurnAborted {
@@ -356,8 +376,7 @@ impl RolloutWriter {
                     started_at: turn.started_at,
                     completed_at: turn.completed_at,
                     duration_ms: turn.duration_ms,
-                })
-                .await?;
+                })?;
             }
             RolloutTurnStatus::Replaced => {
                 self.write_event(CodexEvent::TurnAborted {
@@ -366,8 +385,7 @@ impl RolloutWriter {
                     started_at: turn.started_at,
                     completed_at: turn.completed_at,
                     duration_ms: turn.duration_ms,
-                })
-                .await?;
+                })?;
             }
             RolloutTurnStatus::Failed => {
                 self.write_event(CodexEvent::TaskComplete {
@@ -377,8 +395,7 @@ impl RolloutWriter {
                     completed_at: turn.completed_at,
                     duration_ms: turn.duration_ms,
                     time_to_first_token_ms: None,
-                })
-                .await?;
+                })?;
             }
             RolloutTurnStatus::InProgress => {
                 return Err(io::Error::new(
@@ -387,26 +404,25 @@ impl RolloutWriter {
                 ));
             }
         }
-        self.file.flush().await?;
-        self.file.sync_data().await?;
+        self.file.flush()?;
+        self.file.sync_data()?;
         self.committed_bytes
-            .store(self.file.metadata().await?.len(), Ordering::Release);
+            .store(self.file.metadata()?.len(), Ordering::Release);
         Ok(())
     }
 
-    async fn write_event(&mut self, event: CodexEvent<'_>) -> io::Result<()> {
-        write_async_line(
+    fn write_event(&mut self, event: CodexEvent<'_>) -> io::Result<()> {
+        write_file_line(
             &mut self.file,
             &RolloutLine {
                 timestamp: timestamp(),
                 item: RolloutItem::Event(&event),
             },
         )
-        .await
     }
 
-    async fn write_turn_context(&mut self, turn: &RolloutTurn, model: Model) -> io::Result<()> {
-        write_async_line(
+    fn write_turn_context(&mut self, turn: &RolloutTurn, model: Model) -> io::Result<()> {
+        write_file_line(
             &mut self.file,
             &RolloutLine {
                 timestamp: timestamp(),
@@ -422,7 +438,6 @@ impl RolloutWriter {
                 }),
             },
         )
-        .await
     }
 
     fn apply_prepared(&mut self, prepared: PreparedAppend) {
@@ -439,10 +454,10 @@ impl RolloutWriter {
         }
     }
 
-    async fn rollback(&mut self, len: u64) -> io::Result<()> {
-        self.file.set_len(len).await?;
-        self.file.seek(std::io::SeekFrom::Start(len)).await?;
-        self.file.sync_data().await
+    fn rollback(&mut self, len: u64) -> io::Result<()> {
+        self.file.set_len(len)?;
+        self.file.seek(std::io::SeekFrom::Start(len))?;
+        self.file.sync_data()
     }
 
     #[cfg(test)]
@@ -601,8 +616,8 @@ pub(in crate::rollout) fn write_line(
     output.write_all(b"\n")
 }
 
-async fn write_async_line(output: &mut tokio::fs::File, line: &impl Serialize) -> io::Result<()> {
+fn write_file_line(output: &mut File, line: &impl Serialize) -> io::Result<()> {
     let mut encoded = serde_json::to_vec(line).map_err(io::Error::other)?;
     encoded.push(b'\n');
-    output.write_all(&encoded).await
+    output.write_all(&encoded)
 }

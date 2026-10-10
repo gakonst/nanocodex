@@ -1,0 +1,303 @@
+   Compiling nanocodex-agent v0.6.7 (/Users/georgios/github/gakonst/nanocodex-worktrees/tokio-perf-20261007/crates/nanocodex-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.11s
+     Running unittests src/lib.rs (target/debug/deps/nanocodex_agent-3795aa24559a58d1)
+
+running 52 tests
+test agent::builder::tests::execution_environment_requires_complete_model_visible_context ... ok
+test agent::context_source::agents_md::tests::missing_global_files_return_no_instructions ... ok
+test agent::context_source::agents_md::tests::global_instructions_decode_invalid_utf8_lossily ... ok
+test agent::context_source::agents_md::tests::global_directory_falls_back_to_default ... ok
+test agent::context_source::agents_md::tests::empty_global_override_falls_back_to_default ... ok
+test agent::context_source::agents_md::tests::global_override_precedes_default ... ok
+test agent::context_source::agents_md::tests::project_read_errors_preserve_global_instructions ... ok
+test agent::context_source::platform::tests::explicit_project_snapshot_replaces_native_workspace_discovery ... ok
+test agent::context_source::agents_md::tests::unreadable_global_override_falls_back_to_default ... ok
+test agent::context_source::platform::tests::remote_workspace_is_not_resolved_through_the_native_host ... ok
+test agent::context_source::agents_md::tests::global_instructions_precede_project_hierarchy ... ok
+test agent::context_source::agents_md::tests::empty_project_docs_do_not_consume_the_shared_budget ... ok
+test agent::execution::preservation::tests::source_excludes_tool_output_instructions_and_harness_messages ... ok
+test agent::execution::preservation::tests::never_promotes_partial_messages_or_merges_text_parts ... ok
+test agent::execution::preservation::tests::source_message_and_utf8_byte_limits_are_exact ... ok
+test agent::driver::control::tests::stopped_error_distinguishes_ordinary_and_policy_owned_agents ... ok
+test model::context::tests::unrelated_legacy_history_does_not_fabricate_a_known_baseline ... ok
+test model::context::tests::missing_baseline_requires_full_reinjection ... ok
+test model::input::tests::task_input_preserves_consecutive_synthetic_user_messages ... ok
+test model::input::tests::task_input_preserves_synthetic_message_roles ... ok
+test model::input::tests::responses_lite_tool_output_omits_image_details_without_request_copy ... ok
+test model::input::tests::tool_file_image_conversion_preserves_identity_and_omits_lite_details ... ok
+test agent::driver::tests::misalignment_failure_stops_the_agent_session ... ok
+test agent::execution::preservation::tests::context_is_bounded_and_preserves_source_roles_only ... ok
+test model::run::lifecycle::compaction_receipt_tests::legacy_success_receipt_keeps_its_wire_shape ... ok
+test model::run::responses::response_id_tests::provider_response_ids_must_contain_non_whitespace_text ... ok
+test model::run::lifecycle::compaction_receipt_tests::image_failure_receipt_preserves_repair_and_policy_stop_wins ... ok
+test model::run::lifecycle::compaction_receipt_tests::failure_receipt_preserves_session_stop_and_defaults_old_receipts ... ok
+test model::telemetry::usage_tests::turn_cost_preserves_per_request_long_context_thresholds ... ok
+test model::run::continuation::tests::execution_accounting_basis_roundtrips_and_defaults_for_legacy_records ... ok
+test model::run::state::image_replay_tests::checkpoint_image_preparation_replaces_history_once ... ok
+test agent::builder::tests::resumed_model_reaches_the_service_factory ... ok
+test model::run::context_accounting_snapshot_tests::snapshot_preserves_context_accounting_and_accepts_legacy_snapshots ... ok
+test rollout::tests::fork_metadata_retains_parent_identity ... ok
+test rollout::tests::prompt_previews_are_single_line_and_bounded ... ok
+test rollout::tests::reconstructs_custom_function_and_mcp_tool_activity ... ok
+test rollout::tests::failed_append_remains_pending_and_retries_without_duplicates ... ok
+test rollout::tests::appends_only_the_new_committed_delta ... ok
+test rollout::tests::missing_compacted_history_still_reports_line_specific_error ... ok
+test rollout::tests::legacy_resume_roots_new_children_at_the_resumed_session ... ok
+test rollout::tests::rollout_perf ... ignored, manual latency benchmark; performs filesystem I/O
+test rollout::tests::rejects_rollout_continuation_for_obsolete_model_ids ... ok
+test rollout::tests::moved_rollout_payload_preserves_tool_transcript_and_compacted_history ... ok
+test rollout::wire::image_file_rollout_tests::file_images_are_retained_separately_from_inline_urls ... ok
+test rollout::tests::discovers_active_and_archived_rollouts_newest_first ... ok
+test rollout::tests::loads_the_latest_supported_model_from_codex_turn_context ... ok
+test rollout::tests::discovery_prefers_an_active_copy_of_a_duplicate_thread ... ok
+test rollout::tests::rejects_rollouts_with_paginated_history ... ok
+test rollout::tests::loads_codex_rollout_without_a_nanocodex_sidecar ... ok
+test rollout::tests::records_compaction_as_a_replacement_history_boundary ... ok
+test rollout::tests::writes_codex_rollout_envelope_and_committed_items ... ok
+test rollout::tests::resumed_writer_repairs_a_rollout_behind_the_durable_boundary ... ok
+
+test result: ok. 51 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/it/main.rs (target/debug/deps/it-62236cffd33dcff3)
+
+running 145 tests
+test lifecycle::builder::resolves_the_owned_workspace_before_build_returns ... ok
+test lifecycle::builder::rejects_an_empty_prompt_cache_key ... ok
+test lifecycle::control::accepts_a_caller_service_factory_for_future_children ... ok
+test lifecycle::builder::starts_dynamic_providers_before_build_returns ... ok
+test lifecycle::builder::cloned_builders_create_distinct_agents ... ok
+test lifecycle::control::building_requires_a_tokio_runtime ... ok
+test lifecycle::control::an_agent_handle_does_not_keep_its_driver_alive ... ok
+test lifecycle::control::caller_service_factory_supports_clean_spawn ... ok
+test lifecycle::control::forking_before_a_completed_turn_is_typed ... ok
+test lifecycle::control::owning_agent_supports_clean_spawn ... ok
+test lifecycle::control::cancel_on_admission_never_dispatches_model_work ... ok
+test lifecycle::control::turn_result_does_not_wait_for_attempt_event_producers_to_close ... ok
+test lifecycle::control::adapter_developer_context_is_visible_at_safe_model_boundaries ... ok
+test lifecycle::control::live_snapshot_requires_a_safe_boundary_and_does_not_change_parent ... ok
+test lifecycle::control::caller_service_factory_supports_cancellation ... ok
+test lifecycle::control::dropping_every_command_handle_cancels_an_in_flight_attempt ... ok
+test lifecycle::control::steering_without_an_active_turn_is_typed ... ok
+test lifecycle::shutdown::shutdown_is_idempotent_across_cloned_handles ... ok
+test lifecycle::shutdown::implicit_shutdown_emits_one_terminal_event_for_every_accepted_turn ... ok
+test lifecycle::builder::rollout_uses_an_explicit_typed_session_id ... ok
+test model::branching::spawn::clean_batch_spawn_preserves_requested_order ... ok
+test lifecycle::builder::rollout_uses_the_agent_session_as_the_codex_thread_id ... ok
+test model::branching::spawn::clean_spawn_reuses_the_root_cache_key_without_history ... ok
+test model::branching::spawn::clean_spawn_can_override_model_and_thinking_without_mutating_parent ... ok
+test model::branching::forks::historical_fork_runs_while_the_mainline_turn_is_in_flight ... ok
+test model::branching::forks::latest_fork_during_streaming_inherits_the_active_prompt_delta ... ok
+test model::branching::spawn::cloned_builders_singleflight_one_shared_prefix_warmup ... ok
+test model::branching::forks::latest_and_historical_forks_keep_distinct_boundaries_during_an_active_turn ... ok
+test model::branching::forks::latest_completed_ephemeral_fork_replays_parent_history ... ok
+test model::branching::spawn::per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver ... ok
+test model::context::execution_environment_suppresses_host_context_discovery ... ok
+test model::context::ordinary_turns_keep_creation_time_agents_md ... ok
+test model::branching::forks::active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpoint_miss ... ok
+test model::control::cancellation::cancellation_retains_interrupted_prompt_and_resumes_from_the_abort_boundary ... ok
+test model::control::cancellation::cancellation_during_pre_turn_compaction_retains_the_accepted_prompt ... ok
+test model::context::legacy_snapshot_reconstructs_agents_md_before_diffing ... ok
+test model::context::fork_reloads_a_changed_global_agents_source_once ... ok
+test model::context::fork_replaces_or_removes_changed_agents_md_once ... ok
+test lifecycle::shutdown::explicit_shutdown_joins_resources_and_flushes_the_rollout ... ok
+test model::control::cancellation::cancellation_pairs_an_active_tool_call_before_resuming ... ok
+test lifecycle::shutdown::flush_is_durable_without_stopping_the_agent ... ok
+test model::control::steering::instruction_revision_follows_consumed_steering_and_resets_on_new_prompt ... ok
+test model::control::steering::assistant_events_preserve_commentary_and_final_answer_phases ... ok
+test model::control::steering::steering_is_bounded_fifo_and_joins_at_the_next_model_boundary ... ok
+test model::control::steering::steer_withdrawal_only_removes_latest_unconsumed_input ... ok
+test model::instructions::astra_prompt_is_restored_from_the_retained_model ... ok
+test model::control::steering::compaction_resumes_tool_continuation_before_queued_steering ... ok
+test model::control::instant_tool_steering::instant_steering_yields_exec_and_wait_without_replaying_effects ... ok
+test model::instructions::overridden_identity_follows_gateway_model_child_switch_and_resume ... ok
+test model::instructions::model_prompt_selection_preserves_explicit_and_additional_instructions ... ok
+test model::control::cancellation_telemetry::cancellation_retains_completed_nested_progress_in_terminal_metrics ... ok
+test model::control::steering::steering_during_a_tool_call_joins_after_the_tool_result ... ok
+test model::instructions::explicit_codex_home_takes_precedence_over_rollout_home ... ok
+test model::instructions::rollout_home_supplies_global_instructions ... ok
+test model::persistence::missing_stored_checkpoint_replays_local_history_once ... ok
+test model::recovery::before_compaction::before_compaction_cancellation_drops_hook_without_discarding_source ... ok
+test model::recovery::before_compaction::before_compaction_awaits_receipt_for_manual_pre_turn_and_mid_turn ... ok
+test model::recovery::before_compaction::before_compaction_rejection_and_invalid_receipt_retain_original_context ... ok
+test model::recovery::before_compaction::before_compaction_boundary_is_stable_and_durable_receipt_replays_after_restart ... ok
+test model::recovery::before_compaction::before_compaction_is_not_inherited_by_spawn_fork_or_restored_children ... ok
+test model::recovery::compaction::manual_compaction_after_a_turn_uses_the_live_session_and_reinjects_next_context ... ok
+test model::recovery::compaction::manual_compaction_replaces_an_active_turn_before_queued_prompts ... ok
+test model::recovery::compaction::manual_compaction_retains_effort_pin_and_uses_current_speed_in_a_fresh_logical_turn ... ok
+test model::persistence::accepted_prompt_survives_a_fatal_warmup_boundary ... ok
+test model::persistence::failed_accepted_prompt_is_durable_without_partial_assistant_output ... ok
+test model::recovery::compaction::pre_turn_compaction_keeps_creation_time_agents_md ... ok
+test model::recovery::compaction::a_later_manual_compaction_replaces_a_stuck_manual_compaction ... ok
+test model::recovery::durable_provider::admitted_operation_id_reaches_tools_only_as_private_context ... ok
+test model::recovery::durable_provider::compaction_admission_executes_the_provider ... ok
+test model::recovery::compaction::supported_reasoning_compaction_commits_new_pin_only_on_success ... ok
+test model::recovery::durable_provider::compaction_admission_failure_emits_terminal_event ... ok
+test model::recovery::durable_provider::compaction_completion_failure_emits_terminal_event ... ok
+test model::recovery::durable_provider::compaction_cancellation_emits_terminal_event ... ok
+test model::recovery::durable_provider::compaction_invalid_response_id_emits_terminal_event ... ok
+test model::recovery::durable_provider::instruction_revision_survives_durable_recovery_and_mid_turn_compaction ... ok
+test model::recovery::durable_provider::model_call_admission_executes_the_provider ... ok
+test model::recovery::durable_provider::warmup_admission_executes_the_provider ... ok
+test model::recovery::failures::completed_response_accepts_null_usage ... ok
+test model::recovery::failures::compaction_misalignment_stops_the_session_and_queued_work ... ok
+test model::recovery::compaction::client_developer_provenance_survives_rollout_reload_and_compaction ... ok
+test model::recovery::compaction::manual_compaction_before_first_prompt_reinjects_cached_context_and_persists_boundary ... ok
+test model::recovery::compaction::client_developer_provenance_survives_snapshot_resume_and_compaction ... ok
+test model::recovery::failures::empty_completed_response_id_fails_before_the_terminal_event ... ok
+test model::recovery::failures::completed_response_accepts_null_usage_details ... ok
+test model::recovery::failures::context_window_error_forces_compaction_before_the_next_prompt ... ok
+test model::recovery::failures::warmup_connection_failure_falls_back_to_a_full_first_request ... ok
+test model::recovery::failures::explicit_end_turn_false_continues_without_a_tool_call ... ok
+test model::recovery::compaction_images::automatic_compaction_image_failure_repairs_durable_checkpoint ... ok
+test model::recovery::failures::failed_turn_forces_the_next_turn_to_replay_its_latest_safe_history ... ok
+test model::recovery::failures::warmup_failure_falls_back_to_a_full_first_request ... ok
+test model::recovery::failures::warmup_misalignment_stops_the_session_and_queued_work ... ok
+test model::recovery::normalization::agent_repairs_unmatched_tool_calls_before_continuing_and_restores_delta ... ok
+test model::recovery::instruction_revision::consumed_instruction_revision_survives_execution_recovery ... ok
+test model::recovery::compaction_images::manual_compaction_image_failure_repairs_durable_checkpoint ... ok
+test model::recovery::reconnect::sol_compacts_before_sampling_a_follow_on_turn ... ok
+test model::recovery::images::invalid_image_value_is_removed_before_durable_followup ... ok
+test model::recovery::reconnect::sol_compacts_with_the_session_agents_md_and_installs_the_returned_context ... ok
+test model::recovery::images::malformed_stored_image_is_removed_before_provider_replay ... ok
+test model::recovery::images::undecodable_stored_image_is_removed_before_provider_replay ... ok
+test model::recovery::failures::continues_past_previous_model_call_limit ... ok
+test model::recovery::tool_schema::invalid_tool_schema_is_removed_before_durable_resume ... ok
+test model::control::cancellation::cancelling_a_later_turn_preserves_an_earlier_shell_session ... ok
+test model::recovery::tool_schema::invalid_tool_schema_uses_the_request_after_checkpoint_loss ... ok
+test model::tools::code_mode_notify_adds_a_named_exec_output_to_the_next_request ... ok
+test model::tools::configured_native_tool_search_round_trips_its_dedicated_items ... ok
+test model::tools::connection_local_response_code_mode_round_trip ... ok
+test model::tools::environment::agent_session_id_overrides_the_caller_shell_environment ... ok
+test model::tools::normal_code_mode_executes_direct_function_and_custom_tools ... ok
+test model::tools::panic::provider_panic_is_repaired_and_the_private_driver_remains_usable ... ok
+test model::tools::parallel::cancellation_keeps_completed_siblings_and_aborts_only_pending_calls ... ok
+test model::tools::mcp_tool_search_exposes_and_dispatches_a_native_namespace ... ok
+test model::tools::parallel::parallel_results_emit_on_completion_but_enter_history_in_provider_order ... ok
+test model::tools::parallel::tool_metadata_does_not_gate_dispatch_and_provider_errors_reach_the_model ... ok
+test model::tools::unsupported_direct_tools_return_failed_results_to_the_model ... ok
+test model::tools::prepares_images_and_stops_on_invalid_image_requests ... ok
+test model::tools::yielded_exec_cell_continues_through_direct_wait_tool ... ok
+test model::tools::yielded_results::cancellation_does_not_repeat_nested_tool_result_after_code_mode_yield ... ok
+test model::tools::yielded_results::failed_nested_tool_result_survives_code_mode_yield ... ok
+test model::tools::yielded_results::nested_tool_result_survives_code_mode_yield ... ok
+test model::recovery::transport::automatic_compaction_fallback_honors_last_websocket_advice ... ok
+test model::tools::yielded_results::nested_tool_result_survives_multiple_code_mode_yields ... ok
+test model::tools::yielded_results::nested_tool_result_without_code_mode_yield ... ok
+test model::transport::session::a_turn_stream_mirrors_one_turn_and_await_retains_its_result ... ok
+test model::recovery::transport::cancellation_preserves_session_scoped_https_fallback ... ok
+test model::transport::session::chatgpt_https_uses_subscription_headers_and_ephemeral_replay ... ok
+test model::transport::session::https_ephemeral_replays_complete_follow_on_history ... ok
+test model::transport::session::https_restored_configuration_update_is_retained_but_not_sent ... ok
+test model::transport::session::https_stored_fork_uses_the_historical_response_checkpoint ... ok
+test model::transport::session::rejects_invalid_auth_storage_and_https_history_policies ... ok
+test model::transport::session::https_uses_the_configured_http_client ... ok
+test model::recovery::transport::upgrade_required_warmup_moves_generation_to_https ... ok
+test model::transport::websocket::model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change ... FAILED
+test model::transport::websocket::queued_prompts_retain_tier_and_effort_captured_when_accepted ... ok
+test model::transport::session::supported_reasoning_rollout_resume_preserves_pin_and_appends_only_changes ... ok
+test model::transport::session::supported_reasoning_snapshot_resume_preserves_pin_and_appends_only_changes ... ok
+test model::transport::session::configured_attempt_limit_prevents_a_paid_request_replay ... ok
+test model::transport::websocket::websocket_ephemeral_fork_replays_history_on_its_fresh_socket ... ok
+test model::transport::websocket::websocket_full_replay_never_sends_a_previous_response_id ... ok
+test model::recovery::reconnect::reconnect_drops_previous_response_id_and_replays_full_history ... ok
+test model::recovery::reconnect::receive_reset_reconnects_without_replaying_completed_tools ... ok
+test model::recovery::reconnect::stored_reconnect_drops_checkpoint_and_replays_full_history ... ok
+test model::tools::yielded_exec_cell_finishes_nested_tool_started_before_yield ... ok
+test model::transport::websocket::supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fast_or_reconnect ... FAILED
+test model::persistence::serialized_session_rebinds_deployed_instructions_and_tools ... FAILED
+test model::persistence::serialized_session_and_codex_rollout_share_committed_history ... FAILED
+
+failures:
+
+---- model::transport::websocket::model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change stdout ----
+
+thread 'model::transport::websocket::model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change' (2761819) panicked at crates/nanocodex-agent/tests/it/model/transport/websocket.rs:174:9:
+assertion `left == right` failed
+  left: String("custom prompt\n\n<runtime_model_identity>\nmodel_id: gpt-6-luna\nThis is the runtime-selected model serving this agent. When asked which model you are, report this model ID. Nanocodex and Codex are product or harness names, not the underlying model. Other agents and models listed in tools can differ from this agent. Use this current runtime identity over conflicting identity claims in earlier conversation or inherited instructions.\n</runtime_model_identity>")
+ right: "custom prompt"
+Error: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53056/responses)
+
+Caused by:
+   0: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53056/responses)
+   1: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53056/responses)
+
+Location:
+    crates/nanocodex-agent/tests/it/model/transport/websocket.rs:341:9
+
+---- model::transport::websocket::supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fast_or_reconnect stdout ----
+
+thread 'model::transport::websocket::supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fast_or_reconnect' (2761827) panicked at crates/nanocodex-agent/tests/it/model/transport/websocket.rs:599:13:
+assertion `left == right` failed
+  left: String("Keep this developer prompt byte-for-byte stable.\n\n<runtime_model_identity>\nmodel_id: gpt-6-astra\nThis is the runtime-selected model serving this agent. When asked which model you are, report this model ID. Nanocodex and Codex are product or harness names, not the underlying model. Other agents and models listed in tools can differ from this agent. Use this current runtime identity over conflicting identity claims in earlier conversation or inherited instructions.\n</runtime_model_identity>")
+ right: "Keep this developer prompt byte-for-byte stable."
+Error: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53065/responses)
+
+Caused by:
+   0: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53065/responses)
+   1: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:53065/responses)
+
+Location:
+    crates/nanocodex-agent/tests/it/model/transport/websocket.rs:778:17
+
+---- model::persistence::serialized_session_rebinds_deployed_instructions_and_tools stdout ----
+
+thread 'model::persistence::serialized_session_rebinds_deployed_instructions_and_tools' (2761496) panicked at crates/nanocodex-agent/tests/it/model/persistence.rs:476:9:
+assertion `left == right` failed
+  left: String("instructions from the new deployment\n\n<runtime_model_identity>\nmodel_id: gpt-6-luna\nThis is the runtime-selected model serving this agent. When asked which model you are, report this model ID. Nanocodex and Codex are product or harness names, not the underlying model. Other agents and models listed in tools can differ from this agent. Use this current runtime identity over conflicting identity claims in earlier conversation or inherited instructions.\n</runtime_model_identity>")
+ right: "instructions from the new deployment"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Error: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:52894/responses)
+
+Caused by:
+   0: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:52894/responses)
+   1: Responses HTTPS request failed: error sending request for url (http://127.0.0.1:52894/responses)
+
+Location:
+    crates/nanocodex-agent/tests/it/model/persistence.rs:531:9
+
+---- model::persistence::serialized_session_and_codex_rollout_share_committed_history stdout ----
+
+thread 'model::persistence::serialized_session_and_codex_rollout_share_committed_history' (2761495) panicked at crates/nanocodex-agent/tests/it/model/persistence.rs:182:9:
+assertion `left == right` failed
+  left: String("instructions from the resumed rollout\n\n<runtime_model_identity>\nmodel_id: gpt-6.1-sol\nThis is the runtime-selected model serving this agent. When asked which model you are, report this model ID. Nanocodex and Codex are product or harness names, not the underlying model. Other agents and models listed in tools can differ from this agent. Use this current runtime identity over conflicting identity claims in earlier conversation or inherited instructions.\n</runtime_model_identity>")
+ right: "instructions from the resumed rollout"
+Error: Responses HTTPS request was rejected with HTTP 401: {
+  "error": {
+    "message": "Incorrect API key provided: test-key. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}
+
+Caused by:
+   0: Responses HTTPS request was rejected with HTTP 401: {
+        "error": {
+          "message": "Incorrect API key provided: test-key. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "invalid_api_key"
+        }
+      }
+   1: Responses HTTPS request was rejected with HTTP 401: {
+        "error": {
+          "message": "Incorrect API key provided: test-key. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "invalid_api_key"
+        }
+      }
+
+Location:
+    crates/nanocodex-agent/tests/it/model/persistence.rs:417:9
+
+
+failures:
+    model::persistence::serialized_session_and_codex_rollout_share_committed_history
+    model::persistence::serialized_session_rebinds_deployed_instructions_and_tools
+    model::transport::websocket::model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change
+    model::transport::websocket::supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fast_or_reconnect
+
+test result: FAILED. 141 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.05s
+
+error: test failed, to rerun pass `-p nanocodex-agent --test it`

@@ -1,0 +1,11 @@
+   Compiling nanocodex-agent v0.6.7 (/Users/georgios/github/gakonst/nanocodex-worktrees/tokio-perf-20261007/crates/nanocodex-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.07s
+     Running unittests src/lib.rs (target/debug/deps/nanocodex_agent-3795aa24559a58d1)
+
+running 1 test
+list_1000: n=101 median_us=40574 p99_us=44284
+append_1000: n=101 median_us=13987 p99_us=15075
+test rollout::tests::rollout_perf ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 6.56s
+

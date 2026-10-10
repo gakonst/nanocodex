@@ -1,0 +1,13 @@
+   Compiling nanocodex-agent v0.6.7 (/Users/georgios/github/gakonst/nanocodex-worktrees/tokio-perf-20261007/crates/nanocodex-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.96s
+   Doc-tests nanocodex_agent
+
+running 4 tests
+test crates/nanocodex-agent/src/../README.md - (line 12) - compile ... ok
+test crates/nanocodex-agent/src/../README.md - (line 54) - compile ... ok
+test crates/nanocodex-agent/src/../README.md - (line 79) - compile ... ok
+test crates/nanocodex-agent/src/agent/handle.rs - agent::handle::Nanocodex::compact (line 625) ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.42s; merged doctests compilation took 0.41s
