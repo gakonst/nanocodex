@@ -1302,11 +1302,15 @@ mod tests {
         let specs = runtime.model_specs("test-session");
         assert_eq!(
             specs.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
-            ["exec", "wait", "tool_search"],
-            "Code Mode-only must retain the discovery primitive while deferring MCP tools"
+            ["exec", "wait"],
+            "Code Mode-only exposes only its entrypoints while deferring MCP tools"
         );
 
         let description = specs[0].description();
+        assert!(
+            description.contains("### `tool_search`"),
+            "Code Mode-only must retain the discovery primitive as a nested tool"
+        );
         assert!(description.contains("Some deferred nested tools may be omitted"));
         assert!(
             !description.contains("### `mcp__fixture__echo`"),
@@ -1320,8 +1324,8 @@ mod tests {
                 .into_iter()
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
-            ["mcp__fixture__echo"],
-            "discovered MCP tools must be callable through Code Mode from its first cell"
+            ["mcp__fixture__echo", "tool_search"],
+            "discovered MCP tools and nested discovery must be callable through Code Mode from its first cell"
         );
     }
 
