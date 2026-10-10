@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { DurableAgentSession } from "../src/index";
 import {
-  backOffDueSubagentCompletions, deferSubagentCompletion, dueSubagentCompletions, markSubagentCompletionReceipt,
+  backOffDueSubagentCompletions, consumedSubagentCompletion, deferSubagentCompletion, dueSubagentCompletions, markSubagentCompletionReceipt,
   nextSubagentCompletionAttempt, pendingSubagentCompletions, recordSubagentCompletion, settleReleasedSubagentCompletions,
   settleSubagentCompletion, subagentCompletion, subagentCompletionAlarmAt,
 } from "../src/index";
@@ -97,5 +97,42 @@ it("backs due rows off after a failed drain and floors the outbox alarm", async 
     expect(second.map(row => row.attempts)).toEqual([2, 2]);
     expect(second.every(row => row.next_at - Date.now() >= 4_000 - 50)).toBe(true);
     expect(subagentCompletionAlarmAt(storage, Date.now())! - Date.now()).toBeGreaterThanOrEqual(2_000);
+  });
+});
+
+// An older completion still pending (it arrived while the parent was busy)
+// must not wake an idle parent that already consumed a newer revision of the
+// same child: that notice would repeat the newer result. Newer revisions are
+// never suppressed.
+it("settles an older pending completion as superseded once a newer one is consumed", async () => {
+  await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_instance, state) => {
+    const storage = state.storage;
+    expect(recordSubagentCompletion(storage, "child", 1)).toBe(true); // R1: deferred while busy
+    expect(recordSubagentCompletion(storage, "child", 2)).toBe(true); // R2
+    markSubagentCompletionReceipt(storage, "child", 2); // the parent's committed wait showed R2
+    // The idle drain decides R1 first (created first): consumed via R2, no wake.
+    expect(pendingSubagentCompletions(storage).map(row => row.revision)).toEqual([1, 2]);
+    expect(consumedSubagentCompletion(storage, "child", 1)).toBe("superseded");
+    expect(consumedSubagentCompletion(storage, "child", 2)).toBe("receipt_committed");
+    expect(settleSubagentCompletion(storage, "child", 1, "superseded")).toBe(true);
+    expect(settleSubagentCompletion(storage, "child", 2, "receipt_committed")).toBe(true);
+    expect(pendingSubagentCompletions(storage)).toEqual([]);
+
+    // Settling a newer revision first supersedes every older pending one atomically.
+    expect(recordSubagentCompletion(storage, "other", 4)).toBe(true);
+    expect(recordSubagentCompletion(storage, "other", 5)).toBe(true);
+    expect(recordSubagentCompletion(storage, "other", 7)).toBe(true);
+    markSubagentCompletionReceipt(storage, "other", 5);
+    expect(settleSubagentCompletion(storage, "other", 5, "receipt_committed")).toBe(true);
+    expect(subagentCompletion(storage, "other", 4)?.settled).toBe("superseded");
+    // R7 is newer than the consumed R5: still undecided, never suppressed.
+    expect(subagentCompletion(storage, "other", 7)?.settled).toBeNull();
+    expect(consumedSubagentCompletion(storage, "other", 7)).toBeUndefined();
+    expect(recordSubagentCompletion(storage, "other", 4)).toBe(false); // an old re-announcement
+
+    // A new revision after all that is a new completion for the idle parent.
+    expect(recordSubagentCompletion(storage, "child", 3)).toBe(true);
+    expect(consumedSubagentCompletion(storage, "child", 3)).toBeUndefined();
+    expect(pendingSubagentCompletions(storage).map(row => [row.session_id, row.revision])).toEqual([["other", 7], ["child", 3]]);
   });
 });

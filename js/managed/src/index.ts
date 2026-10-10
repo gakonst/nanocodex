@@ -1489,10 +1489,16 @@ function decidedSubagentRevision(storage: DurableObjectStorage, sessionId: strin
     "SELECT revision FROM managed_subagent_completion_decided WHERE session_id = ?", sessionId).toArray()[0]?.revision;
 }
 
+/** Raises the child's decided revision and, in the same transaction, settles
+ * its older undecided completions as superseded: the parent already got the
+ * newer one, so an older notice would only repeat it. Newer revisions are
+ * never affected. */
 function raiseDecidedSubagentRevision(storage: DurableObjectStorage, sessionId: string, revision: number): void {
   storage.sql.exec(SUBAGENT_COMPLETIONS_DECIDED_TABLE);
   storage.sql.exec(`INSERT INTO managed_subagent_completion_decided (session_id, revision) VALUES (?, ?)
     ON CONFLICT(session_id) DO UPDATE SET revision = MAX(revision, excluded.revision)`, sessionId, revision);
+  storage.sql.exec("UPDATE managed_subagent_completions SET settled = 'superseded', settled_at = ? "
+    + "WHERE session_id = ? AND revision < ? AND settled IS NULL", Date.now(), sessionId, revision);
 }
 const SUBAGENT_COMPLETION_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
@@ -1554,19 +1560,35 @@ export function markSubagentCompletionReceipt(storage: DurableObjectStorage, ses
 /** True only for the decision that actually settled the row. */
 export function settleSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number, reason: string): boolean {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  const settled = storage.sql.exec("UPDATE managed_subagent_completions SET settled = ?, settled_at = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
-    reason, Date.now(), sessionId, revision).rowsWritten > 0;
-  if (settled) raiseDecidedSubagentRevision(storage, sessionId, revision);
-  return settled;
+  return storage.transactionSync(() => {
+    const settled = storage.sql.exec("UPDATE managed_subagent_completions SET settled = ?, settled_at = ? WHERE session_id = ? AND revision = ? AND settled IS NULL",
+      reason, Date.now(), sessionId, revision).rowsWritten > 0;
+    if (settled) raiseDecidedSubagentRevision(storage, sessionId, revision);
+    return settled;
+  });
+}
+
+/** How an idle parent already consumed this completion, if it did: through a
+ * committed receipt for exactly it, or for a newer revision of the same child
+ * (which shows the newer result, so this notice is superseded). */
+export function consumedSubagentCompletion(storage: DurableObjectStorage, sessionId: string, revision: number): "receipt_committed" | "superseded" | undefined {
+  storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
+  const rows = storage.sql.exec<{ revision: number }>(
+    "SELECT revision FROM managed_subagent_completions WHERE session_id = ? AND revision >= ? AND receipt_committed = 1",
+    sessionId, revision).toArray();
+  if (rows.some(row => row.revision === revision)) return "receipt_committed";
+  return rows.length > 0 ? "superseded" : undefined;
 }
 
 /** An explicitly closed child's completions need no decision any more. */
 export function settleReleasedSubagentCompletions(storage: DurableObjectStorage, sessionId: string): number {
   storage.sql.exec(SUBAGENT_COMPLETIONS_TABLE);
-  const released = storage.sql.exec<{ revision: number }>("UPDATE managed_subagent_completions SET settled = 'released', settled_at = ? "
-    + "WHERE session_id = ? AND settled IS NULL RETURNING revision", Date.now(), sessionId).toArray();
-  if (released.length > 0) raiseDecidedSubagentRevision(storage, sessionId, Math.max(...released.map(row => row.revision)));
-  return released.length;
+  return storage.transactionSync(() => {
+    const released = storage.sql.exec<{ revision: number }>("UPDATE managed_subagent_completions SET settled = 'released', settled_at = ? "
+      + "WHERE session_id = ? AND settled IS NULL RETURNING revision", Date.now(), sessionId).toArray();
+    if (released.length > 0) raiseDecidedSubagentRevision(storage, sessionId, Math.max(...released.map(row => row.revision)));
+    return released.length;
+  });
 }
 
 /** An idle parent's undecided row is retried later: 2 s doubling to 1 h. */
@@ -10115,7 +10137,7 @@ export class DurableAgentSession extends DurableComputerObject {
       "SELECT name FROM sqlite_master WHERE type = 'table'",
     ).toArray().map(({ name }) => name));
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) if (initializedTables.has(table)) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+      for (const table of ["managed_recovery_safety", "managed_recovery_progress", "managed_recovery_call_indices", "managed_code_effect_legacy_parents", "managed_code_effect_legacy_sessions", "managed_code_effect_migration", "managed_code_effect_runtime", "managed_code_effects", "managed_code_effect_receipt_chunks", "managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs", "managed_subagent_completions", "managed_subagent_completion_decided"]) if (initializedTables.has(table)) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DROP TABLE IF EXISTS managed_fork_seed");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
@@ -12406,14 +12428,17 @@ export class DurableAgentSession extends DurableComputerObject {
     const id = "subagent:" + (await hashManagedInput(sessionId + ":" + revision)).slice(0, 48);
     if (await this.#findManagedTurn(id)) { settle("woken"); return; }
     if (row()?.settled !== null) return;
-    if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
+    const consumed = () => consumedSubagentCompletion(this.ctx.storage, sessionId, revision);
+    const durablyConsumed = consumed();
+    if (durablyConsumed) { settle(durablyConsumed); return; }
     // Bindings are persisted and only an explicit release deletes them (which
     // settles the rows itself): an unbound row has no child left to report.
     if (!child) { settle("unbound"); return; }
     if (child.parentAgentId !== null) { settle("nested"); return; }
     const source = await this.#findManagedTurn(child.host_context_ref);
     if (hold()) return;
-    if (row()?.receipt_committed === 1) { settle("receipt_committed"); return; }
+    const consumedLater = consumed();
+    if (consumedLater) { settle(consumedLater); return; }
     if (!source || source.state !== "completed") { settle("source_not_completed"); return; }
     // A later cancellation/failure must not be undone by an older child's result.
     const latest = this.ctx.storage.sql.exec<{ state: string }>(
@@ -12424,7 +12449,7 @@ export class DurableAgentSession extends DurableComputerObject {
       && bindings.authorizations.get(child.sessionId)?.host_context_ref === child.host_context_ref
       && this.#session()?.authorization_epoch === session.authorization_epoch
       && this.#session()?.accepted_turns === session.accepted_turns
-      && row()?.settled === null && row()?.receipt_committed !== 1;
+      && row()?.settled === null && consumed() === undefined;
     const input: PromptInput = `[Subagent ${child.agentId} completed]
 
 A direct subagent completed after the previous turn ended. Continue the current task by inspecting its structured result. Call list_agents with include_completed=true, find agent ${child.agentId}, integrate and verify the relevant findings, finish any remaining work, and then respond to the user. Do not merely repeat the raw subagent result.
