@@ -67,6 +67,12 @@ async fn invalid_tool_schema_uses_the_request_after_checkpoint_loss() -> Result<
     assert_schema_recovery(true).await
 }
 
+// Since eda4a21e3 agents expose only exec/wait to the provider. A discovered
+// strict schema that the provider would reject (lookup's nullable "limit" is
+// not required) must therefore never become a provider declaration: a stray
+// native tool_search_call fails closed without running the catalog, Code Mode
+// discovery returns schemas only as cell output, and neither checkpoint loss
+// nor a durable resume can replay a declared schema.
 async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
@@ -74,7 +80,9 @@ async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
             let mut socket = accept_async(stream).await?;
-            assert_eq!(next_json(&mut socket).await?["generate"], false);
+            let warmup = next_json(&mut socket).await?;
+            assert_eq!(warmup["generate"], false);
+            assert_eq!(declared_tool_names(&warmup), ["exec", "wait"]);
             send_warmup(&mut socket, "resp-warmup").await?;
             let _generation = next_json(&mut socket).await?;
             send_json(
@@ -85,6 +93,7 @@ async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
 
             let mut request = next_json(&mut socket).await?;
             assert_eq!(request["input"][0]["type"], "tool_search_output");
+            assert_eq!(request["input"][0]["call_id"], "search-old");
             assert_eq!(request["previous_response_id"], "resp-search");
             if lose_checkpoint {
                 send_json(
@@ -97,61 +106,53 @@ async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
                 .await?;
                 request = next_json(&mut socket).await?;
                 assert!(request.get("previous_response_id").is_none());
+                assert_eq!(declared_tool_names(&request), ["exec", "wait"]);
+                assert!(request.to_string().contains("find a lookup tool"));
             }
+            assert_no_declared_schemas(&request);
             let input = request["input"].as_array().unwrap();
             let index = input
                 .iter()
                 .position(|item| item["type"] == "tool_search_output")
                 .unwrap();
             assert_eq!(index > 0, lose_checkpoint);
-            assert_eq!(input[index]["tools"][0], lookup_definition(false));
-            let mut expected_output = input[index].clone();
-            expected_output["tools"] = json!([sibling_definition()]);
             send_json(
                 &mut socket,
-                json!({
-                    "type": "error",
-                    "status": 400,
-                    "error": {
-                        "type": "invalid_request_error",
-                        "code": "invalid_function_parameters",
-                        "param": format!("input[{index}].tools[0].parameters"),
-                        "message": "The required array must include limit."
-                    }
-                }),
+                completed_response("resp-discovery", &[exec_search("search-cell")]),
             )
             .await?;
 
-            // The rejected turn must finish without another request on this socket.
-            let next = timeout(std::time::Duration::from_secs(5), socket.next()).await?;
-            assert!(!matches!(next, Some(Ok(Message::Text(_)))));
+            let discovered = next_json(&mut socket).await?;
+            assert_eq!(discovered["input"][0]["type"], "custom_tool_call_output");
+            assert_eq!(discovered["input"][0]["call_id"], "search-cell");
+            let output = cell_text(&discovered["input"][0]["output"]);
+            assert!(output.starts_with("Script completed\n"), "{output}");
+            assert!(output.contains("\"required\":[]"), "{output}");
+            assert!(output.contains("list_keys"), "{output}");
+            assert_no_declared_schemas(&discovered);
+            send_final(&mut socket, "resp-final").await?;
+
             let (stream, _) = listener.accept().await?;
             let mut socket = accept_async(stream).await?;
             let replay = next_json(&mut socket).await?;
             assert!(replay.get("previous_response_id").is_none());
-            let history = replay["input"].as_array().unwrap();
+            assert_eq!(declared_tool_names(&replay), ["exec", "wait"]);
             assert!(replay.to_string().contains("find a lookup tool"));
             assert!(replay.to_string().contains("use the corrected catalog"));
-            assert!(history.iter().any(|item| {
+            assert!(replay["input"].as_array().unwrap().iter().any(|item| {
                 item["type"] == "tool_search_call" && item["call_id"] == "search-old"
             }));
-            assert_eq!(
-                history
-                    .iter()
-                    .find(|item| item["type"] == "tool_search_output"),
-                Some(&expected_output)
-            );
+            assert_no_declared_schemas(&replay);
             send_json(
                 &mut socket,
-                completed_response("resp-rediscovery", &[search_call("search-new")]),
+                completed_response("resp-rediscovery", &[exec_search("search-new")]),
             )
             .await?;
             let corrected = next_json(&mut socket).await?;
             assert_eq!(corrected["input"][0]["call_id"], "search-new");
-            assert_eq!(
-                corrected["input"][0]["tools"],
-                json!([lookup_definition(true), sibling_definition()])
-            );
+            let output = cell_text(&corrected["input"][0]["output"]);
+            assert!(output.contains("\"required\":[\"limit\"]"), "{output}");
+            assert_no_declared_schemas(&corrected);
             send_final(&mut socket, "resp-final").await
         });
 
@@ -177,30 +178,34 @@ async fn assert_schema_recovery(lose_checkpoint: bool) -> Result<()> {
         .rollout(RolloutConfig::new(rollout_home.path()))
         .build()?;
     drop(events);
-    let error = agent
-        .prompt("find a lookup tool")
-        .await?
-        .await
-        .expect_err("invalid discovery must fail the original turn");
-    assert!(error.to_string().contains("invalid_function_parameters"));
-    assert!(
-        error
-            .to_string()
-            .contains("The required array must include limit.")
+    assert_eq!(
+        agent
+            .prompt("find a lookup tool")
+            .await?
+            .await?
+            .final_message(),
+        "done"
     );
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "only Code Mode discovery may run the catalog"
+    );
     agent.shutdown().await?;
     drop(agent);
 
     let durable = RolloutConfig::new(rollout_home.path()).load_session(TEST_SESSION_ID)?;
     let snapshot = serde_json::to_value(durable.snapshot())?;
-    let discovery = snapshot["history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["type"] == "tool_search_output")
-        .unwrap();
-    assert_eq!(discovery["tools"], json!([sibling_definition()]));
+    let history = snapshot["history"].as_array().unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|item| item["type"] == "tool_search_output" && item["call_id"] == "search-old")
+    );
+    assert!(
+        history.iter().all(|item| declared_schemas(item).is_empty()),
+        "{snapshot}"
+    );
 
     corrected.store(true, Ordering::Relaxed);
     let (thread_id, snapshot, rollout) = durable.into_parts();
@@ -236,4 +241,55 @@ fn search_call(call_id: &str) -> Value {
         "execution": "client",
         "arguments": { "query": "lookup" }
     })
+}
+
+fn exec_search(call_id: &str) -> Value {
+    json!({
+        "type": "custom_tool_call",
+        "call_id": call_id,
+        "name": "exec",
+        "input": "text(await tools.tool_search({query: 'lookup'}));"
+    })
+}
+
+// Schemas a request item would declare to the provider.
+fn declared_schemas(item: &Value) -> Vec<&Value> {
+    match item["type"].as_str() {
+        Some("tool_search_output") => item["tools"].as_array().into_iter().flatten().collect(),
+        Some("additional_tools") => item["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|tool| !matches!(tool["name"].as_str(), Some("exec" | "wait")))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn assert_no_declared_schemas(request: &Value) {
+    let input = request["input"].as_array().unwrap();
+    assert!(
+        input.iter().all(|item| declared_schemas(item).is_empty()),
+        "{request}"
+    );
+}
+
+fn declared_tool_names(request: &Value) -> Vec<&str> {
+    request["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "additional_tools")
+        .flat_map(|item| item["tools"].as_array().into_iter().flatten())
+        .filter_map(|tool| tool["name"].as_str())
+        .collect()
+}
+
+fn cell_text(output: &Value) -> String {
+    output
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect()
 }
