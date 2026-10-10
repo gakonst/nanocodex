@@ -1,6 +1,6 @@
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import worker, { type DurableAgentSession } from "../src/index";
+import worker, { type AccountHostedTools, type DurableAgentSession } from "../src/index";
 import { downloadPath, downloadHandFile, fileReadCommand } from "../src/file-download";
 import type { Principal } from "../src/account-auth";
 
@@ -47,7 +47,11 @@ it("authenticates file reads and streams the exact brain bytes from the owning c
     ctx.storage.sql.exec("INSERT INTO managed_hand_paths(machine_id, root) VALUES (?, ?)", "offline-box", "/offline-box");
   });
   // The account registry no longer knows this identity, so its path is released;
-  // offline registered Hands stay mapped (hand-paths-journey).
+  // offline registered Hands stay mapped (hand-paths-journey). Since 84e6db5ca
+  // only an owned account's complete registry reclaims roots; this owner's
+  // account object is claimed through its real Hand inventory read.
+  const accountTools = (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
+  await accountTools.getByName(principal.userId).handInventory(principal.userId);
   const released = await call(principal, "/offline-box/output.zip");
   expect(released.status).toBe(404);
   expect(await released.json()).toMatchObject({ error: "file_path_unmapped" });
