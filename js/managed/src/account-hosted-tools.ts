@@ -25,7 +25,7 @@ import type { SubagentToolContext } from "nanocodex-tools";
 import { isUserId } from "./account-auth";
 import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
 import { inventoryEntry, mergeInventory, HAND_INVENTORY_DEADLINE_MS, type HandInventoryEntry, type HandInventory } from "./hand-inventory";
-import { HostedToolsBroker } from "./hosted-tools-broker";
+import { HostedToolsBroker, R2HostedToolsResultArchive } from "./hosted-tools-broker";
 import { observeHandCall, observeHandSummary } from "./hand-call-observation";
 import { annotateToolSpan, traceToolInvocation } from "./tool-tracing";
 import { DiagnosticJournal, diagnosticScope } from "./diagnostic-journal";
@@ -88,6 +88,8 @@ type RoutedHostedTool = HostedToolsCodeTool & Readonly<{
 type AccountHostedToolsEnv = RemoteICEEnv & HandEnv & Partial<ScreenPlaybackEnv> & {
   NANOCODEX_ACCOUNT_TOOLS?: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_SESSIONS?: DurableObjectNamespace<import("./index").DurableAgentSession>;
+  /** Existing history bucket; holds complete Hand outcomes too large for a ledger row. */
+  NANOCODEX_HISTORY?: R2Bucket;
 };
 
 type InvocationRequest = Readonly<{
@@ -174,6 +176,8 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
     this.#ownerId = ctx.storage.kv.get<string>("owner_id");
     this.#diagnostics = new DiagnosticJournal(ctx.storage, "hand.broker");
     this.#broker = new HostedToolsBroker(ctx, { resumeRetainedSockets: true,
+      ...(env.NANOCODEX_HISTORY
+        ? { resultArchive: new R2HostedToolsResultArchive(env.NANOCODEX_HISTORY, ctx.id.toString()) } : {}),
       // Observed living-Hand reconnects take 2-7s (one 5s connect timeout plus
       // retry). New calls wait for that exact runtime epoch instead of telling
       // the model to ask the user for a reconnect. Admitted calls never wait here.
@@ -2120,6 +2124,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         true,
         "route_unavailable_after_recovery",
       );
+    }
+    // Authority is rechecked after the account round trip, which may have read
+    // an archived receipt, as the receipt path does before returning output.
+    if (!this.#allowed(context)) {
+      return failedToolResult("Account hand tool authority changed before the result was returned. The result is withheld and the command was not resent.",
+        "ambiguous");
     }
     return this.#brandedResult(result, name, machineId);
   }
