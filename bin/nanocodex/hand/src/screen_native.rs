@@ -109,22 +109,8 @@ impl DesktopSlot {
     }
 }
 impl NativeScreen {
-    pub(crate) async fn start(
-        target: &AttachmentTarget,
-        machine: &AttachmentMachine,
-        directory: &Path,
-    ) -> Result<Self, ManagedError> {
-        Self::start_in(
-            target,
-            machine,
-            directory,
-            Some(&directory.join("recordings")),
-            None,
-        )
-        .await
-    }
-    /// Like `start`, reusing `slot`'s private desktop across failed
-    /// publication attempts of the same attachment.
+    /// Reuse `slot`'s private desktop across failed publication attempts
+    /// of the same attachment.
     pub(crate) async fn start_retaining(
         target: &AttachmentTarget,
         machine: &AttachmentMachine,
