@@ -306,7 +306,7 @@ def main():
 
     outcome = {'success': False}
     try:
-        launch_rejected('launch-sonnet46-fast', ['--claude', '--model', 'claude-sonnet-4-6', '--fast-mode', 'true'], 'claude-sonnet-4-6 does not support fast mode')
+        launch_rejected('launch-sonnet46-fast', ['--claude', '--model', 'claude-sonnet-4-6', '--fast-mode', 'true'], 'Claude Sonnet 4.6 (claude-sonnet-4-6) does not support fast mode')
         launch_rejected('launch-opus46-xhigh', ['--claude', '--model', 'claude-opus-4-6', '--thinking', 'xhigh'], 'supported thinking: low, medium, high, max')
         launch_rejected('launch-sol-none', ['--model', 'gpt-6.1-sol', '--thinking', 'none'], 'gpt-6.1-sol does not support none thinking')
         launch_rejected('launch-claude-pro', ['--claude', '--model', 'opus', '--reasoning-mode', 'pro'], 'does not support pro reasoning mode')

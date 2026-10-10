@@ -1067,7 +1067,9 @@ function requireForkSeed(checkpoint) {
   }
 }
 
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Runtime session IDs are UUIDv7 (Rust rejects other versions); any other
+// state ID, such as a managed agent's idempotent UUIDv8, gets a fresh one.
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function durableIdentity(storage, configuredStateId) {
   initializeAgentStorage(storage);

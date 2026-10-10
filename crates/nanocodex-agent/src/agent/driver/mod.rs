@@ -109,7 +109,7 @@ where
         if let Some(persisted) = self.initial_persisted.take() {
             // A durable child is listed and resumable from creation, before
             // its first turn: a fork or restored child from the boundary it
-            // inherited, a fresh subagent from its empty session.
+            // inherited, a fresh subagent from its recorded identity alone.
             let child = match self.origin.start {
                 crate::session::SessionStart::New(origin) => {
                     !matches!(origin, crate::Origin::Root)
@@ -118,24 +118,16 @@ where
                 crate::session::SessionStart::Resume => false,
             };
             let outcome = if child && self.execution.has_policy() {
-                let checkpoint = match &latest_fork_checkpoint {
-                    Some(checkpoint) => Ok(Arc::clone(checkpoint)),
-                    None => model
-                        .initial_checkpoint(self.workspace.as_deref())
-                        .map(|snapshot| {
-                            Arc::new(CommittedSession::new(
-                                Arc::clone(&self.spawner.lineage_id),
-                                thread_model,
-                                default_thinking,
-                                default_service_tier,
-                                snapshot,
-                            ))
-                        }),
-                };
-                match checkpoint {
-                    Ok(checkpoint) => self.execution.commit_initial_checkpoint(&checkpoint).await,
-                    Err(error) => Err(error),
-                }
+                self.execution
+                    .commit_initial_checkpoint(
+                        latest_fork_checkpoint.as_deref(),
+                        crate::execution::InitialSettings {
+                            model: thread_model,
+                            thinking: default_thinking,
+                            service_tier: default_service_tier,
+                        },
+                    )
+                    .await
             } else {
                 Ok(())
             };

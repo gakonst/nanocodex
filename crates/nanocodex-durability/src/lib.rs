@@ -7,7 +7,7 @@ mod branch;
 mod catalog;
 mod child_journal;
 pub use branch::{BranchTurn, CheckpointBranch};
-pub use catalog::SessionRecord;
+pub use catalog::{BranchBoundary, SessionRecord};
 #[cfg(not(target_family = "wasm"))]
 pub use catalog::{
     BranchPoint, LIST_LIMIT, SessionStore, SessionSummary, StoredSession, StoredTurn,

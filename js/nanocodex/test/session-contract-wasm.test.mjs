@@ -54,7 +54,7 @@ const families = {
     return {
       fixture,
       // Portable checkpoints pin a cataloged harness model; the endpoint is still loopback.
-      options: { harness: "claude", endpoint: fixture.url + "/v1/messages", model: "claude-sonnet-4-6", maxTokens: 1024,
+      options: { harness: "claude", endpoint: fixture.url + "/v1/messages", model: "claude-opus-5-5", maxTokens: 1024,
         codeEvaluator, auth: { apiKey: "synthetic-only" }, module },
       transcript: (body) => JSON.stringify(body.messages),
       otherFamilyModel: "gpt-6.1-sol",

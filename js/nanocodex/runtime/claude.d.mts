@@ -86,7 +86,7 @@ export type Options = Readonly<{
   /** Disabling automatic compaction is not supported. */
   autoCompact?: true;
   terminalReceiptRetention?: number;
-  /** Starts a new session continuing this Claude checkpoint's committed conversation. */
+  /** Resumes this Claude checkpoint's session, keeping its session ID and committed conversation. */
   resume?: SessionCheckpoint;
   /** Compiled browser WASM module for this exact package. */
   module?: unknown;

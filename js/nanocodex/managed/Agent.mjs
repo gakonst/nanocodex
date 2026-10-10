@@ -43,6 +43,32 @@ const THINKING = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const REASONING_MODES = new Set(["standard", "pro"]);
 const eventEncoder = new TextEncoder();
 
+/**
+ * The managed control plane's per-model settings (Rust ManagedModel::capabilities):
+ * Claude low/medium/high, standard mode and standard speed; gateway models
+ * their efforts, standard mode and standard speed; GPT-6 Astra and GPT-6.1 Sol
+ * any effort but none. Returns an actionable message for an unsupported
+ * explicit selection, or undefined.
+ */
+function managedSettingsError(model, { thinking, reasoningMode, fastMode }) {
+  if (model === undefined) return undefined;
+  const gateway = ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(model);
+  const claude = model.startsWith("claude-");
+  const efforts = claude || gateway
+    ? (model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"])
+    : model === "gpt-6-luna" ? ["none", "low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max"];
+  if (thinking !== undefined && !efforts.includes(thinking)) {
+    return `${model} does not support ${thinking} thinking on the managed service; supported thinking: ${efforts.join(", ")}`;
+  }
+  if (reasoningMode === "pro" && (claude || gateway)) {
+    return `${model} does not support pro reasoning mode on the managed service; supported modes: standard`;
+  }
+  if (fastMode === true && (claude || gateway)) {
+    return `${model} does not support fast mode on the managed service; use standard processing`;
+  }
+  return undefined;
+}
+
 /** Create a new managed agent owned by the authenticated account. */
 export async function create(options = {}, onCreated) {
   const { clientOptions, requestBody, creationKey } = managedCreateOptions(options);
@@ -165,13 +191,8 @@ function managedCreateOptions(options) {
       || typeof settings.fastMode !== "boolean") {
     throw new TypeError("managed agent creation settings are invalid");
   }
-  if (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(settings.model) && ((settings.thinking !== undefined && !(settings.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(settings.thinking)) || settings.reasoningMode === "pro")) {
-    throw new TypeError(`${settings.model === "@cf/zai-org/glm-5.3" ? "GLM-5.3" : settings.model} requires a supported thinking effort and standard reasoning mode`);
-  }
-  if (["gpt-6-astra", "gpt-6.1-sol"].includes(settings.model) && settings.thinking === "none") {
-    throw new TypeError("GPT-6 Astra and GPT-6.1 Sol require low, medium, high, xhigh, or max thinking");
-  }
-  if (settings.model.startsWith("claude-") && (!["low", "medium", "high"].includes(settings.thinking) || settings.reasoningMode !== "standard" || settings.fastMode)) throw new TypeError("unsupported Claude settings");
+  const unsupported = managedSettingsError(settings.model, settings);
+  if (unsupported) throw new TypeError(unsupported);
   return {
     clientOptions,
     creationKey,
@@ -445,12 +466,10 @@ function managedSettingsPatch(patch) {
     || (Object.hasOwn(patch, "fastMode") && typeof patch.fastMode !== "boolean")) {
     throw new TypeError("managed agent settings patch is invalid");
   }
-  if (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(patch.model) && ((patch.thinking !== undefined && !(patch.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(patch.thinking)) || patch.reasoningMode === "pro")) {
-    throw new TypeError(`${patch.model === "@cf/zai-org/glm-5.3" ? "GLM-5.3" : patch.model} requires a supported thinking effort and standard reasoning mode`);
-  }
-  if (["gpt-6-astra", "gpt-6.1-sol"].includes(patch.model) && patch.thinking === "none") {
-    throw new TypeError("GPT-6 Astra and GPT-6.1 Sol require low, medium, high, xhigh, or max thinking");
-  }
+  // A patch naming its model is checked against that model; otherwise the
+  // server validates against the agent's current model before any inference.
+  const unsupported = managedSettingsError(patch.model, patch);
+  if (unsupported) throw new TypeError(unsupported);
   return JSON.stringify({
     ...(Object.hasOwn(patch, "model") ? { model: patch.model } : {}),
     ...(Object.hasOwn(patch, "thinking") ? { thinking: patch.thinking } : {}),

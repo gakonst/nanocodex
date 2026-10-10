@@ -77,6 +77,44 @@ pub fn native_spawn_contract_version() -> u32 {
     1
 }
 
+/// Canonical per-model settings from the shared Rust capability source
+/// (HarnessModel::capabilities) for every known model on both transports.
+/// JS pickers and validation tables consume or are checked against this.
+#[wasm_bindgen(js_name = modelCapabilities)]
+pub fn model_capabilities() -> Result<JsValue, JsValue> {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, ModelTransport};
+    let codex = [
+        Model::Astra,
+        Model::Sol,
+        Model::Luna,
+        Model::Glm53,
+        Model::Kimi,
+        Model::Mimo,
+    ]
+    .into_iter()
+    .map(HarnessModel::Codex);
+    let claude = ClaudeModel::ALL.into_iter().map(HarnessModel::Claude);
+    let entries = codex
+        .chain(claude)
+        .flat_map(|model| {
+            [ModelTransport::Native, ModelTransport::Managed].map(|transport| {
+                let capabilities = model.capabilities(transport);
+                serde_json::json!({
+                    "model": model.as_str(),
+                    "family": model.family().as_str(),
+                    "transport": transport.as_str(),
+                    "thinking": capabilities.thinking().map(|level| level.as_str()).collect::<Vec<_>>(),
+                    "defaultThinking": capabilities.default_thinking().as_str(),
+                    "fastMode": capabilities.fast_mode(),
+                    "serviceTiers": capabilities.service_tiers().map(|tier| tier.as_str()).collect::<Vec<_>>(),
+                    "reasoningModes": capabilities.reasoning_modes().map(|mode| mode.as_str()).collect::<Vec<_>>(),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    js_sys::JSON::parse(&serde_json::Value::Array(entries).to_string())
+}
+
 #[wasm_bindgen(js_name = pruneDurableReceipts)]
 pub async fn prune_durable_receipts(
     durability_host_id: &str,

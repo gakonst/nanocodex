@@ -39,6 +39,21 @@ export type SessionInfo = Readonly<{
 
 /** Processing tier for model requests. */
 export type ServiceTier = "standard" | "priority" | "fast" | "ultrafast";
+/** Transport a model is served on: an in-process native harness or the managed control plane. */
+export type ModelTransport = "native" | "managed";
+/** Settings one model accepts on one transport, from the shared Rust capability source. */
+export type ModelCapabilityEntry = Readonly<{
+  model: string;
+  family: HarnessFamily;
+  transport: ModelTransport;
+  /** Accepted thinking levels, ascending. */
+  thinking: readonly Thinking[];
+  defaultThinking: Thinking;
+  fastMode: boolean;
+  /** Accepted processing tiers, slowest first; "priority" is the compatibility name of "fast". */
+  serviceTiers: readonly Exclude<ServiceTier, "priority">[];
+  reasoningModes: readonly ReasoningMode[];
+}>;
 
 /** When a session setting may change. */
 export type Mutability = "fixed" | "before_first_prompt" | "anytime";

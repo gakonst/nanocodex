@@ -151,8 +151,15 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()>;
     /// Persists a just-created child's first checkpoint so it is listed and
     /// resumable before its first turn. A store that reopens a restored child
-    /// must keep the checkpoint it already holds. The default persists nothing.
-    fn initial_checkpoint(&self, _state: Value) -> PolicyFuture<'_, ()> {
+    /// must keep the checkpoint it already holds; a fresh subagent's snapshot
+    /// carries its model, effort and speed before any conversation. The model
+    /// names the child's own model for its catalog record. The default
+    /// persists nothing.
+    fn initial_checkpoint(
+        &self,
+        _state: Value,
+        _model: nanocodex_agent::HarnessModel,
+    ) -> PolicyFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
     /// Retracts state written only by [`Self::initial_checkpoint`] when the

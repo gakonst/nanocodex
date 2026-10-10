@@ -462,33 +462,6 @@ impl<S> ModelRun<S> {
         })
     }
 
-    /// Materializes the empty session a new conversation starts from, without
-    /// adding history, so a durable child can persist its first checkpoint
-    /// before its first turn.
-    pub(crate) fn initial_checkpoint(
-        &mut self,
-        requested_workspace: Option<&str>,
-    ) -> Result<ModelCheckpoint> {
-        if self.session.is_none() {
-            self.session = Some(self.empty_session(requested_workspace)?);
-        }
-        let session = self.session.as_ref().ok_or_else(|| {
-            NanocodexError::InvalidCheckpoint(
-                "initial checkpoint did not establish a model session".to_owned(),
-            )
-        })?;
-        Ok(ModelCheckpoint {
-            workspace: session.workspace.clone(),
-            provider_session_id: Arc::from(session.factory.profile().session_id()),
-            conversation: session.conversation.clone(),
-            request_prefix: session.factory.profile().shared_prefix(),
-            prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
-            preserve_inherited_delta: false,
-            global_instructions: self.global_instructions.clone(),
-            context_baseline: session.context.baseline(),
-        })
-    }
-
     fn empty_session(&mut self, requested_workspace: Option<&str>) -> Result<ModelSessionState> {
         let workspace = requested_workspace.map_or_else(
             || self.context_source.resolve_workspace(None),

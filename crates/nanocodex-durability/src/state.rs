@@ -130,6 +130,15 @@ impl EncodedPayload {
         })
     }
 
+    /// A stored payload addressed by its content key.
+    pub(crate) fn from_key(key: &str) -> Self {
+        Self {
+            key: key.into(),
+            content: None,
+            pending: Vec::new(),
+        }
+    }
+
     pub(crate) fn reference(&self) -> Self {
         Self {
             key: self.key.clone(),
@@ -685,6 +694,11 @@ impl DurableState {
 
     pub(crate) fn set_session(&mut self, session: Option<crate::catalog::SessionRecord>) {
         self.session = session;
+        if self.operations.is_empty()
+            && let Some((_, checkpoint)) = &self.latest_checkpoint
+        {
+            pin_start(self.session.as_mut(), checkpoint);
+        }
     }
 
     pub(crate) const fn session_mut(&mut self) -> Option<&mut crate::catalog::SessionRecord> {
@@ -899,6 +913,15 @@ impl DurableState {
         self.apply(revision, entry)?;
         self.revision = revision;
         Ok(())
+    }
+
+    /// An empty head published at `revision`, retracting an unused state's
+    /// catalog record and checkpoint.
+    pub(crate) fn retracted(revision: u64) -> Self {
+        Self {
+            revision,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn advance_revision(&mut self, revision: u64) -> Result<()> {
@@ -1314,6 +1337,9 @@ impl DurableState {
                 }
             }
             Transition::CheckpointCommitted { checkpoint } => {
+                if self.operations.is_empty() {
+                    pin_start(self.session.as_mut(), &checkpoint);
+                }
                 self.latest_checkpoint = Some((revision, checkpoint));
             }
         }
@@ -1886,5 +1912,19 @@ mod chunk_tests {
         // The identity table is part of the stored chunk format.
         assert_eq!(GEAR[0], gear_table()[0]);
         assert_ne!(GEAR[0], GEAR[1]);
+    }
+}
+
+/// Pins the checkpoint a fork or side conversation holds before its first
+/// turn, so a later edit of that turn continues its inherited history.
+fn pin_start(session: Option<&mut crate::catalog::SessionRecord>, checkpoint: &EncodedPayload) {
+    if let Some(record) = session
+        && record.branch.is_none()
+        && matches!(
+            record.lineage.origin,
+            nanocodex_agent::Origin::Fork | nanocodex_agent::Origin::SideConversation
+        )
+    {
+        record.start_checkpoint = Some(checkpoint.key.to_string());
     }
 }

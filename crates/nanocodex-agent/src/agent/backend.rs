@@ -486,12 +486,15 @@ impl LifecycleBackend for LocalLifecycle {
 
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = CODEX_CAPABILITIES;
-        // Ultrafast is offered per model by the shared capability source.
-        capabilities.ultrafast_service_tier = self
+        // Processing tiers are offered per model by the shared capability source.
+        let model = self
             .child_handle
             .harness_model()
-            .capabilities(crate::ModelTransport::Native)
-            .supports_service_tier(ServiceTier::Ultrafast);
+            .capabilities(crate::ModelTransport::Native);
+        capabilities.ultrafast_service_tier = model.supports_service_tier(ServiceTier::Ultrafast);
+        if !model.fast_mode() {
+            capabilities.service_tier = crate::session::Mutability::Fixed;
+        }
         capabilities
     }
 

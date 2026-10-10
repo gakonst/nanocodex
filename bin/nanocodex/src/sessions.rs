@@ -480,6 +480,8 @@ pub(crate) async fn conversation_prompts(home: &Path, id: &str) -> Result<Vec<Co
         levels.push((current, path, stored));
     }
     let mut prompts: Vec<ConversationPrompt> = Vec::new();
+    // Session of the previous (older) level, which this level continues.
+    let mut source: Option<String> = None;
     for (session, store, stored) in levels.into_iter().rev() {
         let users: Vec<&str> = stored
             .transcript
@@ -508,23 +510,52 @@ pub(crate) async fn conversation_prompts(home: &Path, id: &str) -> Result<Vec<Co
             });
         }
         own.reverse();
-        // The source's kept prompts appear, in order, before the own turns.
-        let mut cursor = 0;
-        let mut kept = 0;
-        for prompt in &prompts {
-            match users[cursor..end]
+        let boundary = stored
+            .summary
+            .record
+            .branch
+            .as_ref()
+            .filter(|boundary| source.as_deref() == Some(boundary.source_session_id.as_str()));
+        let kept = if let Some(boundary) = boundary {
+            // The boundary recorded at creation names the last kept source
+            // turn: keep what the source inherited plus its own turns through
+            // it. When retention removed that turn, none of the source's
+            // retained (newer) turns belong to this branch.
+            let inherited = prompts
                 .iter()
-                .position(|text| same_prompt(text, &prompt.text))
-            {
-                Some(position) => {
-                    cursor += position + 1;
-                    kept += 1;
+                .take_while(|prompt| prompt.session != boundary.source_session_id)
+                .count();
+            boundary.through_turn.as_ref().map_or(inherited, |turn| {
+                prompts
+                    .iter()
+                    .position(|prompt| {
+                        prompt.session == boundary.source_session_id && prompt.turn == *turn
+                    })
+                    .map_or(inherited, |position| position + 1)
+            })
+        } else {
+            // Sessions without a recorded boundary (forks, side conversations
+            // and older branches): the source's kept prompts appear, in
+            // order, before the own turns of the transcript.
+            let mut cursor = 0;
+            let mut kept = 0;
+            for prompt in &prompts {
+                match users[cursor..end]
+                    .iter()
+                    .position(|text| same_prompt(text, &prompt.text))
+                {
+                    Some(position) => {
+                        cursor += position + 1;
+                        kept += 1;
+                    }
+                    None => break,
                 }
-                None => break,
             }
-        }
+            kept
+        };
         prompts.truncate(kept);
         prompts.extend(own);
+        source = Some(session);
     }
     Ok(prompts)
 }

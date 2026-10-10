@@ -23,7 +23,13 @@ where
     let session_id_text = session_id.to_string();
     let context_source = codex.context.build();
     let PromptCacheConfig { key, shared } = prompt_cache;
-    let is_resume = resume.is_some();
+    // A reopened stored child (a durable fork or subagent recorded before its
+    // first turn) carries its provenance without a resume snapshot; it still
+    // continues its own recorded rollout instead of starting a root mirror.
+    let is_resume = resume.is_some()
+        || lineage
+            .as_ref()
+            .is_some_and(|lineage| !matches!(lineage.origin, crate::Origin::Root));
     let (lineage_id, prompt_cache_key, initial_resume) = if let Some(snapshot) = resume {
         let resume = snapshot.into_resume()?;
         let model = resume.model;

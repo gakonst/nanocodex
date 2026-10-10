@@ -134,6 +134,22 @@ impl RolloutConfig {
         load::list_sessions(&self.codex_home)
     }
 
+    /// Configuration that reopens the rollout already recorded for
+    /// `thread_id`, including one created before its first turn, so a
+    /// resumed session appends to its own file instead of mirroring twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sessions directory cannot be read.
+    #[doc(hidden)]
+    pub fn recorded(&self, thread_id: &str) -> io::Result<Option<Self>> {
+        // A configuration that already names the recorded file reopens it.
+        if self.resume_path.is_some() {
+            return Ok(Some(self.clone()));
+        }
+        self.reopening(thread_id)
+    }
+
     /// A fresh configuration for a new conversation under the same Codex home.
     pub(crate) fn for_branch(&self) -> Self {
         Self::new(self.codex_home.clone())

@@ -63,6 +63,8 @@ struct LazyClaudeExecution {
     reopened: std::sync::atomic::AtomicBool,
     /// This policy wrote the state's first checkpoint.
     initialized: std::sync::atomic::AtomicBool,
+    /// The child's own model, recorded when its state is first described.
+    model: std::sync::Mutex<Option<nanocodex_agent::HarnessModel>>,
 }
 
 impl LazyClaudeExecution {
@@ -73,6 +75,7 @@ impl LazyClaudeExecution {
             ready: tokio::sync::OnceCell::new(),
             reopened: std::sync::atomic::AtomicBool::new(false),
             initialized: std::sync::atomic::AtomicBool::new(false),
+            model: std::sync::Mutex::new(None),
         }
     }
 
@@ -86,10 +89,11 @@ impl LazyClaudeExecution {
                 )
                 .await
                 .map_err(agent_error)?;
-                let record = state
-                    .describe(self.record.clone())
-                    .await
-                    .map_err(agent_error)?;
+                let mut record = self.record.clone();
+                if let Some(model) = self.model.lock().ok().and_then(|model| *model) {
+                    record.model = model;
+                }
+                let record = state.describe(record).await.map_err(agent_error)?;
                 let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
                 self.reopened.store(
                     checkpoint.is_some(),
@@ -113,7 +117,8 @@ fn branch_child(
     child: &nanocodex_agent::SessionInfo,
 ) -> AgentResult<Option<Arc<dyn ClaudeExecutionPolicy>>> {
     if branches.record.is_none() {
-        // Sessions opened without catalog metadata keep ephemeral forks.
+        // Without catalog metadata there is no durable branch record; the
+        // durable parent refuses the fork instead of creating an ephemeral one.
         return Ok(None);
     }
     Ok(Some(Arc::new(LazyClaudeExecution::new(
@@ -228,8 +233,18 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         Box::pin(async move { self.get().await?.checkpoint(state).await })
     }
 
-    fn initial_checkpoint(&self, state: Value) -> PolicyFuture<'_, ()> {
+    fn initial_checkpoint(
+        &self,
+        state: Value,
+        model: nanocodex_agent::HarnessModel,
+    ) -> PolicyFuture<'_, ()> {
         Box::pin(async move {
+            if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            if let Ok(mut recorded) = self.model.lock() {
+                *recorded = Some(model);
+            }
             // Opening the state records the child in the catalog; a restored
             // child keeps the history it already holds.
             let policy = self.get().await?;

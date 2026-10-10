@@ -36,6 +36,39 @@ pub struct SessionRecord {
     /// Whether receipt retention has removed older turns from this session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history_pruned: bool,
+    /// Where a session branched from a stored source boundary, recorded when
+    /// the branch is created. Absent for roots, forks and side conversations,
+    /// and for branches saved before the boundary was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<BranchBoundary>,
+    /// Content key of the checkpoint a fork or side conversation held before
+    /// its first turn, kept so an edit of that turn continues the inherited
+    /// history. Absent when unknown, as for records saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) start_checkpoint: Option<String>,
+    /// Reasoning effort and processing tier a child was created with, which
+    /// it resumes with when reopened before its first checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) initial: Option<InitialSettings>,
+}
+
+/// Settings a session was created with, before any checkpoint records them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct InitialSettings {
+    pub(crate) thinking: nanocodex_agent::Thinking,
+    pub(crate) service_tier: nanocodex_agent::ServiceTier,
+}
+
+/// The source turns a branch kept, pinned when the branch was created so
+/// later source turns never become part of the branch's history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchBoundary {
+    /// Source session the branch continues.
+    pub source_session_id: String,
+    /// Last prompt turn of the source's own turns that the branch kept, or
+    /// `None` when it kept none of them (only what the source inherited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_turn: Option<String>,
 }
 
 impl SessionRecord {
@@ -57,6 +90,9 @@ impl SessionRecord {
             created_at_ms: now,
             updated_at_ms: now,
             history_pruned: false,
+            branch: None,
+            start_checkpoint: None,
+            initial: None,
         }
     }
 
@@ -94,6 +130,9 @@ impl SessionRecord {
             created_at_ms: now,
             updated_at_ms: now,
             history_pruned: false,
+            branch: None,
+            start_checkpoint: None,
+            initial: None,
         }
     }
 
@@ -125,6 +164,10 @@ impl SessionRecord {
             },
             updated_at_ms: self.updated_at_ms,
             history_pruned: self.history_pruned || next.history_pruned,
+            // The creation boundary is immutable once recorded.
+            branch: self.branch.clone().or(next.branch),
+            start_checkpoint: next.start_checkpoint.or_else(|| self.start_checkpoint.clone()),
+            initial: next.initial.or(self.initial),
         }
     }
 }
@@ -154,7 +197,7 @@ mod native {
     use serde::Serialize;
     use serde_json::Value;
 
-    use super::SessionRecord;
+    use super::{BranchBoundary, SessionRecord};
     use crate::{
         DurableSession, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, Result,
         StateStore, Transition, session::reduce_peeked, shared_store::SharedStore,
@@ -367,7 +410,15 @@ mod native {
             let Some(state) = self.peek(id).await? else {
                 return Ok(None);
             };
-            if state.operations().is_empty() && state.latest_checkpoint().is_none() {
+            // A just-created child is listed from its recorded identity alone;
+            // an unused root stays hidden until its first turn.
+            let created_child = state.session().is_some_and(|record| {
+                matches!(
+                    record.lineage.origin,
+                    Origin::Fork | Origin::SideConversation | Origin::Subagent
+                )
+            });
+            if state.operations().is_empty() && state.latest_checkpoint().is_none() && !created_child {
                 return Ok(None);
             }
             let preview = self.first_prompt(id, &state).await;
@@ -502,6 +553,14 @@ mod native {
             transform: impl FnOnce(Option<Value>, Option<&Value>) -> Result<Option<Value>>,
         ) -> Result<SessionSummary> {
             let state = self.require(id).await?;
+            // An unresolved operation may still change the source's history
+            // or effects; it must settle or be reconciled first.
+            if !state.pending_operations().is_empty() {
+                return Err(Error::InvalidState(
+                    "conversation rewind refuses pending operations; settle or reconcile them first"
+                        .into(),
+                ));
+            }
             let mut record = match state.session() {
                 Some(record) => record.clone(),
                 None => {
@@ -515,12 +574,16 @@ mod native {
                 }
             };
             let selected = match &at {
-                BranchPoint::Latest => state.latest_checkpoint().cloned(),
+                BranchPoint::Latest => state
+                    .latest_checkpoint()
+                    .cloned()
+                    .map(|payload| (id.to_owned(), payload)),
                 BranchPoint::Through(turn) => {
                     let operation = state.operation(turn).ok_or_else(unknown_turn)?;
                     Some(
                         settled_checkpoint(&operation.status)
                             .cloned()
+                            .map(|payload| (id.to_owned(), payload))
                             .ok_or_else(|| {
                                 Error::InvalidState(
                                     "the selected turn has no settled checkpoint".into(),
@@ -544,14 +607,19 @@ mod native {
                             !record.history_pruned
                         });
                     match prior {
-                        None if complete_history => None,
-                        Some(prior) => {
-                            Some(settled_checkpoint(&prior.status).cloned().ok_or_else(|| {
-                                Error::InvalidState(
-                                    "checkpoint before the selected turn is unavailable".into(),
-                                )
-                            })?)
-                        }
+                        // The first turn of a derived session continues the
+                        // checkpoint its source held at the recorded boundary.
+                        None if complete_history => Self::start_checkpoint(id, &state)?,
+                        Some(prior) => Some(
+                            settled_checkpoint(&prior.status)
+                                .cloned()
+                                .map(|payload| (id.to_owned(), payload))
+                                .ok_or_else(|| {
+                                    Error::InvalidState(
+                                        "checkpoint before the selected turn is unavailable".into(),
+                                    )
+                                })?,
+                        ),
                         None => {
                             return Err(Error::InvalidState(
                                 "retained history before the selected turn was pruned".into(),
@@ -560,9 +628,10 @@ mod native {
                     }
                 }
             };
+            let boundary = self.boundary(id, &state, &at).await?;
             let branch_id = uuid::Uuid::now_v7().to_string();
             let selected = match selected {
-                Some(payload) => Some(self.hydrate(id, &payload).await?),
+                Some((holder, payload)) => Some(self.hydrate(&holder, &payload).await?),
                 None => None,
             };
             let latest = self.native_checkpoint(id, &state).await?;
@@ -576,18 +645,83 @@ mod native {
                 );
             }
             record = record.derive(branch_id, Origin::Branch);
+            record.branch = Some(boundary);
             if workspace.is_some() {
                 record.workspace = workspace;
             }
             let checkpoint = native
                 .map(|value| encode_native(record.family(), value))
                 .transpose()?;
+            // The exact starting checkpoint, for edits of the first own turn.
+            record.start_checkpoint = checkpoint.as_ref().map(|payload| payload.key.to_string());
             self.publish(record.clone(), checkpoint).await?;
             let preview = match &at {
                 BranchPoint::Before(_) => None,
                 _ => self.first_prompt(id, &state).await,
             };
             Ok(SessionSummary { record, preview })
+        }
+
+        /// The checkpoint a session started from, stored in its own journal:
+        /// none for a root or a subagent (which start clean) and for an older
+        /// journal without a record; otherwise the start pinned when the
+        /// branch, fork or side conversation was created. A branch without a
+        /// pinned start began empty. A derived session saved before starts
+        /// were pinned cannot prove what it inherited, so it fails instead of
+        /// guessing.
+        fn start_checkpoint(
+            id: &str,
+            state: &DurableState,
+        ) -> Result<Option<(String, EncodedPayload)>> {
+            let Some(record) = state.session() else {
+                return Ok(None);
+            };
+            if matches!(record.lineage.origin, Origin::Root | Origin::Subagent) {
+                return Ok(None);
+            }
+            match (&record.start_checkpoint, &record.branch) {
+                (Some(key), _) => Ok(Some((id.to_owned(), EncodedPayload::from_key(key)))),
+                (None, Some(_)) => Ok(None),
+                (None, None) => Err(Error::InvalidState(
+                    "history before this session's first turn is held by its source session, which this older session record does not pin".into(),
+                )),
+            }
+        }
+
+        /// Pins the source prompt turns a branch at `at` keeps: the latest
+        /// boundary covers the turns settled into the latest checkpoint now,
+        /// never source turns admitted later.
+        async fn boundary(
+            &self,
+            id: &str,
+            state: &DurableState,
+            at: &BranchPoint,
+        ) -> Result<BranchBoundary> {
+            let order = |turn: &str| state.operation(turn).map(|op| op.accepted_order);
+            let limit = match at {
+                BranchPoint::Latest => state
+                    .operations()
+                    .values()
+                    .filter(|op| settled_checkpoint(&op.status).is_some())
+                    .map(|op| op.accepted_order)
+                    .max()
+                    .unwrap_or(0),
+                BranchPoint::Through(turn) => order(turn).ok_or_else(unknown_turn)?,
+                BranchPoint::Before(turn) => {
+                    order(turn).ok_or_else(unknown_turn)?.saturating_sub(1)
+                }
+            };
+            let through_turn = self
+                .state_turns(id, state)
+                .await?
+                .into_iter()
+                .rev()
+                .find(|turn| order(&turn.id).is_some_and(|order| order <= limit))
+                .map(|turn| turn.id);
+            Ok(BranchBoundary {
+                source_session_id: id.to_owned(),
+                through_turn,
+            })
         }
 
         async fn publish(
@@ -771,6 +905,9 @@ mod native {
             created_at_ms: 0,
             updated_at_ms: 0,
             history_pruned: false,
+            branch: None,
+            start_checkpoint: None,
+            initial: None,
         })
     }
 

@@ -362,7 +362,10 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
                 ));
             }
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
-            request_spawn_with_host_context(&commands, &shutdown, options, host_context).await
+            created(
+                request_spawn_with_host_context(&commands, &shutdown, options, host_context).await,
+            )
+            .await
         })
     }
     fn spawn_many(
@@ -376,7 +379,11 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
-            request_spawn_many(&commands, &shutdown, count, Some(observer), host_context).await
+            created_batch(
+                request_spawn_many(&commands, &shutdown, count, Some(observer), host_context)
+                    .await,
+            )
+            .await
         })
     }
     fn settings(
@@ -408,7 +415,7 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
         Box::pin(async move {
             let snapshot = ChildState::from_checkpoint(checkpoint)?;
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
-            request_command(&commands, &shutdown, |result| Command::Spawn {
+            let restored = request_command(&commands, &shutdown, |result| Command::Spawn {
                 options: SpawnOptions::new()
                     .model(snapshot.model)
                     .thinking(snapshot.thinking),
@@ -416,7 +423,8 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
                 host_context,
                 result,
             })
-            .await
+            .await;
+            created(restored).await
         })
     }
     fn fork(
@@ -431,7 +439,8 @@ impl super::backend::AgentFactory for OpenAiAgentFactory {
             let commands = commands.ok_or(NanocodexError::AgentStopped)?;
             let (point, origin) = request.into_parts();
             let point = super::backend::resolve_fork_point(point, &conversation_id)?;
-            request_fork(&commands, &shutdown, point, origin, SessionId::new(), None).await
+            created(request_fork(&commands, &shutdown, point, origin, SessionId::new(), None).await)
+                .await
         })
     }
 }
@@ -837,8 +846,9 @@ impl Nanocodex {
     /// [`ForkRequest::latest`] forks from the latest safe boundary without
     /// waiting for an active turn; [`ForkRequest::at_turn`] forks from the
     /// boundary a completed turn retained; [`ForkRequest::at`] forks from a
-    /// portable checkpoint of this conversation tree. Mark ephemeral
-    /// explorations with [`ForkRequest::side_conversation`]. The child's
+    /// portable checkpoint of this conversation tree. Mark side questions
+    /// with [`ForkRequest::side_conversation`]; they stay durable and listable
+    /// with their origin. The child's
     /// [`SessionInfo::lineage`] records this session as its parent.
     ///
     /// The child receives a fresh transport and tool runtime while sharing the
@@ -855,6 +865,16 @@ impl Nanocodex {
     /// live boundary, or an error when the backend has stopped.
     pub async fn fork(&self, request: ForkRequest) -> Result<(Self, AgentEvents)> {
         created(self.backend.fork(request).await).await
+    }
+
+    /// Completes a just-created child's creation: a durable child's first
+    /// checkpoint is persisted before it is returned, so every factory hands
+    /// out children that are already listed and resumable. Idempotent.
+    #[doc(hidden)]
+    pub async fn persist_created(
+        child: Result<(Self, AgentEvents)>,
+    ) -> Result<(Self, AgentEvents)> {
+        created(child).await
     }
 
     /// Retracts and stops a just-created child whose creation the caller
