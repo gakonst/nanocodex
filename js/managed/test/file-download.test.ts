@@ -13,6 +13,8 @@ it("authenticates file reads and streams the exact brain bytes from the owning c
   const principal: Principal = { kind: "api_key", userId: crypto.randomUUID(), organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(),
     role: "owner", subjectId: "api_key:file-test", credentialId: "file-test", authorizationEpoch: 1, capabilities: ["agents:read", "tools:use"] };
   await runInDurableObject(sessions.getByName(id), async (session, ctx) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
     id, principal.userId, principal.organizationId, principal.teamId, Date.now());
@@ -94,7 +96,9 @@ it("downloads from the account Hand while the conversation has no active model t
   const id = crypto.randomUUID(), owner = crypto.randomUUID();
   const principal: Principal = { kind: "api_key", userId: owner, organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(),
     role: "owner", subjectId: "api_key:file-hand-test", credentialId: "file-hand-test", authorizationEpoch: 1, capabilities: ["agents:read", "tools:use"] };
-  await runInDurableObject(sessions.getByName(id), async (_session, ctx) => {
+  await runInDurableObject(sessions.getByName(id), async (session, ctx) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
     id, owner, principal.organizationId, principal.teamId, Date.now());
