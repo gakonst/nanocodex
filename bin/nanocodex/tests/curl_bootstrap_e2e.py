@@ -128,6 +128,20 @@ class Origin(http.server.BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
                 self.close_connection = True
                 return
+        if fault and fault[0] == 'slow':
+            # A healthy but slow link: the whole body, fault[1] bytes per second.
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            try:
+                for offset in range(0, len(body), fault[1]):
+                    self.wfile.write(body[offset:offset + fault[1]])
+                    self.wfile.flush()
+                    time.sleep(1)
+            except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+                event['cancelled'] = True
+                self.close_connection = True
+            return
         if fault and fault[0] == 'truncate':
             # Promise the whole body, deliver a prefix, then drop the connection.
             self.send_response(200)
@@ -206,7 +220,7 @@ def main():
         stable_tagged = subprocess.run(['git', '-C', str(REPO), 'show', 'v0.6.7:install'],
                                        capture_output=True, check=False).stdout
 
-        def files(tagged=installer, manifest_digest=digest, public=installer):
+        def files(tagged=installer, manifest_digest=digest, public=installer, payload=bootstrap):
             result = {'/gakonst/nanocodex/master/install': public,
                       '/repos/gakonst/nanocodex/releases/tags/nightly': json.dumps(
                           {'tag_name': 'nightly', 'target_commitish': NIGHTLY_SHA, 'name': 'Nightly'},
@@ -215,7 +229,7 @@ def main():
                 result['/gakonst/nanocodex/refs/tags/' + tag + '/install'] = tagged
                 base = '/gakonst/nanocodex/releases/download/' + tag + '/'
                 result[base + 'SHA256SUMS'] = (manifest_digest + '  ' + ASSET + '\n').encode()
-                result[base + ASSET] = bootstrap
+                result[base + ASSET] = payload
             return result
 
         def run_case(name, *, flags='', shell='sh', faults=None, env_extra=None, files_override=None,
@@ -246,13 +260,13 @@ def main():
             results = []
             for process in processes:
                 try:
-                    stdout, stderr = process.communicate(timeout=150)
+                    stdout, stderr = process.communicate(timeout=180)
                     results.append({'exit': process.returncode, 'stdout': stdout, 'stderr': stderr})
                 except subprocess.TimeoutExpired:
                     # An installer that never finishes is a failure, not a harness crash.
                     os.killpg(process.pid, 9)
                     stdout, stderr = process.communicate()
-                    results.append({'exit': 'killed after 150s', 'stdout': stdout, 'stderr': stderr})
+                    results.append({'exit': 'killed after 180s', 'stdout': stdout, 'stderr': stderr})
             elapsed = round(time.monotonic() - began, 2)
             events = server.events[start:]
             launches = [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
@@ -352,6 +366,21 @@ def main():
               obs['results'][0]['stderr'][-300:], f)
         check('curl exit 28' in obs['results'][0]['stderr'] and paths(obs).count(sums) == 2, 'expected one timeout and one retry', f)
         check(55 <= obs['seconds'] <= 120, f'unexpected duration {obs["seconds"]}s for a 60s cap', f)
+        evaluate(obs, f)
+
+        # The bootstrap has no total cap: a healthy transfer slower than 60s completes.
+        padding = '# ' + os.urandom(150 * 1024).hex() + '\n'
+        large = gzip.compress((BOOTSTRAP + padding).encode(), mtime=0)
+        rate = 2048
+        obs = run_case('slow-bootstrap-completes', flags='--no-setup',
+                       files_override=files(manifest_digest=hashlib.sha256(large).hexdigest(), payload=large),
+                       faults={asset: [('slow', rate)]})
+        f = []
+        r = obs['results'][0]
+        check(r['exit'] == 0 and len(obs['launches']) == 1, 'slow bootstrap did not complete: ' + r['stderr'][-300:], f)
+        check(paths(obs).count(asset) == 1 and 'retry' not in r['stderr'], 'slow bootstrap was cut off and retried', f)
+        check(obs['seconds'] > 65, f'transfer took {obs["seconds"]}s; expected longer than the 60s metadata cap', f)
+        obs['bootstrap_bytes'] = len(large)
         evaluate(obs, f)
 
         obs = run_case('permanent-404-fails-fast', flags='--no-setup',

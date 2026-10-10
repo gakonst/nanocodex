@@ -373,7 +373,7 @@ main() {
   fi
 
   echo "Downloading the verified Nanocodex bootstrap..."
-  fetch "$release_url/$asset" "$temporary_dir/$asset" progress \
+  fetch "$release_url/$asset" "$temporary_dir/$asset" bootstrap \
     || die "could not download the $asset bootstrap"
   expected="$(awk -v asset="$asset" '$2 == asset || $2 == "*" asset { print $1; exit }' \
     "$temporary_dir/SHA256SUMS")"
