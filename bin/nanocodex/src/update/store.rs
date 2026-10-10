@@ -38,9 +38,49 @@ const NANOCODEX2_BINARY_NAME: &str = "nanocodex2";
 
 pub(super) struct VersionStore {
     root: PathBuf,
+    /// Files, with the digest each matched, that this store value (one update
+    /// operation) has hashed. Every ordinary check hashes afresh; only an
+    /// explicit preflight that a fresh check follows may reuse them.
+    verified: std::sync::Mutex<std::collections::BTreeSet<(PathBuf, String)>>,
 }
 
 impl VersionStore {
+    fn with_root(root: PathBuf) -> Self {
+        Self {
+            root,
+            verified: std::sync::Mutex::default(),
+        }
+    }
+
+    fn remembered(&self, key: &(PathBuf, String)) -> bool {
+        self.verified
+            .lock()
+            .is_ok_and(|verified| verified.contains(key))
+    }
+
+    fn remember(&self, key: (PathBuf, String)) {
+        if let Ok(mut verified) = self.verified.lock() {
+            verified.insert(key);
+        }
+    }
+
+    /// `file_matches_checksum`; with `reuse`, a file this operation already
+    /// verified against the same recorded digest is not hashed again.
+    fn matches_checksum(&self, path: &Path, checksum_path: &Path, reuse: bool) -> Result<bool> {
+        let Some(expected) = expected_checksum(path, checksum_path)? else {
+            return Ok(false);
+        };
+        let key = (path.to_path_buf(), expected);
+        if reuse && self.remembered(&key) {
+            return Ok(true);
+        }
+        let matches = file_has_digest(path, &key.1)?;
+        if matches {
+            self.remember(key);
+        }
+        Ok(matches)
+    }
+
     pub(super) fn root(&self) -> &Path {
         &self.root
     }
@@ -142,17 +182,17 @@ impl VersionStore {
         if root.as_os_str().is_empty() {
             bail!("NANOCODEX_DIR cannot be empty");
         }
-        Ok(Self { root })
+        Ok(Self::with_root(root))
     }
 
     #[cfg(unix)]
     pub(super) fn at_root(root: PathBuf) -> Self {
-        Self { root }
+        Self::with_root(root)
     }
 
     #[cfg(test)]
     pub(super) fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self::with_root(root.into())
     }
 
     pub(super) fn prepare(&self, manager_version: &str) -> Result<()> {
@@ -264,8 +304,12 @@ impl VersionStore {
     }
 
     pub(super) fn is_cached(&self, key: &str) -> Result<bool> {
+        self.is_cached_with(key, false)
+    }
+
+    fn is_cached_with(&self, key: &str, reuse: bool) -> Result<bool> {
         validate_key(key)?;
-        file_matches_checksum(&self.binary_path(key), &self.checksum_path(key))
+        self.matches_checksum(&self.binary_path(key), &self.checksum_path(key), reuse)
     }
 
     pub(super) fn install(&self, key: &str, contents: &[u8]) -> Result<()> {
@@ -566,26 +610,73 @@ impl VersionStore {
         key: &str,
         expected_archive: Option<&str>,
     ) -> Result<bool> {
+        self.is_cached_voice_with(key, expected_archive, false)
+    }
+
+    fn is_cached_voice_with(
+        &self,
+        key: &str,
+        expected_archive: Option<&str>,
+        reuse: bool,
+    ) -> Result<bool> {
         validate_key(key)?;
-        super::voice::cached(&self.version_dir(key), expected_archive)
+        let directory = self.version_dir(key);
+        let remembered = (
+            directory.join("nanocodex-resources"),
+            format!("voice runtime {expected_archive:?}"),
+        );
+        if reuse && self.remembered(&remembered) {
+            return Ok(true);
+        }
+        let cached = super::voice::cached(&directory, expected_archive)?;
+        if cached {
+            self.remember(remembered);
+        }
+        Ok(cached)
     }
 
     pub(super) fn is_cached_bundle(&self, key: &str, requires_vm_guest: bool) -> Result<bool> {
         Ok(self.is_cached(key)?
-            && (!self.links_hand_app(key) || self.has_hand_app(key)?)
-            && file_matches_checksum(
-                &self.version_dir(key).join(NANOCODEX2_BINARY_NAME),
-                &self.version_dir(key).join(NANOCODEX2_CHECKSUM_FILE),
-            )?
+            && self.is_cached_hand(key)?
             && (!requires_vm_guest
-                || file_matches_checksum(
+                || self.matches_checksum(
                     &self.version_dir(key).join(VM_GUEST_BINARY_NAME),
                     &self.version_dir(key).join(VM_GUEST_CHECKSUM_FILE),
+                    false,
                 )?))
     }
 
+    /// The bundle check of a coordinated activation preflight. The CLI may
+    /// reuse this operation's selection hash (activation verifies it afresh
+    /// before it runs), but the Hand is always hashed afresh: the preflight
+    /// goes on to execute it for service capability probes.
+    pub(super) fn preflight_bundle(&self, key: &str) -> Result<bool> {
+        Ok(self.is_cached_with(key, true)? && self.is_cached_hand(key)?)
+    }
+
+    /// The Hand half of `is_cached_bundle`, for a caller that has just
+    /// verified the CLI with `validate_activation`.
+    pub(super) fn is_cached_hand(&self, key: &str) -> Result<bool> {
+        Ok((!self.links_hand_app(key) || self.has_hand_app(key)?)
+            && self.matches_checksum(
+                &self.version_dir(key).join(NANOCODEX2_BINARY_NAME),
+                &self.version_dir(key).join(NANOCODEX2_CHECKSUM_FILE),
+                false,
+            )?)
+    }
+
     pub(super) fn validate_activation(&self, key: &str) -> Result<()> {
-        if !self.is_cached(key)? {
+        self.validate_activation_with(key, false)
+    }
+
+    /// `validate_activation` for a coordinated activation preflight; see
+    /// `preflight_bundle`.
+    pub(super) fn preflight_activation(&self, key: &str) -> Result<()> {
+        self.validate_activation_with(key, true)
+    }
+
+    fn validate_activation_with(&self, key: &str, reuse: bool) -> Result<()> {
+        if !self.is_cached_with(key, reuse)? {
             bail!("Nanocodex version {key} is not installed or its checksum is invalid");
         }
         if self.links_hand_app(key) && !self.has_hand_app(key)? {
@@ -595,7 +686,7 @@ impl VersionStore {
             .version_dir(key)
             .join("nanocodex-voice.sha256")
             .exists()
-            && !self.is_cached_voice(key, None)?
+            && !self.is_cached_voice_with(key, None, reuse)?
         {
             bail!("Nanocodex version {key} has an incomplete or corrupt voice runtime");
         }
@@ -775,7 +866,12 @@ impl VersionStore {
     /// same manager keeps the existing file (its inode, mtime and receipt)
     /// instead of rewriting the whole executable with identical bytes.
     fn publish_updater(&self, contents: &[u8]) -> Result<()> {
-        let checksum = format!("{}\n", hex::encode(Sha256::digest(contents)));
+        self.publish_verified_updater(contents, &hex::encode(Sha256::digest(contents)))
+    }
+
+    /// `publish_updater` for contents whose SHA-256 is `checksum`.
+    fn publish_verified_updater(&self, contents: &[u8], checksum: &str) -> Result<()> {
+        let checksum = format!("{checksum}\n");
         let path = self.updater_path();
         let executable = |metadata: &fs::Metadata| {
             #[cfg(unix)]
@@ -805,16 +901,19 @@ impl VersionStore {
     }
 
     pub(super) fn promote_manager(&self, key: &str) -> Result<()> {
-        if !self.is_cached(key)? {
-            bail!("cannot promote missing Nanocodex version {key} to updater");
+        validate_key(key)?;
+        let missing = || eyre!("cannot promote missing Nanocodex version {key} to updater");
+        let expected = expected_checksum(&self.binary_path(key), &self.checksum_path(key))?
+            .ok_or_else(missing)?;
+        // Verify and publish the same bytes: one read and one hash.
+        let contents = fs::read(self.binary_path(key))
+            .wrap_err_with(|| format!("failed to read Nanocodex version {key}"))?;
+        let checksum = hex::encode(Sha256::digest(&contents));
+        if checksum != expected {
+            return Err(missing());
         }
-
         #[cfg(unix)]
-        {
-            let contents = fs::read(self.binary_path(key))
-                .wrap_err_with(|| format!("failed to read Nanocodex version {key}"))?;
-            self.publish_updater(&contents)?;
-        }
+        self.publish_verified_updater(&contents, &checksum)?;
 
         Ok(())
     }
@@ -872,9 +971,7 @@ impl VersionStore {
         let Some(root) = versions_directory.parent() else {
             return Ok(None);
         };
-        let store = Self {
-            root: root.to_path_buf(),
-        };
+        let store = Self::with_root(root.to_path_buf());
         if store.active()?.as_deref() != Some("nightly") || store.updater_checksum_path().is_file()
         {
             return Ok(None);
@@ -1261,18 +1358,30 @@ fn validate_key(key: &str) -> Result<()> {
 }
 
 fn file_matches_checksum(path: &Path, checksum_path: &Path) -> Result<bool> {
+    match expected_checksum(path, checksum_path)? {
+        Some(expected) => file_has_digest(path, &expected),
+        None => Ok(false),
+    }
+}
+
+/// The lowercase SHA-256 recorded for an existing file, if well formed.
+fn expected_checksum(path: &Path, checksum_path: &Path) -> Result<Option<String>> {
     if !path.is_file() || !checksum_path.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
     let expected = fs::read_to_string(checksum_path)
         .wrap_err_with(|| format!("failed to read {}", checksum_path.display()))?;
     let expected = expected.trim();
     if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Ok(false);
+        return Ok(None);
     }
+    Ok(Some(expected.to_ascii_lowercase()))
+}
+
+fn file_has_digest(path: &Path, expected: &str) -> Result<bool> {
     let contents =
         fs::read(path).wrap_err_with(|| format!("failed to read cached {}", path.display()))?;
-    Ok(hex::encode(Sha256::digest(contents)) == expected.to_ascii_lowercase())
+    Ok(hex::encode(Sha256::digest(contents)) == expected)
 }
 
 pub(super) fn atomic_write(path: &Path, contents: &[u8], executable: bool) -> Result<()> {
@@ -1933,6 +2042,34 @@ exec "$install_root/current/nanocodex2" "$@"
         assert!(
             file_matches_checksum(&store.updater_path(), &store.updater_checksum_path()).unwrap()
         );
+    }
+
+    #[test]
+    fn only_the_activation_preflight_reuses_this_operations_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store
+            .install_bundle("0.2.0", b"original", b"hand", None, None)
+            .unwrap();
+        assert!(store.is_cached_bundle("0.2.0", false).unwrap());
+
+        // A Hand changed after selection never passes the preflight, which
+        // precedes every execution of the candidate Hand.
+        let hand = store.version_dir("0.2.0").join(NANOCODEX2_BINARY_NAME);
+        fs::write(&hand, b"HAND").unwrap();
+        assert!(!store.preflight_bundle("0.2.0").unwrap());
+        fs::write(&hand, b"hand").unwrap();
+        assert!(store.preflight_bundle("0.2.0").unwrap());
+
+        fs::write(store.binary_path("0.2.0"), b"tampered").unwrap();
+
+        // The CLI preflight may reuse the selection hash; every authority hashes again.
+        store.preflight_activation("0.2.0").unwrap();
+        assert!(!store.is_cached("0.2.0").unwrap());
+        assert!(store.validate_activation("0.2.0").is_err());
+        assert!(store.activate("0.2.0").is_err());
+        assert!(store.promote_manager("0.2.0").is_err());
+        assert!(!store.updater_path().exists());
     }
 
     #[test]
