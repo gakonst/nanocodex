@@ -80,17 +80,23 @@ where
             // Keep admitted instructions, but the embedding's strict capability
             // boundary applies to an active continuation as well as a new turn.
             let mut prefix = prefix;
+            // Redeclare the current tools where the admitted prefix declared
+            // them, so the request keeps the layout of a fresh one.
+            let tools_at = prefix
+                .iter()
+                .position(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                .unwrap_or(prefix.len());
             prefix.retain(|item| !matches!(item, ResponseItem::AdditionalTools { .. }));
             clear_code_only_schemas(&mut prefix);
-            prefix.extend(
-                session
-                    .factory
-                    .profile()
-                    .prefix()
-                    .iter()
-                    .filter(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
-                    .cloned(),
-            );
+            let current_tools = session
+                .factory
+                .profile()
+                .prefix()
+                .iter()
+                .filter(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            prefix.splice(tools_at..tools_at, current_tools);
             (history, prefix)
         } else {
             (history, prefix)
