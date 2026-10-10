@@ -45,12 +45,14 @@ GUEST_ASSET = "nanocodex-vm-guest-x86_64-unknown-linux-musl"
 VOICE_ASSET = f"nanocodex-voice-{TRIPLE}.tar.gz"
 CLI_ALIASES = ["nanocodex", "nanocodex2", "nc", "ncl"]
 HAND_ALIASES = ["nanocodex-hand", "nc-hand"]
-ALL_STEPS = ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3", "b4", "modes", "old-modes", "c1", "c2", "final-modes"]
+ALL_STEPS = ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3", "b4", "modes", "old-modes", "c1", "c2", "final-modes", "p1", "p2"]
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("--old-sha", required=True)
 ap.add_argument("--new-sha", required=True)
 ap.add_argument("--final-sha", help="a later published nightly for the c1/c2 upgrade steps")
+ap.add_argument("--candidate", nargs=3, metavar=("CLI", "HAND", "VOICE_ARCHIVE"), type=Path,
+                help="p1/p2: an unpublished candidate pair (built with VERGEN_GIT_SHA and NANOCODEX_HAND_IDENTITY) and voice archive")
 ap.add_argument("--output", type=Path, default=Path("output/nightly-install"))
 ap.add_argument("--steps", default="a1,a2,a3,a4,a5,b1,b2,b3,b4,modes")
 ap.add_argument("--inner", action="store_true", help=argparse.SUPPRESS)
@@ -65,6 +67,7 @@ for s in STEPS:
     if s not in ALL_STEPS:
         sys.exit(f"unknown step {s}")
 OLD, NEW, FINAL = args.old_sha, args.new_sha, args.final_sha
+CAND = [c.absolute() for c in args.candidate] if args.candidate else None
 REAL_HOME = Path(os.environ.get("NIGHTLY_E2E_REAL_HOME") or os.path.expanduser("~"))
 
 
@@ -121,7 +124,8 @@ def outer():
         "mkdir -p /run/systemd/resolve; cp " + shlex.quote(str(ART / "resolv.conf")) + " /run/systemd/resolve/stub-resolv.conf; "
         + ro + "; test ! -e /run/systemd/system; "
         "exec " + shlex.join([sys.executable, os.path.abspath(__file__), "--inner", "--old-sha", OLD, "--new-sha", NEW,
-                              *(["--final-sha", FINAL] if FINAL else []), "--output", str(ART), "--steps", ",".join(STEPS)]))
+                              *(["--final-sha", FINAL] if FINAL else []),
+                              *(["--candidate", *map(str, CAND)] if CAND else []), "--output", str(ART), "--steps", ",".join(STEPS)]))
     env = dict(os.environ, NIGHTLY_E2E_REAL_HOME=str(REAL_HOME), NIGHTLY_E2E_UID=str(os.getuid()), NIGHTLY_E2E_GID=str(os.getgid()))
     started = time.time()
     code = subprocess.call(["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--mount-proc",
@@ -989,6 +993,54 @@ def final_upgrade(name, label):
     no_service_side_effects(p, snap, f"{label}: FINAL")
     state["steps"]["c1" if name == "a" else "c2"] = {"snapshot": snap, "out": r["out"], "err": r["err"], "probes": probes,
                                                      "identity": ident, "prior_identity": prior_ident}; save()
+
+
+def candidate_sha():
+    out = sh([str(CAND[0]), "--version"]).stdout
+    shas = re.findall(r"Commit SHA: ([0-9a-f]{40})", out)
+    require("candidate CLI reports exactly one Commit SHA", len(shas) == 1, version=out[:400])
+    return shas[0]
+
+
+def step_p1():
+    """Candidate fix: the published OLD updater activates the candidate pair through
+    its public --path selector (the same legacy activation as a2); the candidate's
+    own first run must leave every entrypoint coherent."""
+    require("--candidate is set", bool(CAND))
+    p = prefix_paths("p")
+    r = installer(p, OLD, "installer-old")
+    require("installer for nightly-OLD exits 0", r["exit"] == 0, err=r["err"][-1500:])
+    sha = candidate_sha()
+    r = run("old-update-path-candidate", [str(p["store"] / "bin/nanocodex"), "update", "--path", str(CAND[0]),
+             "--hand-binary", str(CAND[1]), "--voice-archive", str(CAND[2])], base_env(p))
+    require("OLD updater --path candidate exits 0", r["exit"] == 0, out=r["out"][-1200:], err=r["err"][-1500:])
+    snap = snapshot(p)
+    key = active_key(snap)
+    check("candidate activated under a local key", bool(key) and key.startswith("local-"), current=snap["current"])
+    vdir = p["store"] / "versions" / key
+    check("candidate CLI and Hand bytes installed unchanged",
+          file_sha(vdir / "nanocodex") == file_sha(CAND[0]) and file_sha((vdir / "nanocodex2").resolve()) == file_sha(CAND[1]))
+    first = run("candidate-first-run", [str(p["store"] / "bin/nanocodex"), "--version"], base_env(p), timeout=60)
+    check("candidate first run via bin/nanocodex exits 0", first["exit"] == 0, out=first["out"][-300:], err=first["err"][-300:])
+    probes = probe_versions(p, base_env(p))
+    check_entrypoints(p, probes, sha, "candidate after OLD-updater activation and its first run")
+    state["steps"]["p1"] = {"snapshot": snapshot(p), "key": key, "sha": sha, "probes": probes}; save()
+
+
+def step_p2():
+    """Candidate fix: repeating the same --path selection is a no-op that rewrites
+    no version, Hand or manager file."""
+    require("--candidate is set", bool(CAND))
+    p = prefix_paths("p")
+    before = snapshot(p)
+    r = run("candidate-update-path-again", [str(p["store"] / "bin/nanocodex"), "update", "--path", str(CAND[0]),
+             "--hand-binary", str(CAND[1]), "--voice-archive", str(CAND[2])], base_env(p))
+    require("candidate repeat update --path exits 0", r["exit"] == 0, err=r["err"][-1500:])
+    after = snapshot(p)
+    check("repeat --path keeps the same key", active_key(after) == active_key(before), current=after["current"])
+    unchanged_files(before, after, versions_of(before), "candidate repeat --path")
+    unchanged_files(before, after, [], "candidate repeat --path: manager copies (versions/nightly, updater/)", ("versions/nightly/", "updater/"))
+    check_entrypoints(p, probe_versions(p, base_env(p)), state["steps"]["p1"]["sha"], "candidate after repeat --path")
 
 
 def step_c1():

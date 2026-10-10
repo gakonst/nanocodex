@@ -155,6 +155,15 @@ in `summary.json`. Checks named `FINDING` record observed product behaviour (a l
 updater's activation of a unified version, and manager copies rewritten by a no-op
 update) rather than fixture faults.
 
+With `--candidate CLI HAND VOICE_ARCHIVE` (an unpublished pair built with
+`VERGEN_GIT_SHA` and `NANOCODEX_HAND_IDENTITY`), step `p1` installs the published OLD
+nightly in prefix P, lets OLD's own `update --path ... --hand-binary ... --voice-archive`
+activate the candidate (the legacy activation that leaves `bin/nanocodex2` on the Hand),
+runs the candidate once and requires every entrypoint to be coherent; `p2` repeats
+the selection and requires no version, Hand or manager-copy rewrite. Run
+`--steps p1,p2` with the same `--old-sha`/`--new-sha` against a candidate fix before
+publishing it; the published release must then pass the full matrix.
+
 Not covered: OS-service handover, `--restart-hand`, the running-service Hand reuse
 decision (no service exists in the namespace), managed work after sign-in, and
 voice execution.
