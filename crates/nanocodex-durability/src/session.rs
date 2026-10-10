@@ -279,6 +279,10 @@ enum Command {
         checkpoint: EncodedPayload,
         result: oneshot::Sender<Result<()>>,
     },
+    DiscardUnused {
+        caller: Caller,
+        result: oneshot::Sender<Result<()>>,
+    },
     Describe {
         caller: Caller,
         record: crate::catalog::SessionRecord,
@@ -809,6 +813,13 @@ impl Driver {
                                     .await
                             }
                         },
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::DiscardUnused { caller, result } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => self.discard_unused().await,
                         Err(error) => Err(error),
                     };
                     drop(result.send(outcome));
@@ -1390,6 +1401,27 @@ impl Driver {
         next.advance_revision(revision)?;
         self.persist(next).await?;
         Ok(self.state.session().cloned().unwrap_or(merged))
+    }
+
+    /// Retracts a state that holds no work, only its catalog record and
+    /// initial checkpoint, so an abandoned child is neither listed nor
+    /// loadable. Retained work is never erased.
+    async fn discard_unused(&mut self) -> Result<()> {
+        if let Some(operation_id) = self.state.operations().keys().next() {
+            return Err(Error::InvalidState(format!(
+                "cannot discard state {} with retained operation {operation_id}",
+                self.state_id
+            )));
+        }
+        if self.state.session().is_none() && self.state.latest_checkpoint().is_none() {
+            return Ok(());
+        }
+        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
+            Error::InvalidState("state revision exceeded the u64 range".to_owned())
+        })?;
+        let mut next = DurableState::default();
+        next.advance_revision(revision)?;
+        self.persist(next).await
     }
 
     async fn apply_terminal(&mut self, entry: Transition) -> Result<()> {
@@ -2416,6 +2448,17 @@ impl DurableOwner {
             caller: self.caller()?,
             operation_id,
             checkpoint,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Retracts this owner's state when it holds no work; see `Driver::discard_unused`.
+    pub(crate) async fn discard_unused(&self) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::DiscardUnused {
+            caller: self.caller()?,
             result,
         })
         .await?;

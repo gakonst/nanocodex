@@ -344,3 +344,7 @@ path = "tests/nanocodex2_background_hand.rs"
 [[test]]
 name = "nanocodex2_hand_share"
 path = "tests/nanocodex2_hand_share.rs"
+
+[[test]]
+name = "model_capabilities"
+path = "tests/model_capabilities.rs"

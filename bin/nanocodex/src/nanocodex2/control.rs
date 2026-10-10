@@ -64,15 +64,12 @@ impl InitialSettings {
                 "The requested model cannot be pinned to a ChatGPT account".to_owned(),
             ));
         }
-        if !model.supports_thinking(settings.thinking)
-            || !model.supports_reasoning_mode(settings.reasoning_mode)
-            || (settings.fast_mode && !model.supports_fast_mode())
-        {
-            return Err(ManagedError::Configuration(
-                "The requested effort, reasoning mode, or fast mode is not offered for this model"
-                    .to_owned(),
-            ));
-        }
+        let capabilities = model.capabilities();
+        capabilities
+            .check_thinking(settings.thinking)
+            .and_then(|()| capabilities.check_reasoning_mode(settings.reasoning_mode))
+            .and_then(|()| capabilities.check_fast_mode(settings.fast_mode))
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
         Ok(settings)
     }
 }

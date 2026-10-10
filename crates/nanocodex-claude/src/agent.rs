@@ -6,6 +6,7 @@ use crate::{
 };
 use futures_util::StreamExt;
 use nanocodex_agent::{
+    ModelTransport,
     AgentEvents, AgentHandle, AgentSessionContext, Capabilities, CostStatus, ForkPoint,
     ForkRequest, HarnessFamily, HarnessModel, Lineage, Mutability, Nanocodex, NanocodexError,
     Origin, Persistence, ReportedTurnUsage, Result, SessionCheckpoint, SpawnOptions, Thinking,
@@ -532,9 +533,12 @@ impl ClaudeBuilder {
     /// Applies the shared catalog's validated effort to native Claude policy.
     pub fn thinking(mut self, thinking: Thinking) -> Result<Self> {
         let model: HarnessModel = self.claude.model.parse().map_err(invalid)?;
-        if model.family() != HarnessFamily::Claude || !model.supports_thinking(thinking) {
-            return Err(invalid("Claude model does not support selected thinking"));
+        if model.family() != HarnessFamily::Claude {
+            return Err(invalid("Claude builder requires a Claude model"));
         }
+        model
+            .capabilities(ModelTransport::Native)
+            .check_thinking(thinking)?;
         self.adaptive_thinking = thinking != Thinking::None;
         self.effort = match thinking {
             Thinking::None => None,
@@ -692,10 +696,12 @@ impl ClaudeBuilder {
         self.keep_thinking = true;
         self
     }
-    /// Requests fast mode on models that offer it; other models run at
-    /// standard speed. Fast mode is a research preview billed at premium
-    /// rates, and switching speeds misses the prompt cache. A later
-    /// `Nanocodex::set_fast_mode` call affects subsequently accepted turns.
+    /// Requests fast mode, offered by models whose shared capabilities report
+    /// it ([`HarnessModel::capabilities`]); building a known model that does
+    /// not offer it fails before any request. Fast mode is a research preview
+    /// billed at premium rates, and switching speeds misses the prompt cache.
+    /// A later `Nanocodex::set_fast_mode` call affects subsequently accepted
+    /// turns.
     pub const fn fast_mode(mut self, enabled: bool) -> Self {
         self.fast_mode = enabled;
         self
@@ -1066,6 +1072,13 @@ impl ClaudeBuilder {
     }
     /// Builds the common lifecycle handle and independent session event stream.
     pub fn build(mut self) -> Result<(Nanocodex, AgentEvents)> {
+        // Models outside the shared catalog are provider-native identifiers
+        // whose capabilities the provider alone decides.
+        if let Ok(model) = self.claude.model.parse::<HarnessModel>() {
+            model
+                .capabilities(ModelTransport::Native)
+                .check_fast_mode(self.fast_mode)?;
+        }
         let session_id = self
             .policy
             .as_ref()
@@ -5494,9 +5507,9 @@ impl LifecycleBackend for Driver {
             // each admitted turn freezes its own request template, so a change
             // applies to every subsequently accepted turn.
             let model: HarnessModel = state.model().parse().map_err(invalid)?;
-            if !model.supports_thinking(thinking) {
-                return Err(invalid("Claude model does not support selected thinking"));
-            }
+            model
+                .capabilities(ModelTransport::Native)
+                .check_thinking(thinking)?;
             *state
                 .effort
                 .write()
@@ -5513,6 +5526,11 @@ impl LifecycleBackend for Driver {
             let _admission = state.admission.lock().await;
             if state.stopped.load(Ordering::SeqCst) {
                 return Err(NanocodexError::AgentStopped);
+            }
+            if let Ok(model) = state.model().parse::<HarnessModel>() {
+                model
+                    .capabilities(ModelTransport::Native)
+                    .check_fast_mode(enabled)?;
             }
             state.fast_mode.store(enabled, Ordering::SeqCst);
             Ok(())

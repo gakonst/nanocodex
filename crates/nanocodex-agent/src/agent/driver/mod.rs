@@ -29,6 +29,8 @@ pub(super) struct AgentDriver<S> {
     pub(super) origin: AgentOrigin,
     pub(super) checkpoints: Arc<CheckpointSource>,
     pub(super) execution: Execution,
+    /// Reports when a durable child's first checkpoint is persisted.
+    pub(super) initial_persisted: Option<oneshot::Sender<Result<()>>>,
 }
 
 impl<S> AgentDriver<S>
@@ -104,6 +106,41 @@ where
         let mut developer_checkpoint_ready = true;
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
+        if let Some(persisted) = self.initial_persisted.take() {
+            // A durable child is listed and resumable from creation, before
+            // its first turn: a fork or restored child from the boundary it
+            // inherited, a fresh subagent from its empty session.
+            let child = match self.origin.start {
+                crate::session::SessionStart::New(origin) => {
+                    !matches!(origin, crate::Origin::Root)
+                }
+                crate::session::SessionStart::Restore => true,
+                crate::session::SessionStart::Resume => false,
+            };
+            let outcome = if child && self.execution.has_policy() {
+                let checkpoint = match &latest_fork_checkpoint {
+                    Some(checkpoint) => Ok(Arc::clone(checkpoint)),
+                    None => model
+                        .initial_checkpoint(self.workspace.as_deref())
+                        .map(|snapshot| {
+                            Arc::new(CommittedSession::new(
+                                Arc::clone(&self.spawner.lineage_id),
+                                thread_model,
+                                default_thinking,
+                                default_service_tier,
+                                snapshot,
+                            ))
+                        }),
+                };
+                match checkpoint {
+                    Ok(checkpoint) => self.execution.commit_initial_checkpoint(&checkpoint).await,
+                    Err(error) => Err(error),
+                }
+            } else {
+                Ok(())
+            };
+            drop(persisted.send(outcome));
+        }
         loop {
             let command = loop {
                 if let Some((parent, result)) = pending_compact.take() {
@@ -833,8 +870,11 @@ where
                                         drop(result.send(outcome));
                                     }
                                     Some(Command::SetServiceTier { service_tier, result }) => {
-                                        default_service_tier = service_tier;
-                                        drop(result.send(Ok(())));
+                                        let outcome = crate::HarnessModel::Codex(thread_model)
+                                            .capabilities(crate::ModelTransport::Native)
+                                            .check_service_tier(service_tier)
+                                            .map(|()| default_service_tier = service_tier);
+                                        drop(result.send(outcome));
                                     }
                                     Some(Command::SetModel { result, .. }) => {
                                         drop(result.send(Err(model_change_locked())));
@@ -1497,8 +1537,11 @@ where
                                 drop(result.send(outcome));
                             }
                             Some(Command::SetServiceTier { service_tier, result }) => {
-                                default_service_tier = service_tier;
-                                drop(result.send(Ok(())));
+                                let outcome = crate::HarnessModel::Codex(thread_model)
+                                    .capabilities(crate::ModelTransport::Native)
+                                    .check_service_tier(service_tier)
+                                    .map(|()| default_service_tier = service_tier);
+                                drop(result.send(outcome));
                             }
                             Some(Command::SetModel { result, .. }) => {
                                 drop(result.send(Err(model_change_locked())));

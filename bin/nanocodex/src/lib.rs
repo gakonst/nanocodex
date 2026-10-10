@@ -639,6 +639,7 @@ async fn run(cli: Cli) -> Result<()> {
                 resume: None,
             };
             launch.args.prefer_codex_for_vm(&launch.vm);
+            launch.args.validate_model_settings()?;
             nanocodex2::tui::run_local(launch)
                 .await
                 .map_err(|error| eyre!("{error}"))
@@ -648,6 +649,8 @@ async fn run(cli: Cli) -> Result<()> {
             let _observability = cli.observability.install(true)?;
             let mut agent = cli.agent;
             agent.prefer_codex_for_vm(&cli.vm);
+            // Explicit unsupported model settings fail before the terminal starts.
+            agent.validate_model_settings()?;
             let replaceable = agent.resumed().is_none();
             nanocodex2::tui::run_local(nanocodex2::tui::local::agent::LocalLaunch {
                 args: agent,

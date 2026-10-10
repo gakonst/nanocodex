@@ -209,12 +209,14 @@ where
         Arc::clone(&spawner.lineage_id),
         is_stateless_http(&spawner.config),
     ));
+    let (initial_persisted, initial_ready) = oneshot::channel();
     let agent = runtime.bind(LocalLifecycle {
         child_handle,
         commands,
         execution: execution.clone(),
         shutdown: shutdown.clone(),
         checkpoints: Arc::clone(&checkpoints),
+        initial_ready: Arc::new(std::sync::Mutex::new(Some(initial_ready))),
     });
     // Start discovery before returning the handle so an idle CLI or TUI immediately
     // contributes its human think time to provider prewarming.
@@ -231,6 +233,7 @@ where
         origin,
         checkpoints,
         execution: execution.clone(),
+        initial_persisted: Some(initial_persisted),
     };
     let driver_task = async move {
         let outcome = driver.run().await;

@@ -287,6 +287,19 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Captures the latest committed boundary without waiting for an active turn.
     fn checkpoint(&self) -> BackendFuture<Result<SessionCheckpoint>>;
 
+    /// Waits until a just-created durable child's first checkpoint is
+    /// persisted, so the child is listed and resumable before its first turn.
+    /// Backends without durable children have nothing to persist.
+    fn persist_initial(&self) -> BackendFuture<Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Retracts the first checkpoint of a child whose creation was abandoned,
+    /// never history the child held before it was created or restored.
+    fn discard_initial(&self) -> BackendFuture<Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Starts a clean sibling lifecycle.
     fn spawn(&self, options: SpawnOptions) -> BackendFuture<Result<(Nanocodex, AgentEvents)>>;
 
@@ -439,6 +452,8 @@ pub(super) struct LocalLifecycle {
     pub(super) execution: Execution,
     pub(super) shutdown: DriverShutdown,
     pub(super) checkpoints: Arc<CheckpointSource>,
+    /// Resolves once the driver persisted a durable child's first checkpoint.
+    pub(super) initial_ready: Arc<std::sync::Mutex<Option<oneshot::Receiver<Result<()>>>>>,
 }
 
 /// Lifecycle operations supported by the local Codex driver.
@@ -470,7 +485,14 @@ impl LifecycleBackend for LocalLifecycle {
     }
 
     fn capabilities(&self) -> Capabilities {
-        CODEX_CAPABILITIES
+        let mut capabilities = CODEX_CAPABILITIES;
+        // Ultrafast is offered per model by the shared capability source.
+        capabilities.ultrafast_service_tier = self
+            .child_handle
+            .harness_model()
+            .capabilities(crate::ModelTransport::Native)
+            .supports_service_tier(ServiceTier::Ultrafast);
+        capabilities
     }
 
     fn persistence(&self) -> Option<Persistence> {
@@ -732,6 +754,25 @@ impl LifecycleBackend for LocalLifecycle {
             .await?
             .into_checkpoint()
         })
+    }
+
+    fn persist_initial(&self) -> BackendFuture<Result<()>> {
+        let ready = self
+            .initial_ready
+            .lock()
+            .ok()
+            .and_then(|mut ready| ready.take());
+        Box::pin(async move {
+            match ready {
+                Some(ready) => ready.await.map_err(|_| NanocodexError::AgentStopped)?,
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn discard_initial(&self) -> BackendFuture<Result<()>> {
+        let execution = self.execution.clone();
+        Box::pin(async move { execution.discard_initial_checkpoint().await })
     }
 
     fn spawn(&self, options: SpawnOptions) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {

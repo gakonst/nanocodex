@@ -376,6 +376,12 @@ impl AgentArgs {
         self.reasoning_mode = capabilities.normalize_reasoning_mode(self.reasoning_mode);
     }
 
+    /// Validates the selected model's explicit settings before a terminal
+    /// session starts, so an invalid launch exits with an actionable error.
+    pub(crate) fn validate_model_settings(&self) -> Result<()> {
+        self.check_model_settings(self.harness_model()?)
+    }
+
     /// Rejects explicit thinking, fast-mode or reasoning-mode selections the
     /// model does not accept, before any credential or network use.
     pub(crate) fn check_model_settings(&self, model: HarnessModel) -> Result<()> {
@@ -791,6 +797,8 @@ impl AgentArgs {
         let mut builder = recipe
             .builder(openai, session_id, root.workspace.clone())
             .model(model)
+            // Explicit unsupported fast mode was rejected by check_model_settings.
+            .fast_mode(recipe.fast_mode && HarnessModel::Codex(model).supports_fast_mode())
             .thinking(thinking)
             .spawn_factory(harness.spawn_factory());
         // A rollout-only thread has no durable state yet; its rollout boundary

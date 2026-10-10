@@ -564,6 +564,10 @@ struct LazyExecution {
     store: SharedStore,
     record: SessionRecord,
     ready: tokio::sync::OnceCell<DurableExecution>,
+    /// The opened state already held a checkpoint, as for a restored child.
+    reopened: std::sync::atomic::AtomicBool,
+    /// This policy wrote the state's first checkpoint.
+    initialized: std::sync::atomic::AtomicBool,
 }
 
 impl LazyExecution {
@@ -572,6 +576,8 @@ impl LazyExecution {
             store,
             record,
             ready: tokio::sync::OnceCell::new(),
+            reopened: std::sync::atomic::AtomicBool::new(false),
+            initialized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -589,7 +595,11 @@ impl LazyExecution {
                     .describe(self.record.clone())
                     .await
                     .map_err(agent_error)?;
-                let (owner, _) = state.acquire_agent().await.map_err(agent_error)?;
+                let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+                self.reopened.store(
+                    checkpoint.is_some(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
                 Ok(DurableExecution::ready(
                     owner,
                     record.session_id.clone(),
@@ -649,6 +659,36 @@ impl ExecutionPolicy for LazyExecution {
         snapshot: SessionSnapshot,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move { self.get().await?.commit_checkpoint(snapshot).await })
+    }
+
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        snapshot: SessionSnapshot,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            // Opening the state records the child in the catalog; a restored
+            // child keeps the history it already holds.
+            let policy = self.get().await?;
+            if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            policy.commit_checkpoint(snapshot).await?;
+            self.initialized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            let Some(policy) = self.ready.get() else {
+                return Ok(());
+            };
+            if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            policy.owner.discard_unused().await.map_err(agent_error)
+        })
     }
 
     fn admit<'a>(

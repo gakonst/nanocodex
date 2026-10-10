@@ -4379,6 +4379,11 @@ async fn build_codex(
     validate(&config)?;
 
     let model = config.model.parse::<Model>().map_err(js_error)?;
+    // Explicit fastMode must be offered by the model, from the shared catalog.
+    nanocodex_agent::HarnessModel::Codex(model)
+        .capabilities(nanocodex_agent::ModelTransport::Native)
+        .check_fast_mode(config.fast_mode)
+        .map_err(js_error)?;
     let host_definition_id = config.host_definition_id;
     let reasoning_mode = config
         .reasoning_mode

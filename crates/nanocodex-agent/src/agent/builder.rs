@@ -208,7 +208,8 @@ impl<F> NanocodexBuilder<F> {
 
     /// Selects the processing tier for subsequently accepted turns.
     ///
-    /// Unsupported tiers use the fastest tier supported by the selected model.
+    /// Building fails when the selected model does not offer the tier; see
+    /// [`crate::ModelCapabilities::service_tiers`].
     #[must_use]
     pub const fn service_tier(mut self, service_tier: ServiceTier) -> Self {
         self.config.service_tier = service_tier;
@@ -490,6 +491,13 @@ where
     if builder.resume.is_none() {
         validate_model_thinking(builder.config.model, builder.config.thinking)?;
         validate_model_reasoning_mode(builder.config.model, builder.config.reasoning_mode)?;
+        // An explicitly selected tier must be one the model offers; the
+        // client default remains a preference clamped per model.
+        if builder.service_tier_explicit {
+            crate::HarnessModel::Codex(builder.config.model)
+                .capabilities(crate::ModelTransport::Native)
+                .check_service_tier(builder.config.service_tier)?;
+        }
     }
     validate(&builder.config, builder.prompt_cache.key.as_deref())?;
     validate_execution_environment(builder.codex.context.execution_environment())?;
