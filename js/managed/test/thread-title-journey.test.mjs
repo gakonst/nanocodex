@@ -94,7 +94,8 @@ test('automatic GLM titles survive restart across GPT and Claude, and recover fr
         const {model,input}=await request.json();
         assert.equal(model,'@cf/zai-org/glm-5.3');
         assert.equal(input.reasoning_effort,'low');
-        assert.equal(input.max_completion_tokens,1024);
+        // Titles carry no artificial output ceiling; GLM reasoning needs the room.
+        assert.equal(input.max_completion_tokens,undefined);
         const source=JSON.stringify(input.messages.filter(message=>message.role==='user'));
         naming.push({model,input});
         if (source.includes('GPT_TITLE')) assert.equal(input.messages.filter(message=>message.role==='user')[0].content, opening,

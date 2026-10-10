@@ -17,8 +17,15 @@ import { Kv } from "accounts/server";
 export { UserAccount, Organization, ApiKeyRecord, NonceStorage };
 export class FixtureSession extends DurableAgentSession {
   #users = this.env.NANOCODEX_USERS;
+  #initialized = false;
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    // A fresh Session creates its schema on its first real request, not in its
+    // constructor. Fixture seeding and inspection use that same entry first.
+    if (path.startsWith("/__") && !this.#initialized) {
+      this.#initialized = true;
+      await super.fetch(new Request(new URL("/__fixture-initialize", request.url)));
+    }
     if (path === "/__delivery") {
       const { fail } = await request.json(); const users = this.#users;
       Object.defineProperty(this, "env", { configurable: true, value: { ...this.env, NANOCODEX_USERS: {
