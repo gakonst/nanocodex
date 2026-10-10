@@ -3,6 +3,8 @@ import { expect, it } from "vitest";
 import { Agent } from "nanocodex/cloudflare";
 import { Subagents } from "nanocodex/host";
 import { createTools } from "nanocodex/tools";
+// Cloudflare Code Mode is mandatory and needs an explicit evaluator (eda4a21e3).
+import { managedCodeEvaluator } from "../src/code-evaluator";
 
 it("shares one owner's cached prefix and key across independent Worker sessions", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
@@ -30,7 +32,7 @@ it("shares one owner's cached prefix and key across independent Worker sessions"
       const owner = { ctx, env: { NANOCODEX: { async fetch() {
         return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
       } } } };
-      const options = { instructions: "Stable host instructions", eventPersistence: "caller" as const };
+      const options = { instructions: "Stable host instructions", eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
       Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { promptCacheKey: "owner-team-key" },
       });
@@ -75,7 +77,7 @@ it("persists voice start and end in Worker SQLite while Responses preconnect sta
       opened += 1;
       return { status: 101, headers: new Headers(), webSocket: socket };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
       value: { waitForPreconnect: false },
     });
@@ -128,7 +130,7 @@ it("admits more than eight children with prepared tools and keeps live messaging
       };
     } } } };
     const tools = await createTools({ tools: [] });
-    const options = { tools, eventPersistence: "caller" as const };
+    const options = { tools, eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     try {
       const attempts = await Promise.allSettled(Array.from({ length: 16 }, (_, index) => Subagents.spawn(agent, {
@@ -156,7 +158,7 @@ it("discards children and bounds new delegation after Worker SQLite reconstructi
         webSocket: { addEventListener() {}, accept() {}, send() {}, close() {} },
       };
     } } } };
-    const agent = await Agent.create(owner, { eventPersistence: "caller" });
+    const agent = await Agent.create(owner, { eventPersistence: "caller", codeEvaluator: managedCodeEvaluator() });
     let reopened: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {
       const children = await Promise.all(["one", "two"].map((role) => Subagents.spawn(agent, {
@@ -171,7 +173,7 @@ it("discards children and bounds new delegation after Worker SQLite reconstructi
       expect((await Subagents.list(agent)).agents).toHaveLength(2);
       // A new context over retained storage models an evicted DO. Explicit
       // session.shutdown closes children, so it is not a restart simulation.
-      const restoredOptions = { eventPersistence: "caller" as const };
+      const restoredOptions = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
       Object.defineProperty(restoredOptions, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { subagentMaxConcurrency: 1 },
       });
@@ -239,7 +241,7 @@ it("keeps a delayed compaction owned until its checkpoint survives SQLite recons
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
       return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {
@@ -306,7 +308,7 @@ it("reconstructs SQLite ownership while provider compaction is pending and compl
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
       return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {
