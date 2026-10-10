@@ -15,7 +15,9 @@ const principal = (): Principal => {
 
 async function initialize(id: string, owner: Principal, knownEmpty?: boolean) {
   await attachAgent(runtime, owner.userId, id, undefined, knownEmpty === undefined ? undefined : !knownEmpty);
-  await runInDurableObject(runtime.NANOCODEX_SESSIONS.getByName(id), async (_session, state) => {
+  await runInDurableObject(runtime.NANOCODEX_SESSIONS.getByName(id), async (session, state) => {
+    // A fresh Session creates its schema on its first real request (9d8b63102).
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state (
       singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active
     ) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
