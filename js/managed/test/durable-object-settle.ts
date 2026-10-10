@@ -15,6 +15,9 @@ import { afterAll } from "vitest";
 const QUIET_MS = 50;
 const DEADLINE_MS = 10_000;
 const RUNNER_BINDING = "__VITEST_POOL_WORKERS_RUNNER_OBJECT";
+// Tests mock Date.now (vi.spyOn(Date, "now")); keep the original so a mocked
+// clock cannot place lastActivity in the future and hold the barrier open.
+const now = Date.now;
 
 type RunnerNamespace = { get(id: unknown): Record<PropertyKey, unknown> };
 const runner = (env as unknown as Record<string, RunnerNamespace | undefined>)[RUNNER_BINDING];
@@ -24,7 +27,7 @@ if (typeof runner?.get !== "function") {
 }
 let inFlight = 0;
 let observed = 0;
-let lastActivity = Date.now();
+let lastActivity = now();
 const get = runner.get.bind(runner);
 runner.get = (id: unknown) => new Proxy(get(id), {
   get(target, key) {
@@ -34,8 +37,8 @@ runner.get = (id: unknown) => new Proxy(get(id), {
     return (...args: unknown[]) => {
       inFlight++;
       observed++;
-      lastActivity = Date.now();
-      const settle = () => { inFlight--; lastActivity = Date.now(); };
+      lastActivity = now();
+      const settle = () => { inFlight--; lastActivity = now(); };
       const pending = Promise.resolve(value.apply(target, args));
       pending.then(settle, settle);
       return pending;
@@ -50,9 +53,9 @@ afterAll(async () => {
   if (observed === 0) {
     throw new Error(`no ${RUNNER_BINDING} calls were observed; @cloudflare/vitest-pool-workers internals changed, so revisit test/durable-object-settle.ts`);
   }
-  const deadline = Date.now() + DEADLINE_MS;
-  while (inFlight > 0 || Date.now() - lastActivity < QUIET_MS) {
-    if (Date.now() > deadline) {
+  const deadline = now() + DEADLINE_MS;
+  while (inFlight > 0 || now() - lastActivity < QUIET_MS) {
+    if (now() > deadline) {
       throw new Error(`${inFlight} Durable Object event(s) were still running ${DEADLINE_MS}ms after this file's tests finished; await the work the test started`);
     }
     await scheduler.wait(10);
