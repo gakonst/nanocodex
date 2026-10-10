@@ -5898,7 +5898,9 @@ async fn apply_update(
                             continue;
                         };
                         let thinking = thinking_from_effort(root.composer().effort());
-                        let thinking = if entry.thinking.contains(&thinking) { thinking } else {
+                        let thinking = if entry.thinking.contains(&thinking) { thinking } else if runtime.local.is_some() {
+                            model.harness().default_thinking()
+                        } else {
                             model.default_thinking()
                         };
                         let preferred_mode = managed_reasoning_mode(root.preferred_reasoning_mode());

@@ -365,16 +365,33 @@ impl AgentArgs {
         thinking: Thinking,
         fast_mode: bool,
     ) {
-        let same_family = self.selected_harness().ok() == Some(model.family());
+        // A deliberate switch keeps retained settings the new model accepts
+        // and resets the rest to its defaults, so the next request is valid.
+        let capabilities = model.capabilities(nanocodex::ModelTransport::Native);
         self.harness = Some(model.family().to_string());
         self.claude = model.family() == HarnessFamily::Claude;
         self.model = Some(model.to_string());
-        self.model_policy.thinking = Some(if same_family && model.supports_thinking(thinking) {
-            thinking
-        } else {
-            model.default_thinking()
-        });
-        self.fast_mode = Some(model.supports_fast_mode() && fast_mode);
+        self.model_policy.thinking = Some(capabilities.normalize_thinking(thinking));
+        self.fast_mode = Some(capabilities.fast_mode() && fast_mode);
+        self.reasoning_mode = capabilities.normalize_reasoning_mode(self.reasoning_mode);
+    }
+
+    /// Rejects explicit thinking, fast-mode or reasoning-mode selections the
+    /// model does not accept, before any credential or network use.
+    pub(crate) fn check_model_settings(&self, model: HarnessModel) -> Result<()> {
+        let capabilities = model.capabilities(nanocodex::ModelTransport::Native);
+        if let Some(thinking) = self.model_policy.requested_thinking(model.family())? {
+            capabilities.check_thinking(thinking).map_err(|error| eyre!(error))?;
+        }
+        if self.fast_mode == Some(true) {
+            capabilities
+                .check_fast_mode(true)
+                .map_err(|error| eyre!("{error} (--fast-mode / NANOCODEX_FAST_MODE)"))?;
+        }
+        capabilities
+            .check_reasoning_mode(self.reasoning_mode)
+            .map_err(|error| eyre!("{error} (--reasoning-mode / OPENAI_REASONING_MODE)"))?;
+        Ok(())
     }
 
     /// Arguments for switching a running TUI to another saved session (/attach):
@@ -629,11 +646,16 @@ impl AgentArgs {
         self.model_policy.web_search.unwrap_or(true)
     }
 
+    /// Effective fast processing: an explicit choice where the model offers
+    /// it; by default priority processing on Responses models, and standard
+    /// speed on Claude, whose fast mode is a premium opt-in.
     pub(crate) fn fast_mode(&self) -> bool {
-        self.fast_mode.unwrap_or(true)
-            && self
-                .selected_harness()
-                .is_ok_and(|family| family == HarnessFamily::Codex)
+        self.harness_model().is_ok_and(|model| {
+            model.supports_fast_mode()
+                && self
+                    .fast_mode
+                    .unwrap_or(model.family() == HarnessFamily::Codex)
+        })
     }
 
     pub(crate) fn responses_transport(&self) -> ResponsesTransport {
@@ -679,6 +701,7 @@ impl AgentArgs {
             ));
         }
         let requested_model = self.requested_model(harness)?;
+        self.check_model_settings(requested_model.unwrap_or_else(|| harness.default_model()))?;
         let codex_home = default_codex_home()?;
         let root = self.root_session(harness, &codex_home, local_durability)?;
         if harness == HarnessFamily::Claude {
@@ -1005,6 +1028,7 @@ impl AgentArgs {
             registry,
             mcp_handle,
             Arc::clone(workspaces),
+            self.fast_mode.unwrap_or(false),
         ))
     }
 

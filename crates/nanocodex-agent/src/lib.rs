@@ -16,7 +16,7 @@ mod harness;
 mod reasoning;
 #[cfg(feature = "openai")]
 mod service_tier_serde;
-pub use harness::{ClaudeModel, HarnessFamily, HarnessModel};
+pub use harness::{ClaudeModel, HarnessFamily, HarnessModel, ModelCapabilities, ModelTransport};
 #[cfg(feature = "openai")]
 mod model;
 #[cfg(feature = "openai")]

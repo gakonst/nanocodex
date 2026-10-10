@@ -1061,12 +1061,17 @@ type CredentialBindingOwnership = Readonly<{
   strategy?: "session_v1";
 }>;
 
-type PortableDurabilityArchive = Readonly<{
+type PortableDurabilityStateArchive = Readonly<{
   records: readonly Readonly<{ key: string; value: string }>[];
   format: "nanocodex-durability-state-v2";
   payload: string;
   revision: string;
   stateId: string;
+}>;
+
+/** A root archive; its durable task-tree journal, when present, travels nested. */
+type PortableDurabilityArchive = PortableDurabilityStateArchive & Readonly<{
+  subagents?: PortableDurabilityStateArchive;
 }>;
 
 type ManagedDurabilityArchive = Readonly<{
@@ -15035,12 +15040,13 @@ function validateManagedDurabilityArchive(value: unknown): ManagedDurabilityArch
     || archive.format !== "nanocodex-managed-durability-state-v2"
     || typeof archive.source_agent_id !== "string" || !SESSION_ID.test(archive.source_agent_id)
     || !durability || Array.isArray(durability)
-    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload", "records", "subagents"].includes(key))
     || durability.format !== "nanocodex-durability-state-v2"
     || typeof durability.stateId !== "string" || durability.stateId.length === 0
     || typeof durability.revision !== "string" || !/^[1-9][0-9]*$/.test(durability.revision)
     || typeof durability.payload !== "string"
     || !Array.isArray(durability.records) || durability.records.length !== 0
+    || !validPortableSubagentsArchive(durability.stateId, durability.subagents)
     || !validManagedPortableArchiveIdentity(archive.managed_durability_records)
     || !identity || Array.isArray(identity)
     || Object.keys(identity).some((key) => ![
@@ -15211,14 +15217,27 @@ function portableDurabilityStateId(value: unknown): string {
     throw new Error("portable durability archive is invalid");
   }
   const archive = value as Record<string, unknown>;
-  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload", "records", "subagents"].includes(key))
     || archive.format !== "nanocodex-durability-state-v2"
     || typeof archive.stateId !== "string" || archive.stateId.length === 0
     || typeof archive.revision !== "string" || !/^[1-9][0-9]*$/.test(archive.revision)
-    || typeof archive.payload !== "string") {
+    || typeof archive.payload !== "string"
+    || !validPortableSubagentsArchive(archive.stateId, archive.subagents)) {
     throw new Error("portable durability archive is invalid");
   }
   return archive.stateId;
+}
+
+/** The optional nested task-tree journal must be exactly its root's companion state. */
+function validPortableSubagentsArchive(rootStateId: string, value: unknown): boolean {
+  if (value === undefined) return true;
+  return isRecord(value)
+    && !Object.keys(value).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    && value.format === "nanocodex-durability-state-v2"
+    && value.stateId === `${rootStateId}:subagents`
+    && typeof value.revision === "string" && /^[1-9][0-9]*$/.test(value.revision)
+    && typeof value.payload === "string"
+    && Array.isArray(value.records);
 }
 
 function validDurabilityImportPreparation(value: unknown): boolean {

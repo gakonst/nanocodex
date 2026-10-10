@@ -2,7 +2,8 @@
 """One `nanocodex resume` picker over Codex and Claude sessions, through a real PTY.
 
 Build separately, then run:
-  python3 scripts/tests/unified-resume-picker-journey.py --binary target/debug/nanocodex
+  python3 scripts/tests/unified-resume-picker-journey.py --binary target/debug/ncl
+(the local CLI tree; an `ncl` hard link to the nanocodex binary selects it)
 
 Two sessions are recorded with the shipped `nanocodex run`, a Codex one and then
 a Claude one, under a throwaway HOME. `nanocodex resume` without an ID must list
@@ -46,6 +47,11 @@ class Providers:
 
     def __init__(self):
         self.requests = []
+        # Prompt markers already answered. The TUI repaints only changed cells,
+        # so a reply sharing cells with replayed history is not a contiguous
+        # substring of the PTY byte stream; completion is the provider answer
+        # plus the rendered turn-completed notice instead.
+        self.answered = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -58,6 +64,7 @@ class Providers:
                 # Answer the latest prompt marker; history and system text come first.
                 markers = re.findall(r"[a-z]+-picker-[a-z-]+-prompt", json.dumps(body))
                 text = "done:" + (markers[-1] if markers else "unknown")
+                owner.answered.append(markers[-1] if markers else None)
                 payload = owner.messages(body["model"], text) if self.path.endswith("/messages") else owner.responses(text)
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
@@ -224,7 +231,7 @@ def main():
                 state["order_ok"] = screen.rindex(CLAUDE_PROMPT) < screen.rindex(CODEX_PROMPT)
                 if write:
                     write(b"\r")
-            return f"done:{FOLLOWUP}" in screen
+            return FOLLOWUP in providers.answered and "Turn completed" in screen
 
         done, child = pty_run("picker-resume", [str(binary), "resume", *both, "--prompt", FOLLOWUP], resume)
         require(state["listed"], "picker did not list both sessions")
@@ -269,7 +276,7 @@ def main():
             prompt = f"{family}-picker-branch-prompt"
             before = len(providers.requests)
             done, child = pty_run(f"resume-branch-{family}", [str(binary), "resume", branch, *both, "--prompt", prompt],
-                                  lambda screen, _write, p=prompt: f"done:{p}" in screen)
+                                  lambda screen, _write, p=prompt: p in providers.answered and "Turn completed" in screen)
             require(done, f"{family} branch never answered; see resume-branch-{family}.terminal.txt")
             requests = providers.requests[before:]
             route = "/messages" if family == "claude" else "/responses"

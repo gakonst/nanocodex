@@ -359,6 +359,8 @@ impl AgentArgs {
             self.claude_workflows,
             self.claude_monitor_ws_origin.clone(),
         )
+        // Validated by check_model_settings; a recorded boundary overrides it.
+        .fast_mode(self.fast_mode())
         .spawn_factory(harness.spawn_factory());
         if let Some(persistence) = &root.persistence {
             // The same Codex-format JSONL mirror as Codex roots, for this
@@ -595,6 +597,7 @@ pub(super) fn register_claude_recipe(
     registry: Option<Arc<nanocodex_subagents::Registry>>,
     mcp_handle: Option<McpHandle>,
     workspaces: Arc<WorkspaceRegistry>,
+    fast_mode: bool,
 ) -> nanocodex::HarnessBuilder {
     harness.register(HarnessFamily::Claude, move |request| {
         let connection = connection.clone();
@@ -665,7 +668,10 @@ pub(super) fn register_claude_recipe(
             )
             .spawn_factory(request.spawn_factory)
             .subagent_type("general-purpose")
-            .host_context(request.host_context);
+            .host_context(request.host_context)
+            // The session's fast preference where the child's model offers it;
+            // a reopened checkpoint restores its own recorded setting.
+            .fast_mode(fast_mode && request.model.supports_fast_mode());
             if let Some(checkpoint) = request.checkpoint {
                 builder = builder.resume(checkpoint)?;
             }

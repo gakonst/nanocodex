@@ -157,7 +157,17 @@ export function destroy(owner) {
   });
 }
 
-/** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
+/** The durable root's task-tree journal is a companion state of its root. */
+function subagentsStateId(stateId) {
+  return `${stateId}:subagents`;
+}
+
+/**
+ * Fences and exports this inactive Cloudflare Agent's provider-neutral state.
+ * A durable task tree travels with its root: when the root has a task-tree
+ * journal, the archive carries it as a complete nested `subagents` archive,
+ * and a page request with `subagents: true` pages that journal state.
+ */
 export async function exportDurabilityState(owner, request, headOnly = false) {
   const context = reserveInactiveLifecycle(owner, "exporting durability state");
   try {
@@ -168,15 +178,35 @@ export async function exportDurabilityState(owner, request, headOnly = false) {
     if (stateId === undefined) {
       throw new Error("Cloudflare Agent has no durability state to export");
     }
-    return request === undefined
-      ? await exportPortableState(durability, stateId, { headOnly })
-      : await exportPortableStatePage(durability, stateId, request);
+    if (request !== undefined) {
+      if (request?.subagents === undefined) {
+        return await exportPortableStatePage(durability, stateId, request);
+      }
+      if (request.subagents !== true) {
+        throw new TypeError("Cloudflare durability page request subagents must be true when present");
+      }
+      const journalId = subagentsStateId(stateId);
+      if ((await durability.load(journalId)).revision === "0") {
+        throw new Error("Cloudflare Agent has no task-tree journal to export");
+      }
+      const { subagents: _selected, ...range } = request;
+      return await exportPortableStatePage(durability, journalId, range);
+    }
+    const root = await exportPortableState(durability, stateId, { headOnly });
+    const journalId = subagentsStateId(stateId);
+    // Probe without acquiring: exporting a root without children must not
+    // create an owner for an absent journal.
+    if ((await durability.load(journalId)).revision === "0") return root;
+    // The journal stores its child checkpoints inline and never stages
+    // records, so it always travels complete, even with a head-only root.
+    const subagents = await exportPortableState(durability, journalId);
+    return Object.freeze({ ...root, subagents });
   } finally {
     lifecycleFor(context).creating = false;
   }
 }
 
-/** Internal managed cutover: records are transferred through its bounded archive. */
+/** Internal managed cutover: root records are transferred through its bounded archive. */
 export function exportDurabilityHead(owner) { return exportDurabilityState(owner, undefined, true); }
 
 /** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
@@ -190,7 +220,17 @@ export async function importDurabilityState(owner, archive, module) {
       ? archive.stateId
       : "nanocodex-invalid-import";
     const validationStore = createMemoryDurabilityStore(validationStateId);
-    const validated = await importPortableState(validationStore, archive);
+    const { subagents, ...rootArchive } = archive && typeof archive === "object" ? archive : {};
+    const validated = await importPortableState(validationStore, archive === null || typeof archive !== "object" ? archive : rootArchive);
+    let validatedSubagents;
+    if (subagents !== undefined) {
+      if (subagents === null || typeof subagents !== "object"
+        || subagents.stateId !== subagentsStateId(archive.stateId)) {
+        throw new TypeError("Cloudflare durability import subagents must be the root's task-tree journal archive");
+      }
+      // The Rust runtime opening the root below also reads its journal.
+      validatedSubagents = await importPortableState(validationStore, subagents);
+    }
     if (module !== undefined) {
       const routeHost = {};
       const route = (await loadDurabilityRuntime()).own(
@@ -215,8 +255,11 @@ export async function importDurabilityState(owner, archive, module) {
         && retainedStateId === archive?.stateId
         && archive?.format === "nanocodex-durability-state-v2") {
         const retained = await durability.load(retainedStateId);
+        const journal = await durability.load(subagentsStateId(retainedStateId));
         if (retained.revision === validated.revision
-          && retained.payload === validated.payload) {
+          && retained.payload === validated.payload
+          && journal.revision === (validatedSubagents?.revision ?? "0")
+          && journal.payload === (validatedSubagents?.payload ?? null)) {
           return retained;
         }
       }
@@ -228,6 +271,9 @@ export async function importDurabilityState(owner, archive, module) {
     // bounded host transfer survive rollback and can be reused on retry.
     return storage.transactionSync(() => {
       const imported = durability.importState(archive.stateId, validated, { records: archive.records });
+      if (validatedSubagents !== undefined) {
+        durability.importState(subagents.stateId, validatedSubagents, { records: subagents.records });
+      }
       storage.sql.exec(
         "INSERT INTO nanocodex_cloudflare_agent (singleton, session_id) VALUES (1, ?)", sessionId,
       );

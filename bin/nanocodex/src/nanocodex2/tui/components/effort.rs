@@ -35,6 +35,8 @@ const KEY_BINDINGS: [(&str, &str); 4] = [
     ("enter", "apply"),
     ("esc", "cancel"),
 ];
+const KEY_BINDINGS_WITHOUT_PRO: [(&str, &str); 3] =
+    [("←/→", "effort"), ("enter", "apply"), ("esc", "cancel")];
 const FILLER_DOT: &str = "•";
 const THICK_DOT: &str = "●";
 
@@ -50,8 +52,11 @@ pub(super) enum EffortEffect {
 }
 
 pub(super) struct EffortSelector {
+    /// Efforts the selected model accepts, ascending; never empty.
+    options: Vec<ReasoningEffort>,
     selected: usize,
     pro: bool,
+    pro_available: bool,
     displayed_phase: f64,
     displayed_fill: f64,
     target_phase: f64,
@@ -69,12 +74,31 @@ struct Animation {
 }
 
 impl EffortSelector {
-    pub(super) fn new(initial: ReasoningEffort, pro: bool) -> Self {
-        let selected = initial.index();
+    /// Offers only the selected model's efforts. An unsupported initial
+    /// effort starts at the model's default, then its lowest supported level.
+    pub(super) fn new(
+        initial: ReasoningEffort,
+        fallback: ReasoningEffort,
+        pro: bool,
+        options: Vec<ReasoningEffort>,
+        pro_available: bool,
+    ) -> Self {
+        let options = if options.is_empty() {
+            vec![initial]
+        } else {
+            options
+        };
+        let selected = options
+            .iter()
+            .position(|effort| *effort == initial)
+            .or_else(|| options.iter().position(|effort| *effort == fallback))
+            .unwrap_or(0);
         let phase = selected as f64;
         Self {
+            options,
             selected,
-            pro,
+            pro: pro && pro_available,
+            pro_available,
             displayed_phase: phase,
             displayed_fill: phase,
             target_phase: phase,
@@ -102,7 +126,7 @@ impl EffortSelector {
                 self.select_relative(1, now);
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('p') if self.pro_available => {
                 self.pro = !self.pro;
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
@@ -121,18 +145,19 @@ impl EffortSelector {
     fn select_relative(&mut self, direction: isize, now: Instant) {
         self.advance_animation(now);
         let previous = self.selected;
+        let count = self.options.len();
         if direction < 0 {
             self.selected = if self.selected == 0 {
-                ReasoningEffort::ALL.len() - 1
+                count - 1
             } else {
                 self.selected - 1
             };
         } else {
-            self.selected = (self.selected + 1) % ReasoningEffort::ALL.len();
+            self.selected = (self.selected + 1) % count;
         }
         self.target_phase += direction as f64;
-        let wrapping_fill = (previous == ReasoningEffort::ALL.len() - 1 && self.selected == 0)
-            || (previous == 0 && self.selected == ReasoningEffort::ALL.len() - 1);
+        let wrapping_fill = (previous == count - 1 && self.selected == 0)
+            || (previous == 0 && self.selected == count - 1);
         self.animation = Some(Animation {
             phase_from: self.displayed_phase,
             phase_to: self.target_phase,
@@ -169,7 +194,7 @@ impl EffortSelector {
     }
 
     fn selected_effort(&self) -> ReasoningEffort {
-        ReasoningEffort::ALL[self.selected]
+        self.options[self.selected]
     }
 
     fn render_dial(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -189,18 +214,20 @@ impl EffortSelector {
             radius_x,
             radius_y,
             self.displayed_phase,
+            self.options.len(),
         );
         let filled_phase = self
             .displayed_fill
-            .clamp(0.0, (ReasoningEffort::ALL.len() - 1) as f64);
+            .clamp(0.0, (self.options.len() - 1) as f64);
         let wrapping_fill = self
             .animation
             .as_ref()
             .is_some_and(|animation| animation.wrapping_fill);
+        let count = self.options.len();
         let buffer = frame.buffer_mut();
         for sample in 0..DIAL_SAMPLES {
-            let phase = sample as f64 / DIAL_SAMPLES as f64 * ReasoningEffort::ALL.len() as f64;
-            let point = dial_position(area, center_x, center_y, radius_x, radius_y, phase);
+            let phase = sample as f64 / DIAL_SAMPLES as f64 * count as f64;
+            let point = dial_position(area, center_x, center_y, radius_x, radius_y, phase, count);
             draw_dot(
                 buffer,
                 point,
@@ -209,11 +236,11 @@ impl EffortSelector {
             );
         }
         for sample in 0..DIAL_SAMPLES {
-            let phase = sample as f64 / DIAL_SAMPLES as f64 * ReasoningEffort::ALL.len() as f64;
-            if !phase_is_filled(phase, filled_phase, wrapping_fill) {
+            let phase = sample as f64 / DIAL_SAMPLES as f64 * count as f64;
+            if !phase_is_filled(phase, filled_phase, wrapping_fill, count) {
                 continue;
             }
-            let point = dial_position(area, center_x, center_y, radius_x, radius_y, phase);
+            let point = dial_position(area, center_x, center_y, radius_x, radius_y, phase, count);
             draw_dot(
                 buffer,
                 point,
@@ -222,9 +249,17 @@ impl EffortSelector {
             );
         }
 
-        for index in 0..ReasoningEffort::ALL.len() {
-            let point = dial_position(area, center_x, center_y, radius_x, radius_y, index as f64);
-            let color = if phase_is_filled(index as f64, filled_phase, wrapping_fill) {
+        for index in 0..count {
+            let point = dial_position(
+                area,
+                center_x,
+                center_y,
+                radius_x,
+                radius_y,
+                index as f64,
+                count,
+            );
+            let color = if phase_is_filled(index as f64, filled_phase, wrapping_fill, count) {
                 selected_color
             } else {
                 theme.muted()
@@ -239,10 +274,10 @@ impl EffortSelector {
             Style::default()
                 .fg(
                     if phase_is_filled(
-                        self.displayed_phase
-                            .rem_euclid(ReasoningEffort::ALL.len() as f64),
+                        self.displayed_phase.rem_euclid(count as f64),
                         filled_phase,
                         wrapping_fill,
+                        count,
                     ) {
                         selected_color
                     } else {
@@ -255,7 +290,7 @@ impl EffortSelector {
 
     fn render_labels(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let effort = self.selected_effort();
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("Selected Effort:", Style::default().fg(theme.border())),
                 Span::styled(
@@ -265,7 +300,9 @@ impl EffortSelector {
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
-            Line::from(vec![
+        ];
+        if self.pro_available {
+            lines.push(Line::from(vec![
                 Span::styled("Pro: ", Style::default().fg(Color::Green)),
                 Span::styled(
                     if self.pro { "on" } else { "off" },
@@ -273,18 +310,18 @@ impl EffortSelector {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]),
-        ];
+            ]));
+        }
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
     }
 }
 
-fn phase_is_filled(phase: f64, filled_phase: f64, wrapping: bool) -> bool {
+fn phase_is_filled(phase: f64, filled_phase: f64, wrapping: bool, count: usize) -> bool {
     if !wrapping {
         return phase <= filled_phase + f64::EPSILON;
     }
 
-    let max_phase = (ReasoningEffort::ALL.len() - 1) as f64;
+    let max_phase = (count - 1) as f64;
     phase <= f64::EPSILON
         || (phase >= max_phase - filled_phase - f64::EPSILON && phase <= max_phase + f64::EPSILON)
 }
@@ -315,7 +352,12 @@ impl Component for EffortSelector {
             return;
         }
 
-        let layout = Floating::new("Effort", 48, 17, &KEY_BINDINGS).render(frame, area, theme);
+        let bindings: &[(&str, &str)] = if self.pro_available {
+            &KEY_BINDINGS
+        } else {
+            &KEY_BINDINGS_WITHOUT_PRO
+        };
+        let layout = Floating::new("Effort", 48, 17, bindings).render(frame, area, theme);
         if layout.body.is_empty() {
             return;
         }
@@ -347,8 +389,9 @@ fn dial_position(
     radius_x: f64,
     radius_y: f64,
     phase: f64,
+    count: usize,
 ) -> Position {
-    let angle = -FRAC_PI_2 + TAU * phase / ReasoningEffort::ALL.len() as f64;
+    let angle = -FRAC_PI_2 + TAU * phase / count as f64;
     let x = center_x + angle.cos() * radius_x;
     let y = center_y + angle.sin() * radius_y;
     Position::new(

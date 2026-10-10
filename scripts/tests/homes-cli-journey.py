@@ -2,7 +2,8 @@
 """Shared Codex/Claude homes through the shipped CLI, on throwaway homes only.
 
 Build separately, then run:
-  python3 scripts/tests/homes-cli-journey.py --binary target/debug/nanocodex
+  python3 scripts/tests/homes-cli-journey.py --binary target/debug/ncl
+(the local CLI tree; an `ncl` hard link to the nanocodex binary selects it)
 
 1. `nanocodex homes` previews, `--apply` links, a rerun is idempotent, and a
    dangling natural path is reported (nonzero) and left untouched.

@@ -2228,16 +2228,39 @@ impl RootNode {
         self.refresh_actions();
     }
 
-    fn supports_fast_mode(&self) -> bool {
+    /// Settings the selected model accepts in this session: its entry in the
+    /// session's catalog (the account catalog, or the local harness catalog),
+    /// else the shared capability projection for this session's transport.
+    fn model_choices(&self) -> ModelChoices {
         let model = self.composer.component().model();
-        if self.capabilities.local {
+        let capabilities = if self.capabilities.local {
             model
-                .as_str()
-                .parse::<nanocodex::HarnessModel>()
-                .is_ok_and(nanocodex::HarnessModel::supports_fast_mode)
+                .harness()
+                .capabilities(nanocodex::ModelTransport::Native)
         } else {
-            model.supports_fast_mode()
+            model.capabilities()
+        };
+        let default_effort = effort_of(capabilities.default_thinking());
+        match self.model_catalog.iter().find(|entry| entry.id == model) {
+            Some(entry) => ModelChoices {
+                efforts: entry.thinking.iter().copied().filter_map(effort_of).collect(),
+                default_effort,
+                fast_mode: entry.fast_mode,
+                pro: entry
+                    .reasoning_modes
+                    .contains(&nanocodex::ReasoningMode::Pro),
+            },
+            None => ModelChoices {
+                efforts: capabilities.thinking().filter_map(effort_of).collect(),
+                default_effort,
+                fast_mode: capabilities.fast_mode(),
+                pro: capabilities.supports_reasoning_mode(nanocodex::ReasoningMode::Pro),
+            },
         }
+    }
+
+    fn supports_fast_mode(&self) -> bool {
+        self.model_choices().fast_mode
     }
 
     fn action_availability(&self) -> ActionAvailability {
@@ -2520,9 +2543,24 @@ impl RootNode {
         if self.composer.component().auto_routing() {
             return self.routing_settings_locked();
         }
+        let choices = self.model_choices();
+        if choices.efforts.is_empty() {
+            self.notification = Some(Notification::plain(
+                format!(
+                    "{} has no adjustable effort",
+                    self.composer.component().model()
+                ),
+                Color::Red,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        let current = self.composer.component().effort();
         self.overlay = Some(Overlay::Effort(Node::new(EffortSelector::new(
-            self.composer.component().effort(),
+            current,
+            choices.default_effort.unwrap_or(current),
             self.preferred_reasoning_mode == ReasoningMode::Pro,
+            choices.efforts,
+            choices.pro,
         ))));
         ComponentUpdate::render(RenderRequest::Immediate)
     }
@@ -3001,30 +3039,24 @@ impl RootNode {
         } else {
             ReasoningMode::Standard
         };
-        let model = self.composer.component().model();
-        let thinking = match effort {
-            ReasoningEffort::Low => nanocodex::Thinking::Low,
-            ReasoningEffort::Medium => nanocodex::Thinking::Medium,
-            ReasoningEffort::High => nanocodex::Thinking::High,
-            ReasoningEffort::Xhigh => nanocodex::Thinking::Xhigh,
-            ReasoningEffort::Max => nanocodex::Thinking::Max,
-        };
-        let mode = if pro {
-            nanocodex::ReasoningMode::Pro
-        } else {
-            nanocodex::ReasoningMode::Standard
-        };
-        let supports_thinking = if self.capabilities.local {
-            model
-                .as_str()
-                .parse::<nanocodex::HarnessModel>()
-                .is_ok_and(|native| native.supports_thinking(thinking))
-        } else {
-            model.supports_thinking(thinking)
-        };
-        if !supports_thinking || !model.supports_reasoning_mode(mode) {
+        let choices = self.model_choices();
+        if !choices.efforts.contains(&effort) || (pro && !choices.pro) {
+            let model = self.composer.component().model();
+            let supported = choices
+                .efforts
+                .iter()
+                .map(|effort| effort.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             self.notification = Some(Notification::plain(
-                "This model does not support the requested effort or Pro mode".into(),
+                if choices.efforts.contains(&effort) {
+                    format!("{model} does not support Pro mode")
+                } else {
+                    format!(
+                        "{model} does not support {} effort; choose {supported}",
+                        effort.as_str()
+                    )
+                },
                 Color::Red,
             ));
             return ComponentUpdate::render(RenderRequest::Immediate);
@@ -7291,5 +7323,26 @@ mod live_control_tests {
             );
             assert!(!root.interactive);
         }
+    }
+}
+
+/// Efforts, fast processing and Pro mode the selected model accepts.
+struct ModelChoices {
+    efforts: Vec<ReasoningEffort>,
+    default_effort: Option<ReasoningEffort>,
+    fast_mode: bool,
+    pro: bool,
+}
+
+/// The composer's effort for a model thinking level; models without
+/// adjustable effort (Thinking::None) have none.
+const fn effort_of(thinking: nanocodex::Thinking) -> Option<ReasoningEffort> {
+    match thinking {
+        nanocodex::Thinking::None => None,
+        nanocodex::Thinking::Low => Some(ReasoningEffort::Low),
+        nanocodex::Thinking::Medium => Some(ReasoningEffort::Medium),
+        nanocodex::Thinking::High => Some(ReasoningEffort::High),
+        nanocodex::Thinking::Xhigh => Some(ReasoningEffort::Xhigh),
+        nanocodex::Thinking::Max => Some(ReasoningEffort::Max),
     }
 }

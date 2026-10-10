@@ -8,6 +8,7 @@ pub use nanocodex_agent::NanocodexBuilder;
 pub use nanocodex_agent::{
     AgentEvents, AgentSessionContext, Capabilities, ClaudeModel, CostStatus, EstimatedUsdCost,
     ExecutionPolicyDisposition, ForkPoint, ForkRequest, HarnessFamily, HarnessModel, Lineage,
+    ModelCapabilities, ModelTransport,
     Mutability, Nanocodex, NanocodexError, Origin, Persistence, PromptRequest, PromptRoute,
     ReportedTurnUsage, ServiceTier, SessionCheckpoint, SessionInfo, Turn, TurnControl, TurnResult,
     TurnUsage, UsdAmount,

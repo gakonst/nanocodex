@@ -765,11 +765,16 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
 
   const archive = await exportDurabilityState(sourceOwner);
   assert.deepEqual(await bindAgent(module).exportDurabilityHead(sourceOwner), { ...archive, records: [] });
+  // The runtime journals its (empty) task tree beside the root state.
+  const journalId = `${stateId}:subagents`;
+  const journal = store.load(journalId);
+  assert.notEqual(journal.revision, "0");
   assert.deepEqual(archive, {
     format: "nanocodex-durability-state-v2", records: [],
     stateId,
     revision: "1",
     payload,
+    subagents: { format: "nanocodex-durability-state-v2", records: [], stateId: journalId, ...journal },
   });
   const pages = [];
   let cursor;
@@ -811,7 +816,80 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
     revision: "1",
     payload,
   });
+  assert.deepEqual(createCloudflareDurabilityStore(destinationStorage).load(journalId), journal);
   await destination.session.shutdown();
+});
+
+test("Cloudflare Agent export and import carry the durable task tree to a fresh Durable Object", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const sourceStorage = new MemoryStorage();
+  const binding = egressBinding();
+  const sourceOwner = durableOwner(sourceStorage, binding, FIRST_OBJECT_ID);
+  const source = await create(module, sourceOwner);
+  const child = await Subagents.spawn(source, {
+    role: "portable-child",
+    task: "Remain part of the exported task tree.",
+    outputSchema: { type: "object" },
+  });
+  await source.session.shutdown();
+  const stateId = sourceStorage.stateId;
+
+  const archive = await exportDurabilityState(sourceOwner);
+  assert.equal(archive.stateId, stateId);
+  assert.equal(archive.subagents?.stateId, stateId + ":subagents");
+  assert.equal(archive.subagents.format, "nanocodex-durability-state-v2");
+  assert.match(archive.subagents.payload, /portable-child/);
+  // The managed cutover head moves root records separately, never the tree.
+  const head = await bindAgent(module).exportDurabilityHead(sourceOwner);
+  assert.deepEqual(head, { ...archive, records: [] });
+  // The journal is also exportable through the resumable page API.
+  const pages = [];
+  let cursor;
+  do {
+    const page = await exportDurabilityState(sourceOwner, {
+      subagents: true, from: "0", to: archive.subagents.revision, cursor, limit: 97,
+    });
+    assert.equal(page.stateId, archive.subagents.stateId);
+    pages.push(page);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  assert.equal(pages.map(page => page.payload).join(""), archive.subagents.payload);
+  await assert.rejects(exportDurabilityState(sourceOwner, { subagents: "yes", from: "0" }), /subagents must be true/);
+
+  const destinationStorage = new MemoryStorage();
+  const destinationOwner = durableOwner(destinationStorage, binding, SECOND_OBJECT_ID);
+  await assert.rejects(
+    importDurabilityState(destinationOwner, JSON.parse(JSON.stringify({
+      ...archive, subagents: { ...archive.subagents, stateId: "unrelated:subagents" },
+    }))),
+    /root's task-tree journal/,
+  );
+  assert.equal(destinationStorage.stateId, undefined, "a rejected import leaves the destination pristine");
+  const bound = bindAgent(module);
+  await bound.importDurabilityState(destinationOwner, JSON.parse(JSON.stringify(archive)));
+  await assert.doesNotReject(bound.importDurabilityState(destinationOwner, JSON.parse(JSON.stringify(archive))));
+  const { subagents: _journal, ...rootOnly } = archive;
+  await assert.rejects(importDurabilityState(destinationOwner, rootOnly), /pristine Durable Object/,
+    "a retry that would drop the imported task tree is not idempotent");
+
+  const destination = await create(module, destinationOwner);
+  try {
+    assert.equal(destination.session.info().sessionId, stateId);
+    const restored = (await Subagents.list(destination, { includeCompleted: true })).agents;
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].agent_id, child.agent_id);
+    assert.equal(restored[0].role, "portable-child");
+    assert.deepEqual(restored[0].status, { state: "interrupted" });
+  } finally { await destination.session.shutdown(); }
+
+  // Negative control: the root state alone restores an empty task tree.
+  const rootOnlyStorage = new MemoryStorage();
+  const rootOnlyOwner = durableOwner(rootOnlyStorage, binding, SECOND_OBJECT_ID);
+  await importDurabilityState(rootOnlyOwner, rootOnly);
+  const truncated = await create(module, rootOnlyOwner);
+  try {
+    assert.deepEqual((await Subagents.list(truncated, { includeCompleted: true })).agents, []);
+  } finally { await truncated.session.shutdown(); }
 });
 
 test("Cloudflare Agent rejects corrupt canonical state before importing it", async () => {

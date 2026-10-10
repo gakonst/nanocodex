@@ -294,36 +294,16 @@ pub(super) fn validate(config: &ModelConfig, prompt_cache_key: Option<&str>) -> 
 }
 
 pub(super) fn validate_model_thinking(model: Model, thinking: Thinking) -> Result<()> {
-    if model.supports_thinking(thinking) {
-        Ok(())
-    } else {
-        Err(NanocodexError::InvalidRequest(
-            (if model == Model::Glm53 {
-                "GLM-5.3 requires low, medium, or high reasoning effort"
-            } else if model == Model::Sol {
-                "GPT-6.1 Sol requires low, medium, high, xhigh, or max reasoning effort"
-            } else {
-                "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort"
-            })
-            .to_owned(),
-        ))
-    }
+    crate::HarnessModel::Codex(model)
+        .capabilities(crate::ModelTransport::Native)
+        .check_thinking(thinking)
 }
 
 pub(super) fn validate_model_reasoning_mode(
     model: Model,
     reasoning_mode: ReasoningMode,
 ) -> Result<()> {
-    if model.supports_reasoning_mode(reasoning_mode) {
-        Ok(())
-    } else {
-        Err(NanocodexError::InvalidRequest(
-            (if model == Model::Glm53 {
-                "GLM-5.3 does not support pro reasoning mode"
-            } else {
-                "the selected gateway model does not support pro reasoning mode"
-            })
-            .to_owned(),
-        ))
-    }
+    crate::HarnessModel::Codex(model)
+        .capabilities(crate::ModelTransport::Native)
+        .check_reasoning_mode(reasoning_mode)
 }

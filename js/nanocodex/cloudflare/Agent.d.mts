@@ -56,24 +56,38 @@ export function checkpoint(agent: Agent): Promise<SessionCheckpoint>;
 /** Removes the package-owned durable history for one Cloudflare Agent. */
 export function destroy(owner: DurableObjectOwner): void;
 
-/** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
-/** Execution head for a host that transfers its immutable records separately. */
-export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableStateArchive>;
+/**
+ * One Cloudflare Agent's portable durable session: its root state and, when
+ * the root has a durable task tree, the complete `<stateId>:subagents`
+ * task-tree journal state. Importing restores both atomically.
+ */
+export type DurabilityPortableSessionArchive = DurabilityPortableStateArchive & Readonly<{
+  subagents?: DurabilityPortableStateArchive | undefined;
+}>;
 
+/** Selects the root state, or with `subagents: true` its task-tree journal state. */
+export type CloudflareDurabilityExportPageRequest = DurabilityExportPageRequest & Readonly<{
+  subagents?: true | undefined;
+}>;
+
+/** Execution head for a host that transfers its immutable root records separately; the task-tree journal travels complete. */
+export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableSessionArchive>;
+
+/** Fences and exports this inactive Cloudflare Agent's provider-neutral session, including its task tree. */
 export function exportDurabilityState(
   owner: DurableObjectOwner,
-): Promise<DurabilityPortableStateArchive>;
+): Promise<DurabilityPortableSessionArchive>;
 
-/** Fences once and exports one resumable page of an exact revision range. */
+/** Fences once and exports one resumable page of an exact revision range of the root or its task-tree journal. */
 export function exportDurabilityState(
   owner: DurableObjectOwner,
-  request: DurabilityExportPageRequest,
+  request: CloudflareDurabilityExportPageRequest,
 ): Promise<DurabilityPortableStatePage>;
 
-/** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
+/** Imports a provider-neutral session, including any task-tree journal, into a pristine Cloudflare Agent owner. */
 export function importDurabilityState(
   owner: DurableObjectOwner,
-  archive: DurabilityPortableStateArchive,
+  archive: DurabilityPortableSessionArchive,
 ): Promise<DurabilityStoredState>;
 
 /** Prunes old terminal receipts before constructing the full Agent runtime. */

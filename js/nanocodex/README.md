@@ -1030,7 +1030,9 @@ unsupported operation rejects with
 `agent.session.persistence()` reports the durable state backing the session, or
 `null`. `agent.session.fork({ at, origin })` forks the latest boundary, a
 completed `TurnResult`, or a `SessionCheckpoint` of the same conversation;
-`origin: "side_conversation"` records an ephemeral side exploration.
+`origin: "side_conversation"` records a side exploration in the child's
+lineage. A fork of a durable session, side conversation or not, is durable in
+its own right and reports its own `session.persistence()`.
 
 For crash recovery inside a turn, provide the generic durability host instead
 of manually persisting checkpoints. The host stores one opaque Rust state value;
@@ -1123,23 +1125,31 @@ import { importDurabilityStatePages } from "nanocodex/durability";
 import { createPostgresDurabilityStore } from "nanocodex/durability/postgres";
 
 await cloudflareAgent.session.shutdown();
-const pages = [];
-let cursor;
-let to;
-do {
-  const page = await CloudflareAgent.exportDurabilityState(durableObjectOwner, {
-    from: "0", // exclusive destination revision
-    to,        // omit once, then repeat the selected inclusive source revision
-    cursor,
-  });
-  pages.push(page);
-  to = page.to;
-  cursor = page.nextCursor ?? undefined;
-} while (cursor !== undefined);
+// The root state, then its task-tree journal (`<stateId>:subagents`).
+async function exportPages(selection) {
+  const pages = [];
+  let cursor;
+  let to;
+  do {
+    const page = await CloudflareAgent.exportDurabilityState(durableObjectOwner, {
+      ...selection,
+      from: "0", // exclusive destination revision
+      to,        // omit once, then repeat the selected inclusive source revision
+      cursor,
+    });
+    pages.push(page);
+    to = page.to;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return pages;
+}
+const pages = await exportPages({});
+const subagentPages = await exportPages({ subagents: true });
 
 // Send the pages through an authenticated, encrypted operator path.
 const destination = createPostgresDurabilityStore(vercelPostgresPool);
 await importDurabilityStatePages(destination, JSON.parse(JSON.stringify(pages)));
+await importDurabilityStatePages(destination, JSON.parse(JSON.stringify(subagentPages)));
 
 const vercelAgent = await Agent.create({
   module: wasmModule,
