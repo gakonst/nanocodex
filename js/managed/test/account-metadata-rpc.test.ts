@@ -24,7 +24,9 @@ describe("account metadata RPC discovery", () => {
       ] } }, mcp_connections: [],
     } });
     const cache = new AccountCatalogCache();
-    const options = { enabled: true, catalog: cache.get(f.broker, "owner", "authority"),
+    // Wallet metadata has no RPC and is read by default for owners since 24e8ebdb8;
+    // this test pins catalog/Vault RPC discovery, so it opts out as model startup does.
+    const options = { enabled: true, includeWallet: false, catalog: cache.get(f.broker, "owner", "authority"),
       vault: cache.vault(f.broker, "owner", "authority") };
     const owner = await accountInfo(f.broker, "owner", options);
     expect(owner.authenticated).toEqual(["github"]);
