@@ -47,7 +47,7 @@ it("protects Markdown API methods and capabilities before forwarding to storage"
   expect((await call("write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "private" })).status).toBe(403);
   expect(f.fetch).not.toHaveBeenCalled();
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(200);
-  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", record.organizationId, record.userId]), undefined);
+  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", record.organizationId, record.userId]));
   expect((await call("search", { query: "saved" })).status).toBe(200);
   expect(f.fetch).toHaveBeenLastCalledWith("https://memory.internal/markdown-memory/search", expect.objectContaining({ body: JSON.stringify({ query: "saved" }) }));
   expect((await call("status", {})).status).toBe(200);
@@ -55,7 +55,7 @@ it("protects Markdown API methods and capabilities before forwarding to storage"
     headers: expect.objectContaining({ "x-nanocodex-private-memory-owner": record.userId }), body: "{}",
   }));
   expect((await call("status", { scope: "team" })).status).toBe(200);
-  expect(f.getByName).toHaveBeenLastCalledWith(record.organizationId, undefined);
+  expect(f.getByName).toHaveBeenLastCalledWith(record.organizationId);
   record.capabilities = ["memory:write"];
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(403);
   const requestsBeforeDeniedStatus = f.fetch.mock.calls.length;
@@ -86,7 +86,7 @@ it("keeps Connect status in its authorized team and blocks private status reads"
   f.connect();
   const status = markdownMemoryTools(f.options).find(tool => tool.name === "memories__status")!;
   expect(await status.handler({}, f.context)).toMatchObject({ scope: "team" });
-  expect(f.getByName).toHaveBeenLastCalledWith("org", undefined);
+  expect(f.getByName).toHaveBeenLastCalledWith("org");
   expect(new Headers(f.fetch.mock.calls[0]![1]!.headers).has("x-nanocodex-private-memory-owner")).toBe(false);
   await expect(status.handler({ scope: "personal" }, f.context)).rejects.toThrow("direct account authority");
   expect(f.fetch).toHaveBeenCalledTimes(1);
