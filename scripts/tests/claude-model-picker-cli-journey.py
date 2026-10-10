@@ -170,7 +170,11 @@ def main():
                 models = [model for model in models if not model.startswith('claude-')]
             wait(lambda: all(model in screen.text() for model in models), 'picker omitted a model')
             if not claude_auth:
-                h.require('claude-' not in screen.text().split('Select model', 1)[-1], 'picker offered unauthenticated Claude models')
+                # Read only the picker box: the workspace path on the composer
+                # border below it (claude-model-picker-cli/...) contains "claude-".
+                picker_box = screen.text().split('Select model', 1)[-1].split('esc cancel', 1)[0]
+                h.require('esc cancel' in screen.text(), 'picker footer absent')
+                h.require('claude-' not in picker_box, 'picker offered unauthenticated Claude models')
             (out / 'picker.txt').write_text(screen.text())
             if picker:
                 # Default Sol is second; Sonnet is fifth in the unified picker.
