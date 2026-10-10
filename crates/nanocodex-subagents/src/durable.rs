@@ -302,10 +302,12 @@ pub(super) struct PersistedAgent {
     pub(super) accepted_output: Option<Value>,
 }
 
-/// Bounded evidence of one tool call observed during a turn. It is kept
-/// until the turn settles (no checkpoint pruning), so after a restart it may
-/// or may not also be in the restored history. It is never replayed and is
-/// not a receipt journal; it only names calls whose outcome must be reconciled.
+/// Bounded evidence of one tool call observed during a turn. A call observed
+/// by the live runtime is removed once a journaled checkpoint commits its
+/// result to the child's conversation; any call still listed after a restart
+/// is therefore absent from the restored history (or raced its commit). It is
+/// never replayed and is not a receipt journal; it only names calls whose
+/// outcome must be reconciled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct InFlightCall {
     /// Full provider identity, used to match its result.
@@ -316,6 +318,60 @@ pub(super) struct InFlightCall {
     /// A result was observed before the restart.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) result_recorded: bool,
+    /// A Code Mode cell yielded and kept running: its result is not terminal,
+    /// and its nested calls stay unsettled until a terminal cell result.
+    /// Older readers ignore this field; older journals default it to false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) yielded: bool,
+    /// Enclosing Code Mode call of a nested call. This and the commit state
+    /// below matter only to the live runtime, so the journal format is
+    /// unchanged in both directions.
+    #[serde(skip)]
+    pub(super) parent_call_id: Option<String>,
+    /// Observed by this runtime. Calls restored from a journal belong to a
+    /// lost runtime: no later checkpoint of this runtime can commit them.
+    #[serde(skip)]
+    pub(super) live: bool,
+    /// Its result entered the conversation: a top-level result, or a nested
+    /// result reported before its enclosing cell's result.
+    #[serde(skip)]
+    pub(super) settled: bool,
+    /// Settled before a provider call began; that call's committed step, and
+    /// so any checkpoint captured after it began, contains the result.
+    #[serde(skip)]
+    pub(super) committable: bool,
+}
+
+/// Live calls dropped by the retention bound whose results a checkpoint can
+/// still commit. Kept in memory only: after a restart they are unknown.
+#[derive(Clone, Debug, Default)]
+pub(super) struct OmittedProgress {
+    /// Settled, awaiting the next provider-call boundary.
+    pub(super) settled: u32,
+    /// Committable by the next checkpoint captured from now on.
+    pub(super) committable: u32,
+    /// Evicted nested calls with an observed result, per enclosing cell; they
+    /// settle when the cell reports.
+    pub(super) nested: HashMap<String, u32>,
+}
+
+impl OmittedProgress {
+    /// Counts one evicted live call by its commit state.
+    pub(super) fn evicted(&mut self, call: &InFlightCall) {
+        if !call.live {
+            return;
+        }
+        if call.committable {
+            self.committable = self.committable.saturating_add(1);
+        } else if call.settled {
+            self.settled = self.settled.saturating_add(1);
+        } else if call.result_recorded
+            && let Some(parent) = &call.parent_call_id
+        {
+            let count = self.nested.entry(parent.clone()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
 }
 
 /// Calls retained per turn. Calls with an observed result are evicted before
@@ -324,7 +380,12 @@ pub(super) const MAX_IN_FLIGHT_CALLS: usize = 8;
 const MAX_IN_FLIGHT_FIELD_BYTES: usize = 240;
 
 impl InFlightCall {
-    pub(super) fn new(call_id: &str, tool: &str, arguments: Option<&Value>) -> Self {
+    pub(super) fn new(
+        call_id: &str,
+        tool: &str,
+        arguments: Option<&Value>,
+        parent_call_id: Option<&str>,
+    ) -> Self {
         let arguments = match arguments {
             Some(Value::String(text)) => text.clone(),
             Some(value) => value.to_string(),
@@ -335,23 +396,33 @@ impl InFlightCall {
             tool: bounded(tool),
             arguments: bounded(&arguments),
             result_recorded: false,
+            yielded: false,
+            parent_call_id: parent_call_id.map(str::to_owned),
+            live: true,
+            settled: false,
+            committable: false,
         }
     }
 }
 
-/// Appends a call, evicting the oldest call with an observed result first,
-/// else the oldest call. Returns how many calls were evicted.
-pub(super) fn retain_call(calls: &mut Vec<InFlightCall>, call: InFlightCall) -> u32 {
+/// Appends a call, evicting the oldest settled call first, then the oldest
+/// call with an observed non-yielded result, else the oldest call. Returns the
+/// evicted calls.
+pub(super) fn retain_call(calls: &mut Vec<InFlightCall>, call: InFlightCall) -> Vec<InFlightCall> {
     calls.retain(|existing| existing.call_id != call.call_id);
     calls.push(call);
-    let mut evicted = 0;
+    let mut evicted = Vec::new();
     while calls.len() > MAX_IN_FLIGHT_CALLS {
         let index = calls
             .iter()
-            .position(|existing| existing.result_recorded)
+            .position(|existing| existing.settled || existing.committable)
+            .or_else(|| {
+                calls
+                    .iter()
+                    .position(|existing| existing.result_recorded && !existing.yielded)
+            })
             .unwrap_or(0);
-        calls.remove(index);
-        evicted += 1;
+        evicted.push(calls.remove(index));
     }
     evicted
 }
@@ -375,7 +446,9 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     let mut lines = calls
         .iter()
         .map(|call| {
-            let state = if call.result_recorded {
+            let state = if call.yielded {
+                "yielded; still running at the restart"
+            } else if call.result_recorded {
                 "a result was observed before the restart"
             } else {
                 "started; no result was observed"
@@ -394,8 +467,9 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
         ));
     }
     Some(format!(
-        "Tool calls observed during the interrupted turn. Some may already appear in your \
-         restored history; any that do not may or may not have taken effect. This summary is \
+        "Tool calls observed during the interrupted turn whose results are not known to be in \
+         your restored history (calls already committed to it are not listed); any that are \
+         absent from it may or may not have taken effect. This summary is \
          not a receipt: consult your retained history and reconcile tool receipts or external \
          effects before repeating any of them:\n{}",
         lines.join("\n")

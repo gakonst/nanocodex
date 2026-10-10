@@ -959,14 +959,16 @@ async fn activate_coordinated(
     background: bool,
     restart_hand: bool,
 ) -> Result<bool> {
-    store.validate_activation(key)?;
+    // Early refusal only: the checks before the journal and in activation hash
+    // every file afresh, so this preflight may reuse the selection checks.
+    store.preflight_activation(key)?;
     // On macOS this is the version's signed Nanocodex.app when it has one.
     let companion = store.hand_executable(key);
     // A bundle without a Hand, or whose Hand bytes equal the Hand already in
     // use, changes only the CLI: the Hand service is neither switched nor
     // restarted. Corrupt Hand bytes still fail closed.
     let hand_present = companion.exists();
-    if hand_present && !store.is_cached_bundle(key, false)? {
+    if hand_present && !store.preflight_bundle(key)? {
         bail!("update Hand binary failed checksum verification");
     }
     let installed = if cfg!(target_os = "macos") {
@@ -1011,8 +1013,10 @@ async fn activate_coordinated(
         store.clear_pending()?;
         return Ok(false);
     }
+    // Fresh checks before any journal or service handover; the CLI was just
+    // verified, so only the Hand half of the bundle remains.
     store.validate_activation(key)?;
-    if companion.exists() && !store.is_cached_bundle(key, false)? {
+    if companion.exists() && !store.is_cached_hand(key)? {
         bail!("update Hand binary failed checksum verification");
     }
     let journal = store.root().join("update-transaction.json");
