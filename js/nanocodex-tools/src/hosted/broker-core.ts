@@ -1980,8 +1980,10 @@ export class HostedToolsBrokerCore {
         "Hosted Tools attachment was absent before durable admission",
       ));
     }
-    if (this.#persistence.generationCallCount(leaseId, binding.generation)
-      >= this.#maxCallsPerGeneration) {
+    // The default limit is unreachable; skip counting the generation's whole
+    // retained ledger on every admission unless a finite limit is configured.
+    if (this.#maxCallsPerGeneration < Number.MAX_SAFE_INTEGER
+      && this.#persistence.generationCallCount(leaseId, binding.generation) >= this.#maxCallsPerGeneration) {
       const state = this.#persistence.state(binding.routeId);
       const socket = state?.lease_id === leaseId && state.generation === binding.generation
         ? this.#socketForState(state)

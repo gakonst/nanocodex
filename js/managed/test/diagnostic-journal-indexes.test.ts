@@ -18,7 +18,7 @@ it("migrates lease/connection indexes to partial indexes and still pages connect
     journal.record({ type: "managed.agent.tool", thread_id: "thread-a", tool: "Bash" });
     journal.record({ type: "managed.agent.tool", thread_id: "thread-a", connection_id: "socket-1" });
     const indexes = sql.exec<{ name: string; sql: string }>("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='diagnostic_events' ORDER BY name").toArray();
-    expect(indexes.map(index => index.name)).toEqual(["diagnostic_events_connection_present", "diagnostic_events_lease_present", "diagnostic_events_thread"]);
+    expect(indexes.map(index => index.name)).toEqual(["diagnostic_events_connection_present", "diagnostic_events_created_at", "diagnostic_events_lease_present", "diagnostic_events_thread"]);
     expect(indexes.filter(index => index.name.endsWith("_present")).every(index => /WHERE \w+ IS NOT NULL/.test(index.sql))).toBe(true);
     const page = journal.page("thread-a", 0, 100, true);
     expect(page.events.map(event => event.type)).toEqual(["hand.lease", "hand.socket", "hand.socket", "managed.agent.tool", "managed.agent.tool"]);
