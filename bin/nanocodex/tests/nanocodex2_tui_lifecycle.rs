@@ -8834,6 +8834,23 @@ async fn wait_bytes(terminal: &Terminal, needle: &[u8]) {
     });
 }
 
+/// Terminal output once it holds `count` Kitty PNG uploads, or at the deadline.
+/// Formulas render on background workers and each upload is written with the
+/// next frame, which may change nothing visible.
+async fn wait_kitty_pngs(terminal: &Terminal, count: usize) -> Vec<u8> {
+    let _ = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let output = terminal.output.lock().unwrap().clone();
+            if kitty_pngs(&output).len() >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    terminal.output.lock().unwrap().clone()
+}
+
 /// PNG payloads of Kitty graphics uploads: APC "ESC _ G keys ; base64 ESC \",
 /// chunked while a chunk carries m=1.
 fn kitty_pngs(output: &[u8]) -> Vec<Vec<u8>> {
@@ -8891,7 +8908,9 @@ async fn terminal_math_renders_kitty_images_and_falls_back_to_source() {
     kitty.terminal.wait_no_text("frac").await;
     // Inline formulas that need more than one row keep their source in line.
     kitty.terminal.wait_text("beside text.").await;
-    let output = kitty.terminal.output.lock().unwrap().clone();
+    // That inline formula still renders and uploads, but its source looks the
+    // same before and after, so no screen state proves its upload was written.
+    let output = wait_kitty_pngs(&kitty.terminal, 3).await;
     let pngs = kitty_pngs(&output);
     assert!(
         pngs.len() >= 3,
