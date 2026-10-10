@@ -22,7 +22,10 @@ pub struct Server {
 }
 
 fn private_dir(path: &Path) -> io::Result<()> {
-    match fs::create_dir(path) {
+    // Create the directory private from its first instant. Another TUI starting
+    // concurrently may find it already present and validate it before our
+    // chmod; a umask-derived mode such as 0755 would make that sibling fail.
+    match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o700))?,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
