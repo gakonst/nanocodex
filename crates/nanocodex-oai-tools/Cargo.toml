@@ -24,6 +24,7 @@ attachment = [
     "dep:async-trait",
     "dep:futures-util",
     "dep:http",
+    "dep:httpdate",
     "dep:rustls",
     "dep:thiserror",
     "dep:tokio",
@@ -78,6 +79,7 @@ bm25 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 oauth2 = { workspace = true, optional = true }
 nanocodex-oai-tools-macros = { workspace = true, optional = true }
 portable-pty = { workspace = true, optional = true }
@@ -101,6 +103,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 criterion.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+httpdate.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

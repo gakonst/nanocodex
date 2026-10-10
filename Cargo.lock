@@ -6385,6 +6385,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "http",
+ "httpdate",
  "image",
  "nanocodex-oai-api",
  "nanocodex-oai-tools-macros",
