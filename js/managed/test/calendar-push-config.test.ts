@@ -8,7 +8,9 @@ it("requires authenticated ownership and explicit CRM opt-in for Calendar push",
   const agentId = crypto.randomUUID();
   const principal: Principal = {kind:"api_key",userId:"11111111-1111-4111-8111-111111111111",organizationId:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",teamId:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",authorizationEpoch:1,role:"owner",subjectId:"user:11111111-1111-4111-8111-111111111111",credentialId:"test",capabilities:["agents:read","agents:write","tools:use"]};
   const sessions = (env as unknown as {NANOCODEX_SESSIONS:DurableObjectNamespace<DurableAgentSession>}).NANOCODEX_SESSIONS;
-  await runInDurableObject(sessions.getByName(agentId), async (_,state) => {
+  await runInDurableObject(sessions.getByName(agentId), async (session,state) => {
+    // A fresh Session creates its schema on its first real request (9d8b63102).
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES(1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,agentId,principal.userId,principal.organizationId,principal.teamId,Date.now());
   });
   const call = (actor=principal, body:unknown={crm:true}) => worker.fetch(new Request(`https://nanocodex.example/v1/agents/${agentId}/calendar-push/${"C".repeat(43)}`, {method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),env as unknown as Env,createExecutionContext(),actor);
@@ -30,11 +32,16 @@ it("delivers a real callback through the alarm and owner-scoped egress into CRM"
   let watch:any, cancelled=false, failRenewal=false, changedPages=0;
   const requests:Request[]=[]; let bound=false;
   await runInDurableObject(sessions.getByName(agentId),async(session,state)=>{
+    // A fresh Session creates its schema on its first real request (9d8b63102).
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES(1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,agentId,userId,principal.organizationId,principal.teamId,Date.now());
     const current=(session as unknown as {env:Env}).env;
     Object.defineProperty(session,"env",{value:{...current,NANOCODEX:{fetch:async(value:RequestInfo|URL,init?:RequestInit)=>{
       const request=value instanceof Request?value:new Request(value,init);
       if(new URL(request.url).pathname.startsWith("/subjects/")){bound=true;expect(await request.json()).toEqual({user_id:userId});return new Response(null,{status:204});}
+      // Session account discovery reads the catalog through the same binding; only
+      // Calendar provider egress is recorded and asserted below.
+      if(new URL(request.url).hostname==="broker.internal")return Response.json({connectors:{},mcp_connections:[]});
       expect(bound).toBe(true);
       requests.push(request);
       if(request.url.endsWith("/watch")){if(failRenewal)return new Response(null,{status:403});watch=await request.json();return Response.json({id:watch.id,resourceId:"synthetic-resource",expiration:String(Date.now()+86400000)});}
