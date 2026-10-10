@@ -24,13 +24,10 @@ impl Mirror {
         session: &RolloutSession,
         conversation: &Conversation,
     ) -> std::io::Result<Self> {
-        let continuing = !conversation.messages.is_empty() || !conversation.summary.is_empty();
-        let recorded = continuing
-            .then(|| config.load_session(&session.session_id).ok())
-            .flatten();
-        let (writer, summary) = match recorded {
-            Some(recorded) => {
-                let (_, _, resumed) = recorded.into_parts();
+        // A child's rollout exists from creation, before any turn, so reopen
+        // any file recorded for this session rather than mirroring it twice.
+        let (writer, summary) = match config.recorded(&session.session_id)? {
+            Some(resumed) => {
                 let history = history(conversation).len();
                 (
                     RolloutWriter::resume(&resumed, session, history)?,

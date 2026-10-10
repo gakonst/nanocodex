@@ -2260,7 +2260,8 @@ async fn explicit_model_rejects_invalid_options_before_network() {
         assert!(
             stderr.contains("cannot be pinned")
                 || stderr.contains("not offered")
-                || stderr.contains("supported managed model"),
+                || stderr.contains("supported managed model")
+                || stderr.contains("on the managed service; supported"),
             "{flags:?}: {stderr}"
         );
         eprintln!("invalid flags={flags:?}: {stderr}");

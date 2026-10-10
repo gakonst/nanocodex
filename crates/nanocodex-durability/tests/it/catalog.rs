@@ -532,3 +532,483 @@ async fn reopened_branches_mirror_their_provenance() -> Result<()> {
     assert_eq!(mirrored.root_session_id(), root_id);
     Ok(())
 }
+
+
+type Handles = Arc<Mutex<std::collections::HashMap<String, nanocodex_agent::AgentHandle>>>;
+
+/// Codex JSONL files recorded for one thread anywhere under a Codex home.
+fn rollout_files(codex_home: &std::path::Path, id: &str) -> Result<Vec<std::path::PathBuf>> {
+    let mut found = Vec::new();
+    let mut directories = vec![codex_home.join("sessions")];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&format!("{id}.jsonl")))
+            {
+                found.push(path);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Captures every driver's weak capability, keyed by session, so a test can
+/// drive the parent-side lifecycle (atomic batches, restoring an evicted child).
+fn capturing_tools(
+    handles: &Handles,
+) -> impl Fn(nanocodex_agent::AgentHandle) -> std::result::Result<nanocodex_agent::Tools, nanocodex_oai_tools::ToolsBuildError>
++ Send
++ Sync
++ 'static {
+    let handles = Arc::clone(handles);
+    move |handle| {
+        handles
+            .lock()
+            .unwrap()
+            .insert(handle.session_id().to_owned(), handle);
+        nanocodex_agent::Tools::builder().without_defaults().build()
+    }
+}
+
+/// Every child of a durable root (fork, side conversation, subagent and nested
+/// subagent) is listed, loadable and mirrored by exactly one Codex rollout as
+/// soon as it is created, before any child prompt, and after the whole tree
+/// shuts down it resumes in a fresh store with its identity and lineage
+/// without ever having been prompted.
+#[tokio::test]
+async fn durable_children_are_listed_and_resumable_before_their_first_prompt() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let store = SessionStore::open(home.path())?;
+    let rollout = nanocodex_agent::rollout::RolloutConfig::new(home.path().join("codex"));
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations)?)
+        .model(Model::Luna)
+        .workspace(&workspace)
+        .rollout(rollout.clone())
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await?
+        .result()
+        .await?;
+    let (fork, _fork_events) = root.fork(ForkRequest::latest()).await?;
+    let (side, _side_events) = root
+        .fork(ForkRequest::latest().side_conversation())
+        .await?;
+    let (child, _child_events) = root.spawn().await?;
+    let (grandchild, _grandchild_events) = child.spawn().await?;
+    let child_id = child.session_id().to_owned();
+    let expected = [
+        (fork.session_id().to_owned(), Origin::Fork, root_id.clone(), vec!["root task"]),
+        (
+            side.session_id().to_owned(),
+            Origin::SideConversation,
+            root_id.clone(),
+            vec!["root task"],
+        ),
+        (child_id.clone(), Origin::Subagent, root_id.clone(), vec![]),
+        (
+            grandchild.session_id().to_owned(),
+            Origin::Subagent,
+            child_id.clone(),
+            vec![],
+        ),
+    ];
+    let mirrors = |id: &str| -> Result<Vec<nanocodex_agent::rollout::RolloutSessionInfo>> {
+        Ok(rollout
+            .list_sessions()?
+            .into_iter()
+            .filter(|session| session.thread_id() == id)
+            .collect())
+    };
+
+    // Before any child prompt: listed, loadable with a resumable checkpoint
+    // and exactly one Codex rollout carrying the same provenance.
+    let listed = store.list().await?;
+    for (id, origin, parent, prompts) in &expected {
+        let summary = listed
+            .iter()
+            .find(|summary| summary.record.session_id == *id)
+            .ok_or_else(|| eyre!("{origin:?} child {id} is not listed before its first prompt"))?;
+        assert_eq!(summary.record.family(), HarnessFamily::Codex);
+        assert_eq!(summary.record.lineage.origin, *origin);
+        assert_eq!(
+            summary.record.lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(summary.record.lineage.root_session_id, root_id);
+        let stored = store.load(id).await?;
+        assert_eq!(user_prompts(&stored.transcript), *prompts, "{origin:?} transcript");
+        assert!(stored.turns.is_empty(), "{origin:?} child has no turn yet");
+        // A fork starts from its inherited boundary; a fresh subagent has no
+        // conversation yet and resumes from its recorded identity alone.
+        assert_eq!(
+            stored.session_checkpoint()?.is_some(),
+            !prompts.is_empty(),
+            "{origin:?} child's initial checkpoint"
+        );
+        // The child's Codex JSONL exists from creation with its provenance;
+        // Codex lists it once it holds a turn.
+        let files = rollout_files(&home.path().join("codex"), id)?;
+        assert_eq!(files.len(), 1, "{origin:?} child has exactly one Codex rollout file");
+        let meta: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(&files[0])?
+                .lines()
+                .next()
+                .unwrap_or_default(),
+        )?;
+        assert_eq!(meta["type"], "session_meta");
+        assert_eq!(meta["payload"]["id"], id.as_str());
+        assert_eq!(meta["payload"]["parent_thread_id"], parent.as_str());
+        assert_eq!(meta["payload"]["root_session_id"], root_id.as_str());
+    }
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        1,
+        "creating children sends no model request"
+    );
+
+    // Shut the whole tree down without prompting any child, then reopen every
+    // child from a fresh store as a fresh process would.
+    for agent in [&grandchild, &child, &side, &fork, &root] {
+        agent.shutdown().await?;
+    }
+    drop(store);
+    let store = SessionStore::open(home.path())?;
+    for (id, origin, parent, prompts) in &expected {
+        let (resumed, _events) = Nanocodex::builder(openai!(&generations)?)
+            .workspace(&workspace)
+            .rollout(rollout.clone())
+            .durability(store.resume(id).await?)
+            .await?
+            .build()?;
+        assert_eq!(resumed.session_id(), id.as_str());
+        assert_eq!(resumed.session().lineage.origin, *origin);
+        assert_eq!(
+            resumed.session().lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(resumed.session().lineage.root_session_id, root_id);
+        resumed
+            .prompt(PromptRequest::new("first child prompt").request_id("child-1"))
+            .await?
+            .result()
+            .await
+            .map_err(|error| eyre!("{origin:?} child failed its first prompt: {error}"))?;
+        resumed.shutdown().await?;
+        let mut prompts = prompts.clone();
+        prompts.push("first child prompt");
+        assert_eq!(user_prompts(&store.load(id).await?.transcript), prompts);
+        assert_eq!(store.turns(id).await?.len(), 1);
+        let mirrored = mirrors(id)?;
+        assert_eq!(mirrored.len(), 1, "{origin:?} child is mirrored exactly once");
+        assert_eq!(mirrored[0].origin(), *origin);
+        assert_eq!(mirrored[0].parent_session_id(), Some(parent.as_str()));
+        assert_eq!(mirrored[0].root_session_id(), root_id);
+        assert_eq!(rollout_files(&home.path().join("codex"), id)?.len(), 1);
+    }
+    Ok(())
+}
+
+/// Restoring an evicted subagent from a checkpoint taken before its first turn
+/// keeps the history its durable state already holds.
+#[tokio::test]
+async fn restored_subagent_keeps_its_durable_history() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let store = SessionStore::open(home.path())?;
+    let handles: Handles = Arc::default();
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations)?)
+        .model(Model::Luna)
+        .workspace(&workspace)
+        .tools_factory(capturing_tools(&handles))
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    let (child, _child_events) = root.spawn().await?;
+    let child_id = child.session_id().to_owned();
+    let stale = child.checkpoint().await?;
+    child
+        .prompt(PromptRequest::new("child task").request_id("child-1"))
+        .await?
+        .result()
+        .await?;
+    child.shutdown().await?;
+    let owner = handles.lock().unwrap()[&root_id].clone();
+    let (restored, _restored_events) = owner.restore_runtime(stale, None).await?;
+    assert_eq!(restored.session_id(), child_id);
+    assert_eq!(restored.session().lineage.origin, Origin::Subagent);
+    assert_eq!(
+        restored.session().lineage.parent_session_id.as_deref(),
+        Some(root_id.as_str())
+    );
+    let stored = store.load(&child_id).await?;
+    assert_eq!(user_prompts(&stored.transcript), ["child task"]);
+    assert_eq!(stored.turns.len(), 1);
+    restored.shutdown().await?;
+    root.shutdown().await?;
+    Ok(())
+}
+
+/// Real SQLite storage that rejects the nth new child state written after it
+/// is armed, as a full disk or lost connection would.
+struct FaultySqlite {
+    inner: nanocodex_durability::SqliteStore,
+    fail_nth: Arc<AtomicUsize>,
+    seen: Arc<AtomicUsize>,
+}
+
+impl nanocodex_durability::StateStore for FaultySqlite {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<Option<String>, nanocodex_durability::StoreError>,
+    > {
+        self.inner.read_record(state_id, key)
+    }
+
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<Vec<Option<String>>, nanocodex_durability::StoreError>,
+    > {
+        self.inner.read_records(state_id, keys)
+    }
+
+    fn peek<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<nanocodex_durability::StoredState, nanocodex_durability::StoreError>,
+    > {
+        self.inner.peek(state_id)
+    }
+
+    fn list_states<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<Vec<String>, nanocodex_durability::StoreError>,
+    > {
+        self.inner.list_states(limit)
+    }
+
+    fn acquire<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner_id: nanocodex_durability::OwnerId,
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<nanocodex_durability::OwnedState, nanocodex_durability::StoreError>,
+    > {
+        self.inner.acquire(state_id, owner_id)
+    }
+
+    fn replace<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a nanocodex_durability::OwnerToken,
+        expected_revision: u64,
+        payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
+    ) -> nanocodex_durability::StoreFuture<
+        'a,
+        std::result::Result<u64, nanocodex_durability::StoreError>,
+    > {
+        // A new child's state is first written when it is described.
+        let fail_nth = self.fail_nth.load(Ordering::SeqCst);
+        if fail_nth != 0
+            && expected_revision == 0
+            && self.seen.fetch_add(1, Ordering::SeqCst) + 1 == fail_nth
+        {
+            return Box::pin(async {
+                Err(nanocodex_durability::StoreError::NotCommitted(
+                    "injected new-child write failure".to_owned(),
+                ))
+            });
+        }
+        self.inner
+            .replace(state_id, owner, expected_revision, payload, records)
+    }
+}
+
+/// An atomic subagent batch whose second child cannot persist leaves no child
+/// listed and keeps the parent's history; a later batch persists every child.
+#[tokio::test]
+async fn failed_atomic_batch_leaves_no_listed_children() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let fail_nth = Arc::new(AtomicUsize::new(0));
+    let store = SessionStore::new(FaultySqlite {
+        inner: nanocodex_durability::SqliteStore::open(SessionStore::path(home.path()))?,
+        fail_nth: Arc::clone(&fail_nth),
+        seen: Arc::new(AtomicUsize::new(0)),
+    })?;
+    let handles: Handles = Arc::default();
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations)?)
+        .model(Model::Luna)
+        .workspace(&workspace)
+        .tools_factory(capturing_tools(&handles))
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await?
+        .result()
+        .await?;
+    let owner = handles.lock().unwrap()[&root_id].clone();
+    let children_of_root = |listed: &[nanocodex_durability::SessionSummary]| {
+        listed
+            .iter()
+            .filter(|summary| {
+                summary.record.lineage.parent_session_id.as_deref() == Some(root_id.as_str())
+            })
+            .count()
+    };
+
+    fail_nth.store(2, Ordering::SeqCst);
+    let failed = owner.spawn_many(3).await;
+    assert!(failed.is_err(), "a batch with an unpersisted child fails");
+    fail_nth.store(0, Ordering::SeqCst);
+    let listed = store.list().await?;
+    assert_eq!(children_of_root(&listed), 0, "a failed batch leaves no listed child");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        user_prompts(&store.load(&root_id).await?.transcript),
+        ["root task"],
+        "the parent's history survives the failed batch"
+    );
+
+    let children = owner.spawn_many(2).await?;
+    let listed = store.list().await?;
+    assert_eq!(children_of_root(&listed), 2, "a complete batch lists every child");
+    for (child, _events) in &children {
+        let stored = store.load(child.session_id()).await?;
+        assert_eq!(stored.summary.record.lineage.origin, Origin::Subagent);
+        assert!(stored.turns.is_empty());
+        child.shutdown().await?;
+    }
+    root.shutdown().await?;
+    Ok(())
+}
+
+
+
+/// A subagent created with its own model, reasoning effort and processing
+/// tier keeps them from creation: its catalog record names its model before
+/// any prompt, and after a restart before its first prompt its first model
+/// request uses the recorded effort and tier on that model.
+#[tokio::test]
+async fn new_subagent_keeps_its_settings_across_a_restart_before_its_first_prompt() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = home.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let generations = Arc::new(AtomicUsize::new(0));
+    let policies = Arc::new(Mutex::new(Vec::new()));
+    let store = SessionStore::open(home.path())?;
+    let root_id = SessionId::default().to_string();
+    let (root, _events) = Nanocodex::builder(openai!(&generations, &policies)?)
+        .model(Model::Luna)
+        .service_tier(ServiceTier::Fast)
+        .workspace(&workspace)
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Codex(Model::Luna),
+                    Some(workspace.clone()),
+                ))
+                .await?,
+        )
+        .await?
+        .build()?;
+    let (child, _child_events) = root
+        .spawn_with(
+            nanocodex_agent::SpawnOptions::new()
+                .model(Model::Sol)
+                .thinking(Thinking::High),
+        )
+        .await?;
+    let child_id = child.session_id().to_owned();
+    let stored = store.load(&child_id).await?;
+    assert_eq!(stored.summary.record.model, HarnessModel::Codex(Model::Sol));
+    assert_eq!(stored.summary.record.lineage.origin, Origin::Subagent);
+    assert!(stored.turns.is_empty());
+    assert_eq!(generations.load(Ordering::SeqCst), 0, "no model request yet");
+    child.shutdown().await?;
+    root.shutdown().await?;
+
+    drop(store);
+    let store = SessionStore::open(home.path())?;
+    // A plain builder: no model, effort or tier configuration.
+    let (resumed, _events) = Nanocodex::builder(openai!(&generations, &policies)?)
+        .workspace(&workspace)
+        .durability(store.resume(&child_id).await?)
+        .await?
+        .build()?;
+    assert_eq!(resumed.session_id(), child_id);
+    resumed
+        .prompt(PromptRequest::new("first child prompt").request_id("child-1"))
+        .await?
+        .result()
+        .await?;
+    assert_eq!(
+        policies.lock().unwrap().last().copied(),
+        Some((Thinking::High, ServiceTier::Fast)),
+        "the first request uses the recorded effort and tier"
+    );
+    let checkpoint = resumed.checkpoint().await?;
+    assert_eq!(checkpoint.model(), HarnessModel::Codex(Model::Sol));
+    assert_eq!(checkpoint.thinking(), Thinking::High);
+    resumed.shutdown().await?;
+    assert_eq!(store.load(&child_id).await?.summary.record.model, HarnessModel::Codex(Model::Sol));
+    Ok(())
+}
+

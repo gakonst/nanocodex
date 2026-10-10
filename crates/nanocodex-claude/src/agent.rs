@@ -2613,7 +2613,7 @@ impl AgentFactory for ClaudeNativeFactory {
             recipe.lineage = Some(lineage);
             recipe.conversation_id = Some(state.conversation_id.clone());
             state.initialize_child_workspace(&mut recipe)?;
-            recipe.build()
+            Nanocodex::persist_created(recipe.build()).await
         })
     }
     fn ensure_available(&self, _parent: AgentHandle) -> BackendFuture<Result<()>> {
@@ -2666,7 +2666,7 @@ impl AgentFactory for ClaudeNativeFactory {
                     recipe = recipe.thinking(thinking)?;
                 }
                 state.initialize_child_workspace(&mut recipe)?;
-                return recipe.host_context(host_context).build();
+                return Nanocodex::persist_created(recipe.host_context(host_context).build()).await;
             }
             let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             let thinking = if state.effort().is_none() {
@@ -2683,12 +2683,16 @@ impl AgentFactory for ClaudeNativeFactory {
             }
             let mut recipe = recipe;
             recipe.claude.model = selected.as_str().into();
-            recipe.fast_mode = state.fast_mode.load(Ordering::SeqCst);
+            // An inherited fast mode follows the parent only onto a model that
+            // offers it; a child on another model runs at standard speed.
+            recipe.fast_mode =
+                state.fast_mode.load(Ordering::SeqCst) && selected.supports_fast_mode();
             state.initialize_child_workspace(&mut recipe)?;
-            recipe
+            let child = recipe
                 .thinking(options.selected_thinking().expect("resolved thinking"))?
                 .host_context(host_context)
-                .build()
+                .build();
+            Nanocodex::persist_created(child).await
         })
     }
     fn restore(
@@ -2709,7 +2713,7 @@ impl AgentFactory for ClaudeNativeFactory {
                 state.durable_child(&mut recipe, &child_id, &lineage, "restore", journal_backed)?;
             }
             state.initialize_child_workspace(&mut recipe)?;
-            recipe.host_context(host_context).build()
+            Nanocodex::persist_created(recipe.host_context(host_context).build()).await
         })
     }
 }
@@ -6019,7 +6023,16 @@ impl LifecycleBackend for Driver {
         HarnessFamily::Claude
     }
     fn capabilities(&self) -> Capabilities {
-        CLAUDE_CAPABILITIES
+        let mut capabilities = CLAUDE_CAPABILITIES;
+        // The processing tier is selectable only on models the shared
+        // capability source reports fast mode for; uncataloged provider
+        // identifiers keep the family default.
+        if let Ok(model) = self.state.model().parse::<HarnessModel>()
+            && !model.capabilities(ModelTransport::Native).fast_mode()
+        {
+            capabilities.service_tier = Mutability::Fixed;
+        }
+        capabilities
     }
     fn persistence(&self) -> Option<Persistence> {
         let durable = self
@@ -6050,8 +6063,9 @@ impl LifecycleBackend for Driver {
                 return Ok(());
             };
             let snapshot = state.latest_boundary().await?;
+            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             policy
-                .initial_checkpoint(serde_json::to_value(&snapshot).map_err(provider_error)?)
+                .initial_checkpoint(serde_json::to_value(&snapshot).map_err(provider_error)?, model)
                 .await
         })
     }

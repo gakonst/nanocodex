@@ -38,6 +38,10 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
         if let Some(record) = &record {
             builder = builder.lineage(record.lineage.clone());
         }
+        let initial = record.as_ref().and_then(|record| match (record.model, record.initial) {
+            (nanocodex_agent::HarnessModel::Codex(model), Some(initial)) => Some((model, initial)),
+            _ => None,
+        });
         let branches = Branches {
             store: state.shared_store(),
             record,
@@ -64,6 +68,11 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
             known_records = keys;
             builder = builder.resume_native_snapshot(restored);
         } else if builder.resume_snapshot().is_none() {
+            // A child reopened before its first checkpoint keeps the model and
+            // settings it was created with.
+            if let Some((model, initial)) = initial {
+                builder = builder.initial_settings(model, initial.thinking, initial.service_tier);
+            }
             // A fork's explicitly supplied completed snapshot owns its cache
             // lineage. A fresh durable root alone defaults to its state ID.
             builder = builder.default_prompt_cache_key(state_id.clone());
@@ -568,6 +577,8 @@ struct LazyExecution {
     reopened: std::sync::atomic::AtomicBool,
     /// This policy wrote the state's first checkpoint.
     initialized: std::sync::atomic::AtomicBool,
+    /// Settings the child was created with, recorded when the state opens.
+    created_with: Mutex<Option<nanocodex_agent::execution::InitialSettings>>,
 }
 
 impl LazyExecution {
@@ -578,6 +589,7 @@ impl LazyExecution {
             ready: tokio::sync::OnceCell::new(),
             reopened: std::sync::atomic::AtomicBool::new(false),
             initialized: std::sync::atomic::AtomicBool::new(false),
+            created_with: Mutex::new(None),
         }
     }
 
@@ -591,10 +603,17 @@ impl LazyExecution {
                 )
                 .await
                 .map_err(agent_error)?;
-                let record = state
-                    .describe(self.record.clone())
-                    .await
-                    .map_err(agent_error)?;
+                let mut record = self.record.clone();
+                if let Some(settings) = self.created_with.lock().ok().and_then(|settings| *settings)
+                {
+                    // The child's own model and settings, not its parent's.
+                    record.model = nanocodex_agent::HarnessModel::Codex(settings.model);
+                    record.initial = Some(crate::catalog::InitialSettings {
+                        thinking: settings.thinking,
+                        service_tier: settings.service_tier,
+                    });
+                }
+                let record = state.describe(record).await.map_err(agent_error)?;
                 let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
                 self.reopened.store(
                     checkpoint.is_some(),
@@ -663,19 +682,28 @@ impl ExecutionPolicy for LazyExecution {
 
     fn commit_initial_checkpoint<'a>(
         &'a self,
-        snapshot: SessionSnapshot,
+        snapshot: Option<SessionSnapshot>,
+        settings: nanocodex_agent::execution::InitialSettings,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
+            if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            if let Ok(mut created_with) = self.created_with.lock() {
+                *created_with = Some(settings);
+            }
             // Opening the state records the child in the catalog; a restored
             // child keeps the history it already holds.
             let policy = self.get().await?;
             if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
-            policy.commit_checkpoint(snapshot).await?;
             self.initialized
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            match snapshot {
+                Some(snapshot) => policy.commit_checkpoint(snapshot).await,
+                None => Ok(()),
+            }
         })
     }
 

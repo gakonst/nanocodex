@@ -415,13 +415,13 @@ impl ModelCapabilities {
         if self.supports_thinking(thinking) {
             return Ok(());
         }
-        Err(self.unsupported(
-            &format!("{thinking} thinking"),
-            &format!(
-                "supported thinking: {}",
-                join(self.thinking().map(Thinking::as_str))
-            ),
-        ))
+        Err(NanocodexError::InvalidRequest(format!(
+            "{} requires a supported thinking level{}; supported thinking: {} ({} does not support {thinking} thinking)",
+            display_name(self.model),
+            self.transport_suffix(),
+            join(self.thinking().map(Thinking::as_str)),
+            self.model,
+        )))
     }
 
     /// Rejects an explicitly requested processing tier the model does not accept.
@@ -451,7 +451,13 @@ impl ModelCapabilities {
         if !enabled || self.fast_mode {
             return Ok(());
         }
-        Err(self.unsupported("fast mode", "use standard processing"))
+        Err(self.unsupported(
+            "fast mode",
+            &format!(
+                "supported tiers: {}",
+                join(self.service_tiers().map(ServiceTier::as_str))
+            ),
+        ))
     }
 
     /// Rejects an explicitly requested reasoning mode the model does not accept.
@@ -472,15 +478,40 @@ impl ModelCapabilities {
         ))
     }
 
-    fn unsupported(&self, setting: &str, supported: &str) -> NanocodexError {
-        let transport = match self.transport {
+    const fn transport_suffix(&self) -> &'static str {
+        match self.transport {
             ModelTransport::Native => "",
             ModelTransport::Managed => " on the managed service",
-        };
+        }
+    }
+
+    fn unsupported(&self, setting: &str, supported: &str) -> NanocodexError {
         NanocodexError::InvalidRequest(format!(
-            "model {} does not support {setting}{transport}; {supported}",
-            self.model
+            "{} ({}) does not support {setting}{}; {supported}",
+            display_name(self.model),
+            self.model,
+            self.transport_suffix(),
         ))
+    }
+}
+
+/// Human-readable model name used in actionable errors.
+const fn display_name(model: HarnessModel) -> &'static str {
+    match model {
+        HarnessModel::Codex(Model::Sol) => "GPT-6.1 Sol",
+        HarnessModel::Codex(Model::Luna) => "GPT-6 Luna",
+        HarnessModel::Codex(Model::Astra) => "GPT-6 Astra",
+        HarnessModel::Codex(Model::Glm53) => "GLM-5.3",
+        HarnessModel::Codex(Model::Kimi) => "Kimi K3",
+        HarnessModel::Codex(Model::Mimo) => "MiMo V2.6 Pro",
+        HarnessModel::Claude(ClaudeModel::Opus55) => "Claude Opus 5.5",
+        HarnessModel::Claude(ClaudeModel::Sonnet55) => "Claude Sonnet 5.5",
+        HarnessModel::Claude(ClaudeModel::Haiku55) => "Claude Haiku 5.5",
+        HarnessModel::Claude(ClaudeModel::Fable51) => "Claude Fable 5.1",
+        HarnessModel::Claude(ClaudeModel::Opus46) => "Claude Opus 4.6",
+        HarnessModel::Claude(ClaudeModel::Sonnet46) => "Claude Sonnet 4.6",
+        HarnessModel::Claude(ClaudeModel::Haiku45) => "Claude Haiku 4.5",
+        HarnessModel::Codex(_) => "The selected model",
     }
 }
 

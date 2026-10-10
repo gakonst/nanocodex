@@ -5,11 +5,12 @@ python3 scripts/tests/ncl-branch-prompts-journey.py --binary target/debug/ncl
 
 Edits prompts in the Ctrl+Alt+B navigator across repeated prompts, two long
 prompts sharing their first 500 characters, nested branches, and a branch whose
-history Claude /compact pruned. A local Messages stub records every request, so
+history Claude auto-compaction pruned, then Before/Through branches made with
+`ncl rewind` (including a media-only prompt) after their source moved on. A local Messages stub records every request, so
 each edit is checked against the exact history the provider receives. Frames,
 requests and the outcome are retained in ignored output/. Requires tmux.
 """
-import argparse, json, os, shlex, subprocess, sys, threading, time
+import argparse, base64, json, os, shlex, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
@@ -44,7 +45,7 @@ class Claude(BaseHTTPRequestHandler):
         reply = "REPLY_" + words[-1] if words else "SUMMARY_OF_EARLIER_WORK"
         events = [
             {"type": "message_start", "message": {"id": "msg_" + uuid4().hex, "type": "message", "role": "assistant",
-             "model": body.get("model", "claude"), "content": [], "usage": {"input_tokens": 10, "output_tokens": 0}}},
+             "model": body.get("model", "claude"), "content": [], "usage": {"input_tokens": 2_000_000 if "BIG_CONTEXT" in last else 10, "output_tokens": 0}}},
             {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
             {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": reply}},
             {"type": "content_block_stop", "index": 0},
@@ -123,13 +124,76 @@ def edit(number, old, new, marker):
         found = [r for r in requests[before:] if marker in json.dumps(r["body"].get("messages", []))]
         if found:
             wait(lambda s: "REPLY_" + marker in s, f"{marker} answer", 60)
-            return [text_of(m) for m in found[0]["body"]["messages"] if m.get("role") == "user"]
+            return user_prompts(found[0])
         time.sleep(0.3)
     raise AssertionError(f"no request for {marker}")
+def user_prompts(request):
+    # Claude prefixes a branch with its intended rewind notice; it is not a prompt.
+    return [t for t in (text_of(m) for m in request["body"]["messages"] if m.get("role") == "user")
+            if not t.startswith("This conversation was explicitly rewound")]
 def submit(text, marker):
     typ(text); keys("Enter"); wait(lambda s: "REPLY_" + marker in s, f"{marker} answer", 60)
 def short(r): return [(n, t[:40]) for n, t in r]
 def brief(users): return [u[:40] + ("..." + u[-8:] if len(u) > 48 else "") for u in users]
+
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+def ncl(*argv, timeout=90):
+    result = subprocess.run([str(binary), *argv], cwd=ws, env=env, capture_output=True, text=True, timeout=timeout)
+    (art / "cli.log").open("a").write(json.dumps({"argv": list(argv), "code": result.returncode,
+        "stdout": result.stdout[-4000:], "stderr": result.stderr[-4000:]}) + "\n")
+    if result.returncode != 0:
+        raise AssertionError(f"ncl {argv[:2]} exited {result.returncode}: {result.stderr[-600:]}")
+    return result.stdout
+def run_turn(state, request_id, prompt, marker, image=None):
+    # One headless durable turn of a chosen session in the shared session store.
+    before = len(requests)
+    ncl("run", *common, "--rollouts", "false", "--cwd", str(ws), "--local-durability", str(home / "sessions.sqlite"),
+        "--local-durability-state-id", state, "--request-id", request_id,
+        *(["--image", str(image)] if image else []), prompt)
+    found = [r for r in requests[before:] if marker in json.dumps(r["body"].get("messages", []))]
+    if not found: raise AssertionError(f"no provider request for {marker}")
+    return found[-1]
+def has_image(message): return isinstance(message.get("content"), list) and any(b.get("type") == "image" for b in message["content"])
+def rewind(source, *selection):
+    out = json.loads(ncl("rewind", source, "--mode", "conversation", *selection, "--restore"))
+    return out["branch_session"]
+def boundary_phase():
+    # Before/Through branches made with the public rewind CLI keep exactly the
+    # source turns at their boundary: a media-only prompt included, and source
+    # turns submitted after the branch never included.
+    image = ws / "pixel.png"; image.write_bytes(base64.b64decode(PNG))
+    src = "boundary-src-" + uuid4().hex[:8]
+    run_turn(src, "b-one", "B_ONE", "B_ONE"); run_turn(src, "b-two", "B_TWO", "B_TWO")
+    media = run_turn(src, "b-media", " ", "REPLY_B_TWO", image=image)
+    run_turn(src, "b-four", "B_FOUR", "B_FOUR")
+    preview = json.loads(ncl("rewind", src, "--mode", "conversation"))
+    ids = [c["checkpoint"] for c in preview["checkpoints"]]
+    check("source lists its 4 turns, media-only prompt with its image input and no text preview",
+          ids == ["b-one", "b-two", "b-media", "b-four"] and preview["checkpoints"][2]["preview"] is None
+          and "image" in json.dumps(preview["checkpoints"][2]["input"]) and has_image(media["body"]["messages"][-1]),
+          checkpoints=[(c["checkpoint"], c["preview"]) for c in preview["checkpoints"]])
+    through = rewind(src, "--through", "b-media")
+    before = rewind(src, "--before", "b-media")
+    run_turn(src, "b-five", "B_FIVE", "B_FIVE")
+    for name, branch, marker, kept in [("through b-media", through, "T_NEXT", ["B_ONE", "B_TWO", "IMAGE"]),
+                                       ("before b-media", before, "BF_NEXT", ["B_ONE", "B_TWO"])]:
+        request = run_turn(branch, "next-" + marker, marker, marker)
+        users = ["IMAGE" if has_image(m) else text_of(m) for m in request["body"]["messages"] if m.get("role") == "user"]
+        users = [u for u in users if not u.startswith("This conversation was explicitly rewound")]
+        check(f"{name} branch sends exactly its kept source turns, never later source turns",
+              users == kept + [marker] and "B_FOUR" not in json.dumps(request["body"]) and "B_FIVE" not in json.dumps(request["body"]),
+              users=brief(users))
+    # The navigator of the Through branch, opened after the source moved on.
+    keys("C-c"); time.sleep(0.5); keys("C-c"); time.sleep(1)
+    tmux("respawn-pane", "-k", "-t", S + ":0.0", "env " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items()) + " "
+         + shlex.join([str(binary), "resume", *common, "--cwd", str(ws), through]))
+    wait(composer_visible, "resumed through branch", 40)
+    s, r = navigator("through branch navigator")
+    texts = [t for _, t in r]
+    check("through branch navigator lists B_ONE,B_TWO,(media-only),T_NEXT and no later source turn",
+          [n for n, _ in r][-1:] == [4] and texts[:2] == ["B_ONE", "B_TWO"] and texts[-1] == "T_NEXT"
+          and "B_FOUR" not in s and "B_FIVE" not in s, rows=short(r))
+
 
 cmd = "env " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items()) + " " + shlex.join([str(binary), *common, "--cwd", str(ws)])
 tmux("new-session", "-d", "-x", "200", "-y", "60", "-s", S, "-c", str(ws), cmd + "; echo EXITED $?", ";", "set-option", "-t", S, "remain-on-exit", "on")
@@ -158,22 +222,30 @@ try:
     s, r = navigator("branch 3 navigator")
     check("branch 3 lists SAME,EDIT_TWO,EDIT_THREE", [t for _, t in r] == ["SAME_PROMPT", "EDIT_TWO", "EDIT_THREE"], rows=short(r))
     keys("Escape"); time.sleep(0.5)
-    # Claude /compact prunes earlier prompts from the provider history.
+    # A large reported context makes Claude auto-compact before the next turn,
+    # pruning earlier prompts from the provider history (a public flow).
+    submit("BIG_CONTEXT", "BIG_CONTEXT")
     before = len(requests)
-    typ("/compact"); keys("Enter")
-    end = time.monotonic() + 60
-    while time.monotonic() < end and len(requests) == before: time.sleep(0.3)
-    time.sleep(4)
     submit("AFTER_COMPACT", "AFTER_COMPACT")
-    after = [text_of(m) for m in requests[-1]["body"]["messages"] if m.get("role") == "user"]
+    turn = [r for r in requests[before:] if "AFTER_COMPACT" in json.dumps(r["body"].get("messages", []))][-1]
+    after = user_prompts(turn)
+    check("auto-compaction pruned the earlier prompts from provider history",
+          "SAME_PROMPT" not in json.dumps(turn["body"]["messages"]) and len(requests) - before >= 2,
+          provider_users_after_compact=brief(after), requests_for_turn=len(requests) - before)
+    expected = ["SAME_PROMPT", "EDIT_TWO", "EDIT_THREE", "BIG_CONTEXT", "AFTER_COMPACT"]
     s, r = navigator("compacted branch 3 navigator")
-    check("compacted branch 3 still lists SAME,EDIT_TWO,EDIT_THREE,AFTER_COMPACT",
-          [t for _, t in r] == ["SAME_PROMPT", "EDIT_TWO", "EDIT_THREE", "AFTER_COMPACT"], rows=short(r), provider_users_after_compact=brief(after))
-    if r and r[-1][1] == "AFTER_COMPACT":
+    check("compacted branch 3 still lists every prompt", [t for _, t in r] == expected, rows=short(r))
+    if [t for _, t in r][-1:] == ["AFTER_COMPACT"]:
         users = edit(len(r), "AFTER_COMPACT", "EDIT_AFTER", "EDIT_AFTER")
+        check("editing the newest prompt of the compacted branch keeps the prior prompts (summary)",
+              "AFTER_COMPACT" not in json.dumps(users) and users[-1] == "EDIT_AFTER", users=brief(users))
         s, r2 = navigator("branch 4 navigator")
-        check("branch of compacted branch 3 lists the kept prompts before EDIT_AFTER",
-              [t for _, t in r2][-1:] == ["EDIT_AFTER"] and len(r2) == len(r), rows=short(r2), users=brief(users))
+        check("branch 4 lists the prompts kept before EDIT_AFTER", [t for _, t in r2] == expected[:-1] + ["EDIT_AFTER"], rows=short(r2))
+        if [t for _, t in r2][:2] == ["SAME_PROMPT", "EDIT_TWO"]:
+            users = edit(2, "EDIT_TWO", "EDIT_PRUNED", "EDIT_PRUNED")
+            check("editing an inherited prompt of a compacted lineage keeps exactly SAME", users == ["SAME_PROMPT", "EDIT_PRUNED"], users=brief(users))
+    keys("Escape"); time.sleep(0.5)
+    boundary_phase()
 except Exception as error:
     check("journey", False, error=str(error))
 finally:

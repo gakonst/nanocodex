@@ -100,6 +100,17 @@ pub struct ExecutionOutput {
     pub usage: TurnUsage,
 }
 
+/// Model, reasoning effort and processing tier a just-created child starts with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InitialSettings {
+    /// Model the child runs.
+    pub model: crate::Model,
+    /// Reasoning effort of the child's turns.
+    pub thinking: crate::Thinking,
+    /// Processing tier of the child's turns.
+    pub service_tier: ServiceTier,
+}
+
 /// Optional higher-layer policy for admitting executions and intercepting effects.
 ///
 /// The core agent invokes this interface at its existing transactional
@@ -166,10 +177,13 @@ pub trait ExecutionPolicy: Send + Sync {
     /// conversation, subagent or restored subagent, so the child is listed
     /// and resumable before its first turn. A state that already holds a
     /// checkpoint keeps it: restoring a child never replaces its history.
-    /// The default persists nothing.
+    /// A fresh subagent has no conversation yet (`None`): its state records
+    /// only its catalog identity and the settings it was created with. The
+    /// default persists nothing.
     fn commit_initial_checkpoint<'a>(
         &'a self,
-        _snapshot: SessionSnapshot,
+        _snapshot: Option<SessionSnapshot>,
+        _settings: InitialSettings,
     ) -> ExecutionFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
@@ -420,10 +434,13 @@ pub trait ExecutionPolicy: Send + Sync {
     /// conversation, subagent or restored subagent, so the child is listed
     /// and resumable before its first turn. A state that already holds a
     /// checkpoint keeps it: restoring a child never replaces its history.
-    /// The default persists nothing.
+    /// A fresh subagent has no conversation yet (`None`): its state records
+    /// only its catalog identity and the settings it was created with. The
+    /// default persists nothing.
     fn commit_initial_checkpoint<'a>(
         &'a self,
-        _snapshot: SessionSnapshot,
+        _snapshot: Option<SessionSnapshot>,
+        _settings: InitialSettings,
     ) -> ExecutionFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
@@ -991,10 +1008,13 @@ impl Execution {
 
     pub(crate) async fn commit_initial_checkpoint(
         &self,
-        checkpoint: &CommittedSession,
+        checkpoint: Option<&CommittedSession>,
+        settings: InitialSettings,
     ) -> Result<()> {
         if let Some(policy) = &self.policy {
-            policy.commit_initial_checkpoint(checkpoint.snapshot()).await?;
+            policy
+                .commit_initial_checkpoint(checkpoint.map(CommittedSession::snapshot), settings)
+                .await?;
         }
         Ok(())
     }

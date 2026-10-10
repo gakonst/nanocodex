@@ -4825,3 +4825,308 @@ async fn cancelling_a_turn_queued_behind_an_unfinished_operation_settles_immedia
     drop((agent, events));
     server.abort();
 }
+
+
+/// A durable Claude root's subagents, nested subagents and forks are listed,
+/// loadable and mirrored as soon as they are created, before any child
+/// prompt, and resume from a fresh store without having been prompted.
+#[tokio::test]
+async fn durable_claude_children_are_listed_and_resumable_before_their_first_prompt() {
+    use nanocodex_agent::{ClaudeModel, ForkRequest, HarnessModel, Origin, rollout::RolloutConfig};
+    use nanocodex_durability::{SessionRecord, SessionStore, TranscriptItem};
+    let prompts = |transcript: &[TranscriptItem]| {
+        transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let (client, requests, _server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let model = ClaudeModel::Sonnet55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let rollout = RolloutConfig::new(home.path().join("codex"));
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .rollout(rollout.clone())
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    root.prompt(PromptRequest::new("root task").request_id("root-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let requests_before = requests.lock().unwrap().len();
+    let (child, _child_events) = root.spawn().await.unwrap();
+    let (grandchild, _grandchild_events) = child.spawn().await.unwrap();
+    let (fork, _fork_events) = root.fork(ForkRequest::latest()).await.unwrap();
+    let child_id = child.session_id().to_owned();
+    let expected: [(String, Origin, String, Vec<&str>); 3] = [
+        (child_id.clone(), Origin::Subagent, root_id.clone(), vec![]),
+        (
+            grandchild.session_id().to_owned(),
+            Origin::Subagent,
+            child_id.clone(),
+            vec![],
+        ),
+        (fork.session_id().to_owned(), Origin::Fork, root_id.clone(), vec!["root task"]),
+    ];
+    let mirrored = |id: &str| {
+        rollout
+            .list_sessions()
+            .unwrap()
+            .iter()
+            .filter(|session| session.thread_id() == id)
+            .count()
+    };
+
+    let listed = store.list().await.unwrap();
+    for (id, origin, parent, expected_prompts) in &expected {
+        let summary = listed
+            .iter()
+            .find(|summary| summary.record.session_id == *id)
+            .unwrap_or_else(|| panic!("Claude {origin:?} {id} is not listed before its first prompt"));
+        assert_eq!(summary.record.family(), nanocodex_agent::HarnessFamily::Claude);
+        assert_eq!(summary.record.lineage.origin, *origin);
+        assert_eq!(
+            summary.record.lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(summary.record.lineage.root_session_id, root_id);
+        let stored = store.load(id).await.unwrap();
+        assert_eq!(prompts(&stored.transcript), *expected_prompts);
+        assert!(stored.turns.is_empty());
+        assert!(
+            stored.session_checkpoint().unwrap().is_some(),
+            "Claude {origin:?} has a resumable initial checkpoint"
+        );
+        assert!(mirrored(id) <= 1, "Claude {origin:?} is never mirrored twice");
+    }
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        requests_before,
+        "creating Claude children sends no model request"
+    );
+
+    for agent in [&fork, &grandchild, &child, &root] {
+        agent.shutdown().await.unwrap();
+    }
+    drop(store);
+    let store = SessionStore::open(home.path()).unwrap();
+    for (id, origin, parent, expected_prompts) in &expected {
+        let (resumed, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+            .max_tokens(4096)
+            .rollout(rollout.clone())
+            .durability(store.resume(id).await.unwrap())
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(resumed.session_id(), id.as_str());
+        assert_eq!(resumed.session().lineage.origin, *origin);
+        assert_eq!(
+            resumed.session().lineage.parent_session_id.as_deref(),
+            Some(parent.as_str())
+        );
+        resumed
+            .prompt(PromptRequest::new("first child prompt").request_id("child-1"))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap_or_else(|error| panic!("Claude {origin:?} first prompt failed: {error}"));
+        resumed.shutdown().await.unwrap();
+        let mut want = expected_prompts.clone();
+        want.push("first child prompt");
+        assert_eq!(prompts(&store.load(id).await.unwrap().transcript), want);
+        assert_eq!(mirrored(id), 1, "Claude {origin:?} has exactly one rollout");
+    }
+}
+
+
+
+/// Claude subagents created with their own model, effort and speed keep them
+/// from creation: the catalog names each child's model before any prompt, and
+/// after a restart before their first prompt the runtime built for that
+/// recorded model sends their first request with the recorded effort and speed.
+#[tokio::test]
+async fn new_claude_subagents_keep_their_settings_across_a_restart_before_their_first_prompt() {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, SpawnOptions, Thinking};
+    use nanocodex_durability::{SessionRecord, SessionStore};
+    let home = tempfile::tempdir().unwrap();
+    let (client, requests, _server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let parent_model = ClaudeModel::Opus55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), parent_model.as_str()))
+        .max_tokens(4096)
+        .thinking(Thinking::High)
+        .unwrap()
+        .fast_mode(true)
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(parent_model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let (fast, _fast_events) = root.spawn().await.unwrap();
+    let (sonnet, _sonnet_events) = root
+        .spawn_with(
+            SpawnOptions::new()
+                .harness_model(HarnessModel::Claude(ClaudeModel::Sonnet55))
+                .thinking(Thinking::Low),
+        )
+        .await
+        .unwrap();
+    let expected = [
+        (fast.session_id().to_owned(), ClaudeModel::Opus55, "high", true),
+        (sonnet.session_id().to_owned(), ClaudeModel::Sonnet55, "low", false),
+    ];
+    assert!(requests.lock().unwrap().is_empty(), "no model request yet");
+    for (id, model, _, _) in &expected {
+        let stored = store.load(id).await.unwrap();
+        assert_eq!(stored.summary.record.model, HarnessModel::Claude(*model));
+        assert!(stored.turns.is_empty());
+        assert!(stored.session_checkpoint().unwrap().is_some());
+    }
+    for agent in [&fast, &sonnet, &root] {
+        agent.shutdown().await.unwrap();
+    }
+
+    drop(store);
+    let store = SessionStore::open(home.path()).unwrap();
+    for (id, model, effort, is_fast) in &expected {
+        // Like Harness::open, the host builds the runtime for the model the
+        // catalog recorded; effort and speed come from the durable state, so
+        // the builder configures neither.
+        let HarnessModel::Claude(recorded) = store.load(id).await.unwrap().summary.record.model
+        else {
+            panic!("Claude child recorded a non-Claude model");
+        };
+        assert_eq!(recorded, *model);
+        let (resumed, _events) =
+            Nanocodex::builder(Claude::new(client.clone(), recorded.as_str()))
+                .max_tokens(4096)
+                .durability(store.resume(id).await.unwrap())
+                .await
+                .unwrap()
+                .build()
+                .unwrap();
+        assert_eq!(resumed.session_id(), id.as_str());
+        resumed
+            .prompt(PromptRequest::new("first child prompt").request_id("child-1"))
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        resumed.shutdown().await.unwrap();
+        let request = requests.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(request["model"], model.as_str(), "{request}");
+        assert_eq!(request["output_config"]["effort"], *effort, "{request}");
+        assert_eq!(request["speed"] == "fast", *is_fast, "{request}");
+    }
+}
+
+/// Restoring an evicted Claude subagent from a checkpoint taken before its
+/// first turn keeps the history its durable state already holds, before any
+/// further prompt.
+#[tokio::test]
+async fn restored_claude_subagent_keeps_its_durable_history() {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, Origin};
+    use nanocodex_claude::ClaudeTools;
+    use nanocodex_durability::{SessionRecord, SessionStore, TranscriptItem};
+    let home = tempfile::tempdir().unwrap();
+    let (client, requests, _server) =
+        server(|index, _| sse(text(&format!("claude reply {index}")), "end_turn", 12)).await;
+    let model = ClaudeModel::Sonnet55;
+    let store = SessionStore::open(home.path()).unwrap();
+    let handles: Arc<Mutex<std::collections::HashMap<String, nanocodex_agent::AgentHandle>>> =
+        Arc::default();
+    let captured = Arc::clone(&handles);
+    let root_id = uuid::Uuid::now_v7().to_string();
+    let (root, _events) = Nanocodex::builder(Claude::new(client.clone(), model.as_str()))
+        .max_tokens(4096)
+        .tools_factory(move |handle| {
+            captured
+                .lock()
+                .unwrap()
+                .insert(handle.session_id().to_owned(), handle);
+            Ok(ClaudeTools::new())
+        })
+        .durability(
+            store
+                .session(SessionRecord::root(
+                    root_id.clone(),
+                    HarnessModel::Claude(model),
+                    Some(home.path().to_path_buf()),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+    let (child, _child_events) = root.spawn().await.unwrap();
+    let child_id = child.session_id().to_owned();
+    let stale = child.checkpoint().await.unwrap();
+    child
+        .prompt(PromptRequest::new("child task").request_id("child-1"))
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    child.shutdown().await.unwrap();
+    let sent = requests.lock().unwrap().len();
+    let owner = handles.lock().unwrap()[&root_id].clone();
+    let (restored, _restored_events) = owner.restore_runtime(stale, None).await.unwrap();
+    assert_eq!(restored.session_id(), child_id);
+    assert_eq!(restored.session().lineage.origin, Origin::Subagent);
+    assert_eq!(
+        restored.session().lineage.parent_session_id.as_deref(),
+        Some(root_id.as_str())
+    );
+    let stored = store.load(&child_id).await.unwrap();
+    let prompts = stored
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::User(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["child task"], "restoring never blanks the stored history");
+    assert_eq!(stored.turns.len(), 1);
+    assert_eq!(requests.lock().unwrap().len(), sent, "restoring sends no request");
+    restored.shutdown().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+

@@ -393,6 +393,28 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
+    /// Starts a reopened stored session that has no checkpoint yet with the
+    /// model, reasoning effort and processing tier it was created with,
+    /// unless this builder chose the effort or tier explicitly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn initial_settings(
+        mut self,
+        model: Model,
+        thinking: Thinking,
+        service_tier: ServiceTier,
+    ) -> Self {
+        let explicit_thinking = self.config.thinking_explicit;
+        self = self.model(model);
+        if !explicit_thinking {
+            self.config.thinking = thinking;
+        }
+        if !self.service_tier_explicit {
+            self.config.service_tier = service_tier;
+        }
+        self
+    }
+
     /// Records the provenance of a reopened stored session, such as a durable
     /// fork, instead of reporting a fresh root. Telemetry and
     /// [`Nanocodex::session`] report it; rollout metadata is unaffected.

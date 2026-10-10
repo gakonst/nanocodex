@@ -1419,9 +1419,7 @@ impl Driver {
         let revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
-        let mut next = DurableState::default();
-        next.advance_revision(revision)?;
-        self.persist(next).await
+        self.persist(DurableState::retracted(revision)).await
     }
 
     async fn apply_terminal(&mut self, entry: Transition) -> Result<()> {
