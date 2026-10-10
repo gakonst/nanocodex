@@ -116,7 +116,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
   const say = text => respond([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }], true);
   const exec = (callId, source) => respond([{ type: 'custom_tool_call', name: 'exec', call_id: callId, input: source }], false);
   // Most specific first: a follow-up turn's history still contains its predecessor's marker.
-  const markers = ['CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
+  const markers = ['CURL_CODEX_QUEUED', 'CURL_CODEX_HOLD', 'CURL_CLAUDE_CHILD', 'CURL_COMMITTED_TASK', 'CURL_ROOT_COMMITTED', 'CURL_ROOT_CLAUDE_COMMITTED', 'CURL_YIELD_TASK', 'CURL_ROOT_YIELD', 'CURL_WIDE_TASK', 'CURL_ROOT_WIDE', 'CURL_FOLLOWUP_TASK', 'CURL_CHILD_FOLLOWUP', 'CURL_CHILD_TASK', 'CURL_LOOP_TASK', 'CURL_BUDGET_NEXT', 'CURL_LOOP_NEXT', 'CURL_BUDGET', 'CURL_EFFECTS', 'CURL_ROOT_SPAWN', 'CURL_ROOT_LOOP'];
   const baselines = {};
   const delegate = (task, marker) => [
     () => exec(marker + '-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl child', task, model: 'sol', thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
@@ -132,10 +132,14 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     const namesLostCall = user.includes('curl-child-command') && user.includes('effects.example/effect/C');
     const namesWideCall = user.includes('curl-wide-cell/code-10') && user.includes('effects.example/effect/E');
     const namesCommittedEffect = user.includes('curl-committed-effect') && user.includes('effects.example/effect/F');
+    // Resume evidence lines name calls as "- tool (call_id ID; state): arguments".
+    const lastText = [users.at(-1)?.content].flat().map(part => typeof part === 'string' ? part : part?.text ?? '').join('\n');
+    const evidenceLines = lastText.split('\n').filter(line => /^- .*\(call_id [^;]+; /.test(line));
     modelCalls.push({ process: processNumber, scenario, tool_outputs: outputs.length, names_lost_call: namesLostCall, names_wide_call: namesWideCall,
       listed_wide_calls: new Set(user.match(/curl-wide-cell(?:\/code-\d+)?(?=;)/g) ?? []).size,
       names_committed_effect: namesCommittedEffect, listed_committed_calls: new Set(user.match(/curl-committed-batch(?:\/code-\d+)?(?=;)/g) ?? []).size,
-      listed_effect_calls: new Set(user.match(/curl-committed-effect(?:\/code-\d+)?(?=;)/g) ?? []).size, omitted_line: user.match(/\d+ additional observed call/)?.[0] ?? null, at: new Date().toISOString(), last_output: outputs.at(-1),
+      listed_effect_calls: new Set(user.match(/curl-committed-effect(?:\/code-\d+)?(?=;)/g) ?? []).size, omitted_line: user.match(/\d+ additional observed call/)?.[0] ?? null,
+      evidence_lines: evidenceLines, restored_outputs: outputs.map(item => item.call_id), at: new Date().toISOString(), last_output: outputs.at(-1),
       items: history.map(item => item.type === 'message' || !item.type ? 'message:' + item.role : item.type + (item.call_id ? ':' + item.call_id : '')), instruction_messages: users.length, last_instruction: JSON.stringify(users.at(-1)?.content ?? null).slice(0, 1200) });
     // A restored child sees one more runtime instruction than its first
     // request. Like a real model, this stub only avoids repeating an effect
@@ -184,6 +188,26 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
         () => exec('curl-claude-committed-spawn', 'text(await tools.spawn_agent(' + JSON.stringify({ role: 'Curl Claude child', task: 'CURL_CLAUDE_COMMITTED_TASK: run the synthetic batch, then apply effect G once.', harness: 'claude', model: claudeSettings.model, thinking: 'low', output_contract: { kind: 'string' } }) + '));'),
         () => exec('curl-claude-committed-wait', 'text(await tools.wait_agent({agent_ids:[1],timeout_ms:20000}));'),
       ][outputs.length]?.() ?? say('CLAUDE_COMMITTED_ROOT_DONE');
+      // A yielded cell finished effect H1 and is still running when its owner
+      // dies during H2, reached through a later wait.
+      case 'CURL_ROOT_YIELD': return delegate('CURL_YIELD_TASK: run the yielded synthetic cell, then wait for it.', 'curl-yield')[outputs.length]?.() ?? say('YIELD_ROOT_DONE');
+      case 'CURL_YIELD_TASK': {
+        const effect = name => 'text(await tools.exec_command({cmd:"curl -s -X POST https://effects.example/effect/' + name + '"}));';
+        if (!resumed) {
+          if (outputs.length === 0) return exec('curl-yield-cell', '// @exec: {"yield_time_ms": 1500}\n' + effect('H1')
+            + '\nawait tools.exec_command({cmd:"sleep 4"});\n' + effect('H2'));
+          const cellId = JSON.stringify(outputs.at(-1)).match(/Script running with cell ID ([0-9a-f-]+:[0-9]+)/)?.[1];
+          if (outputs.length === 1 && cellId) return respond([{ type: 'function_call', name: 'wait', call_id: 'curl-yield-wait', arguments: JSON.stringify({ cell_id: cellId, yield_time_ms: 20000 }) }], false);
+          return say('YIELD_UNEXPECTED');
+        }
+        const named = effectName => evidenceLines.find(line => /call_id curl-yield-cell\/code-\d+;/.test(line) && line.includes('effect/' + effectName));
+        const done = outputs.map(item => item.call_id);
+        if (done.includes('curl-yield-resumed')) return say('YIELD_RESUMED');
+        // Like a real model, repeat an effect unless the runtime names it.
+        if (!named('H1') && !done.includes('curl-yield-repeat-h1')) return exec('curl-yield-repeat-h1', effect('H1'));
+        if (!named('H2') && !done.includes('curl-yield-repeat-h2')) return exec('curl-yield-repeat-h2', effect('H2'));
+        return exec('curl-yield-resumed', 'text(await tools.submit_result({output:"YIELD_RESUMED_WITHOUT_REPEAT"}));');
+      }
       // Explicit delegation to the same, already completed child after restart.
       case 'CURL_CHILD_FOLLOWUP': return [
         () => exec('curl-followup-send', 'text(await tools.send_agent_message({agent_id:1,purpose:"delegate",message:"CURL_FOLLOWUP_TASK: apply effect D once with exec_command, then submit_result."}));'),
@@ -228,7 +252,10 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     const userText = JSON.stringify(body.messages.filter(message => message.role === 'user')
       .flatMap(message => typeof message.content === 'string' ? [message.content] : message.content.filter(block => block.type === 'text').map(block => block.text)));
     const resumed = userText.includes('runtime restarted while your previous turn was running');
-    const call = { process: processNumber, tool_results: ids, resumed,
+    const lastUser = body.messages.filter(message => message.role === 'user').at(-1);
+    const lastText = [lastUser?.content].flat().map(part => typeof part === 'string' ? part : part?.type === 'text' ? part.text : '').join('\n');
+    const call = { process: processNumber, tool_results: ids, resumed, restored_outputs: ids,
+      evidence_lines: lastText.split('\n').filter(line => /^- .*\(call_id [^;]+; /.test(line)),
       names_effect: userText.includes('toolu_committed_effect') && userText.includes('effects.example/effect/G'),
       listed_committed_calls: new Set(userText.match(/toolu_committed_batch(?:\/code-\d+)?(?=;)/g) ?? []).size,
       listed_effect_calls: new Set(userText.match(/toolu_committed_effect(?:\/code-\d+)?(?=;)/g) ?? []).size,
@@ -287,7 +314,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
       effects.push({ process: processNumber, name, method: call.method, at: new Date().toISOString() });
       // B and the child's C reach the external system, then the owner dies
       // before any receipt can return: the outcome is genuinely unknown.
-      if (name === 'B' || (['C', 'E', 'F', 'G'].includes(name) && effects.filter(effect => effect.name === name).length === 1)) return void kill('effect ' + name + ' dispatched, response never returned');
+      if (name === 'B' || (['C', 'E', 'F', 'G', 'H2'].includes(name) && effects.filter(effect => effect.name === name).length === 1)) return void kill('effect ' + name + ' dispatched, response never returned');
       return send(200, 'EFFECT_' + name + '_APPLIED\n', 'text/plain');
     }
     if (url.origin === 'https://chatgpt.com' && call.body?.includes('"gpt-6-luna"')) {
@@ -380,6 +407,21 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(page.has_more, false, 'history fits one page');
     assert.deepEqual(reopened, [], 'a call closed as interrupted never reports again');
     return [...open].map(([call, value]) => ({ call, ...value }));
+  };
+  // Negative invariant: every call the child observed before the loss is
+  // either committed to its restored request (directly, or as nested work of a
+  // committed terminal cell) or named in resume evidence / its omitted count.
+  const observedCalls = (rows, agentId, prefixes) => [...new Set(rows.data
+    .filter(row => row.agent_id === agentId && row.event?.type === 'tool.call')
+    .map(row => row.event.payload.call_id).filter(id => prefixes.some(prefix => id === prefix || id.startsWith(prefix + '/code-'))))];
+  const assertCovered = (label, observed, call, terminalCells) => {
+    const listed = new Set(call.evidence_lines.map(line => line.match(/call_id ([^;]+);/)[1]));
+    const committed = new Set(call.restored_outputs);
+    const omitted = Number(call.omitted_line?.match(/\d+/)?.[0] ?? 0);
+    const missing = observed.filter(id => !listed.has(id) && !committed.has(id)
+      && !(id.includes('/code-') && terminalCells.includes(id.split('/code-')[0]) && committed.has(id.split('/code-')[0])));
+    assert.ok(observed.length > 0 && missing.length <= omitted,
+      label + ': an observed call is neither committed nor named: ' + JSON.stringify({ observed, missing, omitted, listed: [...listed] }));
   };
   const summary = {};
 
@@ -625,6 +667,7 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(committedResume.omitted_line, null, 'no committed call is counted as omitted unknown evidence');
     assert.equal(committedResume.listed_effect_calls, 2, 'the interrupted cell and its nested effect call are both named');
     const committedHistory = await history('committed-history', committedRun.agent_id);
+    assertCovered('codex committed', observedCalls(committedHistory, 1, ['curl-committed-batch', 'curl-committed-effect']), committedResume, ['curl-committed-batch']);
     assert.deepEqual(openToolCalls(committedHistory), [], 'the lost effect call has a terminal result');
     assert.equal(effects.filter(effect => effect.name === 'F').length, 1, 'effect F is never dispatched again');
     assert.equal(committedDone.state, 'completed', JSON.stringify(committedDone));
@@ -644,9 +687,35 @@ test('curl recovers managed work across workerd SIGKILL without duplicate effect
     assert.equal(claudeResume.listed_committed_calls, 0, 'calls already committed to the restored Claude conversation are not reported as unknown');
     assert.equal(claudeResume.omitted_line, null, 'no committed Claude call is counted as omitted unknown evidence');
     assert.equal(claudeResume.listed_effect_calls, 2, 'the interrupted Claude cell and its nested effect call are both named');
-    assert.deepEqual(openToolCalls(await history('claude-committed-history', claudeCommittedRun.agent_id)), [], 'the lost Claude effect call has a terminal result');
+    const claudeCommittedHistory = await history('claude-committed-history', claudeCommittedRun.agent_id);
+    assertCovered('claude committed', observedCalls(claudeCommittedHistory, 1, ['toolu_committed_batch', 'toolu_committed_effect']), claudeResume, ['toolu_committed_batch']);
+    assert.deepEqual(openToolCalls(claudeCommittedHistory), [], 'the lost Claude effect call has a terminal result');
     assert.equal(effects.filter(effect => effect.name === 'G').length, 1, 'effect G is never dispatched again');
     assert.equal(claudeCommittedDone.state, 'completed', JSON.stringify(claudeCommittedDone));
+
+    // 3f. A yielded cell's nested results never enter the conversation. Its
+    // owner dies mid-cell, so finished H1 stays named as observed, unknown H2
+    // as unknown, and the cell as still running; nothing is repeated.
+    const yieldRun = (await curl('yield-admit', '/v1/agent-runs', { method: 'POST', body: { input: 'CURL_ROOT_YIELD: delegate a yielded cell to a child.', settings }, headers: { 'Idempotency-Key': randomUUID() }, expected: 201 })).value;
+    const yieldBase = kills.length;
+    await waitFor('yield effect H2 owner loss', () => kills.length === yieldBase + 1 && !fixture);
+    await start(); await turnState('yield-after-loss', yieldRun.agent_id, yieldRun.turn_id);
+    const yieldDone = await terminal('yield-terminal', yieldRun.agent_id, yieldRun.turn_id);
+    const yieldCalls = modelCalls.filter(call => call.scenario === 'CURL_YIELD_TASK');
+    const yieldResume = yieldCalls.find(call => call.process > yieldCalls[0].process);
+    summary.yield = { terminal: yieldDone.state, effects: effects.filter(effect => effect.name.startsWith('H')).map(effect => effect.name),
+      child_calls: yieldCalls.map(({ process, tool_outputs, evidence_lines, restored_outputs, omitted_line }) => ({ process, tool_outputs, evidence_lines, restored_outputs, omitted_line })) };
+    assert.ok(yieldResume, 'the child resumed after the owner loss');
+    assert.ok(yieldResume.items.includes('custom_tool_call_output:curl-yield-cell'), 'the yield output is in the restored conversation');
+    const yieldLine = pattern => yieldResume.evidence_lines.find(line => pattern.test(line));
+    assert.match(yieldLine(/call_id curl-yield-cell\/code-\d+;.*effect\/H1/) ?? '', /a result was observed/, 'finished nested H1 stays named as observed: ' + JSON.stringify(yieldResume.evidence_lines));
+    assert.match(yieldLine(/call_id curl-yield-cell\/code-\d+;.*effect\/H2/) ?? '', /no result was observed/, 'H2 stays named as unknown');
+    assert.match(yieldLine(/call_id curl-yield-cell;/) ?? '', /yielded; still running/, 'the yielded cell stays listed as still running');
+    const yieldHistory = await history('yield-history', yieldRun.agent_id);
+    assertCovered('codex yield', observedCalls(yieldHistory, 1, ['curl-yield-cell', 'curl-yield-wait']), yieldResume, []);
+    assert.deepEqual(effects.filter(effect => effect.name.startsWith('H')).map(effect => effect.name), ['H1', 'H2'], 'H1 and H2 each reach the external system exactly once');
+    assert.deepEqual(openToolCalls(yieldHistory), [], 'every child call has a terminal result');
+    assert.equal(yieldDone.state, 'completed', JSON.stringify(yieldDone));
 
     // 4. A child whose every inference dies with its owner exhausts bounded
     // automatic recovery; the root reaches a terminal and the agent stays usable.

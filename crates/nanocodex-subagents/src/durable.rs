@@ -313,6 +313,11 @@ pub(super) struct InFlightCall {
     /// A result was observed before the restart.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) result_recorded: bool,
+    /// A Code Mode cell yielded and kept running: its result is not terminal,
+    /// and its nested calls stay unsettled until a terminal cell result.
+    /// Older readers ignore this field; older journals default it to false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) yielded: bool,
     /// Enclosing Code Mode call of a nested call. This and the commit state
     /// below matter only to the live runtime, so the journal format is
     /// unchanged in both directions.
@@ -386,6 +391,7 @@ impl InFlightCall {
             tool: bounded(tool),
             arguments: bounded(&arguments),
             result_recorded: false,
+            yielded: false,
             parent_call_id: parent_call_id.map(str::to_owned),
             live: true,
             settled: false,
@@ -394,8 +400,9 @@ impl InFlightCall {
     }
 }
 
-/// Appends a call, evicting the oldest call with an observed result first,
-/// else the oldest call. Returns the evicted calls.
+/// Appends a call, evicting the oldest settled call first, then the oldest
+/// call with an observed non-yielded result, else the oldest call. Returns the
+/// evicted calls.
 pub(super) fn retain_call(calls: &mut Vec<InFlightCall>, call: InFlightCall) -> Vec<InFlightCall> {
     calls.retain(|existing| existing.call_id != call.call_id);
     calls.push(call);
@@ -403,7 +410,12 @@ pub(super) fn retain_call(calls: &mut Vec<InFlightCall>, call: InFlightCall) -> 
     while calls.len() > MAX_IN_FLIGHT_CALLS {
         let index = calls
             .iter()
-            .position(|existing| existing.result_recorded)
+            .position(|existing| existing.settled || existing.committable)
+            .or_else(|| {
+                calls
+                    .iter()
+                    .position(|existing| existing.result_recorded && !existing.yielded)
+            })
             .unwrap_or(0);
         evicted.push(calls.remove(index));
     }
@@ -429,7 +441,9 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     let mut lines = calls
         .iter()
         .map(|call| {
-            let state = if call.result_recorded {
+            let state = if call.yielded {
+                "yielded; still running at the restart"
+            } else if call.result_recorded {
                 "a result was observed before the restart"
             } else {
                 "started; no result was observed"

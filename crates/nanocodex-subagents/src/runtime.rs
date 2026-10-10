@@ -1603,6 +1603,33 @@ impl Registry {
             arguments: Option<Value>,
             #[serde(default)]
             parent_call_id: Option<String>,
+            /// Codex Code Mode cell lifetime.
+            #[serde(default)]
+            cell: Option<Cell>,
+            /// Claude reports the cell under metadata._nanocodex_code.
+            #[serde(default)]
+            metadata: Option<Value>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Cell {
+            origin_call_id: String,
+            running: bool,
+        }
+        impl Call {
+            /// The Code Mode cell this result observed: its original exec
+            /// call and whether it is still running. Claude omits running for
+            /// a cell that may produce more updates.
+            fn cell(&self) -> Option<(&str, bool)> {
+                if let Some(cell) = &self.cell {
+                    return Some((cell.origin_call_id.as_str(), cell.running));
+                }
+                let code = self.metadata.as_ref()?.get("_nanocodex_code")?;
+                let origin = code.get("origin_call_id")?.as_str()?;
+                Some((
+                    origin,
+                    code.get("running").and_then(Value::as_bool) != Some(false),
+                ))
+            }
         }
         let Some(call) = payload
             .as_ref()
@@ -1640,7 +1667,9 @@ impl Registry {
                 // Kept, not removed: a result reaches the restored history only
                 // once a later checkpoint commits it (see commit_boundary).
                 AgentEventKind::ToolResult => {
-                    let mut top_level = false;
+                    let cell = call.cell();
+                    let top_level =
+                        parent_call(&call.call_id, call.parent_call_id.as_deref()).is_none();
                     if let Some(existing) = session
                         .in_flight_calls
                         .iter_mut()
@@ -1648,26 +1677,35 @@ impl Registry {
                     {
                         existing.result_recorded = true;
                         if existing.live && existing.parent_call_id.is_none() {
-                            existing.settled = true;
-                            top_level = true;
-                        }
-                    } else {
-                        top_level =
-                            parent_call(&call.call_id, call.parent_call_id.as_deref()).is_none();
-                    }
-                    // A cell's result carries the nested results it already
-                    // reported; later ones (a yielded cell) reach only a wait.
-                    if top_level {
-                        for nested in &mut session.in_flight_calls {
-                            if nested.live
-                                && nested.result_recorded
-                                && nested.parent_call_id.as_deref() == Some(call.call_id.as_str())
-                            {
-                                nested.settled = true;
+                            // A yielded exec keeps running: its output is in
+                            // the conversation, but the cell is not finished.
+                            if matches!(cell, Some((origin, true)) if origin == call.call_id) {
+                                existing.yielded = true;
+                            } else {
+                                existing.settled = true;
                             }
                         }
-                        if let Some(count) = session.in_flight_progress.nested.remove(&call.call_id)
-                        {
+                    }
+                    // Only a terminal cell result (from its exec or a later
+                    // wait) reports the cell's nested work as finished. Nested
+                    // results never enter the conversation themselves, and a
+                    // yielded cell is lost with its runtime.
+                    if top_level && let Some((origin, false)) = cell {
+                        for listed in &mut session.in_flight_calls {
+                            if !listed.live {
+                                continue;
+                            }
+                            if listed.parent_call_id.as_deref() == Some(origin)
+                                && listed.result_recorded
+                            {
+                                listed.settled = true;
+                            } else if listed.call_id == origin && listed.yielded {
+                                // Settled by this terminal result once it commits.
+                                listed.yielded = false;
+                                listed.settled = true;
+                            }
+                        }
+                        if let Some(count) = session.in_flight_progress.nested.remove(origin) {
                             session.in_flight_progress.settled =
                                 session.in_flight_progress.settled.saturating_add(count);
                         }
