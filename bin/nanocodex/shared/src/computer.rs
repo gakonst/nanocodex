@@ -27,6 +27,15 @@ impl Computer {
             refresh,
             background,
         } = self.command;
+        #[cfg(target_os = "linux")]
+        if cfg!(target_os = "linux") {
+            // Linux Hands capture and control through their built-in native
+            // screen; OpenAI's signed component feed is macOS-only. Report what
+            // the native screen needs instead of a provider failure. Read-only:
+            // nothing is downloaded, installed, or recorded as a setup failure.
+            println!("{}", linux_native_screen_receipt());
+            return Ok(());
+        }
         let _background_lock = if background {
             let directory = setup_directory()?;
             fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -91,6 +100,47 @@ impl Computer {
             }
         }
     }
+}
+
+/// Prerequisites of the Hand's private X11 desktop, found on this PATH. Presence
+/// is not proof the screen works: the running Hand reports that itself through
+/// `nanocodex hand permissions --check`. The Wayland helpers are embedded in
+/// the Hand executable and extracted on first use; nothing is downloaded.
+#[cfg(target_os = "linux")]
+fn linux_native_screen_receipt() -> serde_json::Value {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut found = serde_json::Map::new();
+    let mut missing = Vec::new();
+    for name in ["Xvfb", "openbox", "xterm", "ffmpeg"] {
+        let executable = std::env::split_paths(&path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::metadata(candidate).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            });
+        if executable.is_none() {
+            missing.push(name);
+        }
+        found.insert(
+            name.into(),
+            executable.map(|path| path.display().to_string()).into(),
+        );
+    }
+    serde_json::json!({
+        "platform": "linux",
+        "provider": "native_screen",
+        "status": if missing.is_empty() { "prerequisites_found" } else { "prerequisites_missing" },
+        "prerequisites": found,
+        "missing": missing,
+        "note": "A same-user Wayland session needs none of these; the Hand otherwise runs its own private Xvfb desktop (fonts are also required). Nothing was downloaded or installed.",
+        "next": if missing.is_empty() {
+            "nanocodex hand permissions --check".to_owned()
+        } else {
+            format!("install {} with your system package manager, then run: nanocodex hand permissions --check", missing.join(", "))
+        },
+    })
 }
 
 /// Outcome of the last setup attempt that did not install the components,

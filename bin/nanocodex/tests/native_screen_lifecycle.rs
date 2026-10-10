@@ -7,7 +7,7 @@ use axum::{
     Router,
     extract::{
         State, WebSocketUpgrade,
-        ws::{CloseFrame, Message},
+        ws::{CloseFrame, Message, WebSocket},
     },
     routing::{get, post},
 };
@@ -31,46 +31,86 @@ use tokio::{
 #[derive(Clone)]
 struct Broker {
     connections: Arc<AtomicUsize>,
+    attempts: Arc<AtomicUsize>,
     before_publication: bool,
     workspace: PathBuf,
     observed: mpsc::UnboundedSender<()>,
     replace: Arc<tokio::sync::Notify>,
     recovered: Arc<tokio::sync::Notify>,
 }
+/// Next publisher frame, answering liveness pings. None once the publisher
+/// closes this connection: a WebRTC media failure ends the session, and the
+/// publisher recovers on a new connection.
+async fn next_frame(socket: &mut WebSocket) -> Option<Value> {
+    loop {
+        let Message::Text(text) = socket.recv().await?.ok()? else {
+            continue;
+        };
+        let frame: Value = serde_json::from_str(&text).unwrap();
+        if frame["type"] == "ping" {
+            socket
+                .send(Message::Text(
+                    json!({"type":"pong","nonce":frame["nonce"]})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .ok()?;
+            continue;
+        }
+        return Some(frame);
+    }
+}
+async fn drain(socket: &mut WebSocket) {
+    while next_frame(socket).await.is_some() {}
+}
+async fn agent_call(socket: &mut WebSocket, request_id: String, input: Value) -> Option<Value> {
+    let deadline = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 8_000;
+    socket.send(Message::Text(json!({"type":"agent_call","request_id":request_id,"agent_id":"synthetic-agent","surface_id":"desktop","generation":"synthetic-generation","deadline_at":deadline,"input":input}).to_string().into())).await.ok()?;
+    loop {
+        let reply = next_frame(socket).await?;
+        if reply["type"] == "agent_result" {
+            assert_eq!(reply["status"], "ok", "{reply}");
+            return Some(reply);
+        }
+    }
+}
 async fn host(State(state): State<Broker>, upgrade: WebSocketUpgrade) -> axum::response::Response {
     upgrade.on_upgrade(move |mut socket| async move {
         state.connections.fetch_add(1, Ordering::SeqCst);
-        socket.send(Message::Text(json!({"type":"ready","connection_id":"synthetic-screen"}).to_string().into())).await.unwrap();
-        let Some(Ok(Message::Text(text))) = socket.recv().await else { panic!("missing screen catalog") };
-        let catalog: Value = serde_json::from_str(&text).unwrap();
+        if socket.send(Message::Text(json!({"type":"ready","connection_id":"synthetic-screen"}).to_string().into())).await.is_err() {
+            return;
+        }
+        // A recovering session may close before cataloging while capture is down.
+        let Some(catalog) = next_frame(&mut socket).await else { return };
         assert_eq!(catalog["type"], "catalog");
         assert_eq!(catalog["machine_id"], "synthetic-screen");
-        assert_eq!(catalog["surfaces"][0]["transport"], "frames-v1");
+        // Native Hands publish H.264 video over WebRTC; JPEG frames-v1 is reserved
+        // for restricted sandboxes, so a native catalog names no frame transport.
+        assert!(catalog["surfaces"][0].get("transport").is_none(), "{catalog}");
         if !state.before_publication {
-            socket.send(Message::Text(json!({"type":"published","generation":"synthetic-generation"}).to_string().into())).await.unwrap();
-            for attempt in 0..2 {
-            let deadline = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 8_000;
-            socket.send(Message::Text(json!({"type":"agent_call","request_id":format!("synthetic-observe-{attempt}"),"agent_id":"synthetic-agent","surface_id":"desktop","generation":"synthetic-generation","deadline_at":deadline,"input":{"action":"observe"}}).to_string().into())).await.unwrap();
+            if socket.send(Message::Text(json!({"type":"published","generation":"synthetic-generation"}).to_string().into())).await.is_err() {
+                return;
+            }
             loop {
-                let Some(Ok(Message::Text(text))) = socket.recv().await else { panic!("screen observation failed") };
-                let reply: Value = serde_json::from_str(&text).unwrap();
-                if reply["type"] == "agent_result" {
-                    assert_eq!(reply["status"], "ok", "{reply}");
-                    let jpeg = base64::engine::general_purpose::STANDARD
-                        .decode(reply["jpeg"].as_str().expect("JPEG base64"))
-                        .expect("valid JPEG base64");
-                    let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
-                        .expect("actual decodable JPEG");
-                    assert_eq!(Some(u64::from(decoded.width())), reply["width"].as_u64());
-                    assert_eq!(Some(u64::from(decoded.height())), reply["height"].as_u64());
-                    assert!(decoded.width() > 0 && decoded.height() > 0);
-                    eprintln!("decoded broker observation {attempt}: JPEG bytes={}, dimensions={}x{}", jpeg.len(), decoded.width(), decoded.height());
+                let attempt = state.attempts.load(Ordering::SeqCst);
+                if attempt >= 2 {
                     break;
                 }
-                if reply["type"] == "ping" {
-                    socket.send(Message::Text(json!({"type":"pong","nonce":reply["nonce"]}).to_string().into())).await.unwrap();
-                }
-            }
+                let Some(reply) = agent_call(&mut socket, format!("synthetic-observe-{attempt}"), json!({"action":"observe"})).await else { return };
+                let jpeg = base64::engine::general_purpose::STANDARD
+                    .decode(reply["jpeg"].as_str().expect("JPEG base64"))
+                    .expect("valid JPEG base64");
+                let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
+                    .expect("actual decodable JPEG");
+                assert_eq!(Some(u64::from(decoded.width())), reply["width"].as_u64());
+                assert_eq!(Some(u64::from(decoded.height())), reply["height"].as_u64());
+                assert!(decoded.width() > 0 && decoded.height() > 0);
+                eprintln!("decoded broker observation {attempt}: JPEG bytes={}, dimensions={}x{}", jpeg.len(), decoded.width(), decoded.height());
                 // Verify delivery through the shipped broker input boundary, not
                 // merely an acknowledgment: type into only the owned X11 terminal.
                 let marker = format!("native-screen-input-{attempt}");
@@ -78,18 +118,8 @@ async fn host(State(state): State<Broker>, upgrade: WebSocketUpgrade) -> axum::r
                     json!({"action":"type", "text":format!("printf '%s' '{marker}' > {marker}.txt")}),
                     json!({"action":"key", "key":40}),
                 ].into_iter().enumerate() {
-                    let deadline = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 8_000;
-                    socket.send(Message::Text(json!({"type":"agent_call","request_id":format!("synthetic-input-{attempt}-{step}"),"agent_id":"synthetic-agent","surface_id":"desktop","generation":"synthetic-generation","deadline_at":deadline,"input":input}).to_string().into())).await.unwrap();
-                    loop {
-                        let Some(Ok(Message::Text(text))) = socket.recv().await else { panic!("native input response missing") };
-                        let reply: Value = serde_json::from_str(&text).unwrap();
-                        if reply["type"] == "agent_result" {
-                            assert_eq!(reply["status"], "ok", "{reply}");
-                            break;
-                        }
-                        if reply["type"] == "ping" {
-                            socket.send(Message::Text(json!({"type":"pong","nonce":reply["nonce"]}).to_string().into())).await.unwrap();
-                        }
+                    if agent_call(&mut socket, format!("synthetic-input-{attempt}-{step}"), input).await.is_none() {
+                        return;
                     }
                 }
                 tokio::time::timeout(Duration::from_secs(10), async {
@@ -101,12 +131,24 @@ async fn host(State(state): State<Broker>, upgrade: WebSocketUpgrade) -> axum::r
                     }
                 }).await.expect("broker native type/key must deliver the harmless terminal marker");
                 eprintln!("native broker input delivered before/after capture recovery: {marker}");
+                state.attempts.store(attempt + 1, Ordering::SeqCst);
                 state.observed.send(()).unwrap();
-                if attempt == 0 { state.recovered.notified().await; }
+                if attempt == 0 {
+                    // Recovery either keeps this session or replaces it with a
+                    // new connection, which then runs the next attempt.
+                    tokio::select! {
+                        () = state.recovered.notified() => {}
+                        () = drain(&mut socket) => return,
+                    }
+                }
             }
-            state.replace.notified().await;
+            tokio::select! {
+                () = state.replace.notified() => {}
+                () = drain(&mut socket) => return,
+            }
         }
-        socket.send(Message::Close(Some(CloseFrame { code: 1000, reason: "Host replaced".into() }))).await.unwrap();
+        // Before publication, the host is replaced right after cataloging.
+        let _ = socket.send(Message::Close(Some(CloseFrame { code: 1000, reason: "Host replaced".into() }))).await;
     })
 }
 fn executable(name: &str) -> PathBuf {
@@ -118,6 +160,29 @@ fn executable(name: &str) -> PathBuf {
             })
         })
         .unwrap_or_else(|| panic!("install {name} before running this journey"))
+}
+/// The publisher's owned helper runs `__hand-desktop --workspace W --runtime R`
+/// with its IPC in a short private runtime outside the state directory.
+fn desktop_runtime(workspace: &Path) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+    std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+            let value = |flag: &[u8]| {
+                let index = args.iter().position(|argument| *argument == flag)?;
+                args.get(index + 1).copied()
+            };
+            (args.contains(&b"__hand-desktop".as_slice())
+                && value(b"--workspace")? == workspace.as_os_str().as_bytes())
+            .then(|| {
+                value(b"--runtime")
+                    .map(|runtime| PathBuf::from(std::ffi::OsStr::from_bytes(runtime)))
+            })
+            .flatten()
+        })
 }
 fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
@@ -134,7 +199,9 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
     let xvfb = executable("Xvfb");
     executable("openbox");
     executable("xterm");
+    let mut runtimes = Vec::new();
     for before_publication in [false, true] {
+        let mut expected_connections = 1;
         let fixture = tempfile::tempdir().unwrap();
         let workspace = fixture.path().join("workspace");
         let bin = fixture.path().join("bin");
@@ -164,6 +231,7 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
         let (observed, mut observations) = mpsc::unbounded_channel();
         let broker = Broker {
             connections: Arc::new(AtomicUsize::new(0)),
+            attempts: Arc::new(AtomicUsize::new(0)),
             before_publication,
             workspace: workspace.clone(),
             observed,
@@ -202,7 +270,6 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             .env_remove("NANOCODEX_API_KEY")
             .env("NANOCODEX_MANAGED_URL", origin)
             .env("NANOCODEX_DISABLE_HAND", "1")
-            .env("NANOCODEX_SCREEN_TRANSPORT", "frames-v1")
             .env("NANOCODEX_SCREEN_BACKEND", "x11")
             .env_remove("NANOCODEX_PARENT_PIPE")
             .env_remove("WAYLAND_DISPLAY")
@@ -218,6 +285,7 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             let mut lines = BufReader::new(stderr).lines();
             let mut output = String::new();
             while let Some(line) = lines.next_line().await.unwrap() {
+                eprintln!("[hand-stderr] {line}");
                 output.push_str(&line);
                 output.push('\n');
                 let _ = lines_tx.send(line);
@@ -262,11 +330,10 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             })
             .await
             .unwrap();
-            let runtime = std::fs::read_dir(&state_dir)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .find(|path| path.join("hand.sock").exists())
-                .unwrap();
+            let runtime = desktop_runtime(&workspace)
+                .filter(|path| path.join("hand.sock").exists())
+                .expect("ready publisher owns a private desktop runtime with its IPC socket");
+            runtimes.push(runtime.clone());
             // Stop only the synthetic owned helper through its real IPC, then
             // make its next X-server startup fail. The publisher must remain
             // connected while reporting unavailable and later usable again.
@@ -301,7 +368,12 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             })
             .await
             .unwrap();
-            assert_eq!(broker.connections.load(Ordering::SeqCst), 1);
+            // WebRTC capture loss ends the media session; the publisher stays
+            // running and reconnects rather than exiting.
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "publisher exited on capture loss"
+            );
             std::fs::write(&gate, "available").unwrap();
             tokio::time::timeout(Duration::from_secs(45), async {
                 loop {
@@ -314,6 +386,13 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             })
             .await
             .unwrap();
+            expected_connections = broker.connections.load(Ordering::SeqCst);
+            // One initial session plus bounded reconnects across the helper
+            // crash and recovery; a reconnect storm fails here.
+            assert!(
+                (2..=3).contains(&expected_connections),
+                "unexpected publisher connections: {expected_connections}"
+            );
             broker.replace.notify_one();
         }
         let status = tokio::time::timeout(Duration::from_secs(45), child.wait())
@@ -324,7 +403,7 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
         assert!(status.success(), "{output}");
         assert_eq!(
             broker.connections.load(Ordering::SeqCst),
-            1,
+            expected_connections,
             "fenced publisher reclaimed its replacement"
         );
         if before_publication {
@@ -334,15 +413,11 @@ async fn standalone_screen_retries_and_exits_on_replacement() {
             );
         }
         assert!(
-            std::fs::read_dir(&state_dir).unwrap().all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("desktop-")),
-            "owned desktop runtime leaked"
+            desktop_runtime(&workspace).is_none() && runtimes.iter().all(|path| !path.exists()),
+            "owned desktop helper or runtime leaked: {runtimes:?}"
         );
         eprintln!(
-            "__hand-screen journey: replacement_before_publication={before_publication}, connections=1, exit={status}, socket_removed=true\n{output}"
+            "__hand-screen journey: replacement_before_publication={before_publication}, connections={expected_connections}, exit={status}, socket_removed=true\n{output}"
         );
         server.abort();
     }
@@ -404,7 +479,6 @@ async fn standalone_screen_sigterm_during_startup_reaps_desktop() {
         )
         .env("NANOCODEX_DISABLE_HAND", "1")
         .env("NANOCODEX_SCREEN_BACKEND", "x11")
-        .env("NANOCODEX_SCREEN_TRANSPORT", "frames-v1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
