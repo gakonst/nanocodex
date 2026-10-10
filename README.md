@@ -652,17 +652,21 @@ OPENAI_API_KEY=... cargo run -p nanocodex-examples --bin custom-tool
 OPENAI_API_KEY=... cargo run -p nanocodex-examples --bin mcp
 ```
 
-### Branches, snapshots, and subagents
+### Branches, checkpoints, and subagents
 
 Branching is a lifecycle primitive, not cloned mutable state:
 
 - `spawn()` creates a clean agent with the same private builder configuration
   and no conversation history;
-- `fork()` creates an independent session from the latest safe committed
-  boundary;
-- `fork_from(&completed_turn)` pins an exact historical checkpoint; and
-- `SessionSnapshot` serializes authoritative committed history for later
-  process or actor resumption without exposing provider response IDs.
+- `fork(ForkRequest::latest())` creates an independent session from the
+  latest safe committed boundary;
+- `fork(ForkRequest::at_turn(&completed_turn))` pins the exact boundary a
+  completed turn retained, and `ForkRequest::at(checkpoint)` forks from a
+  portable checkpoint of the same conversation tree; and
+- `SessionCheckpoint` (from `agent.checkpoint()` or
+  `completed_turn.checkpoint()`) serializes the session's identity, lineage
+  and authoritative committed history for later process or actor resumption
+  through `builder.resume(checkpoint)`, without exposing provider response IDs.
 
 Forked drivers get their own socket, prompt queue, tools, and cancellation
 domain. Shared immutable history makes local fork-and-append constant-time, and
@@ -833,7 +837,7 @@ first = agent.prompt("Remember the identifier PYO3_17.").result()
 second = agent.prompt("Return the identifier I asked you to remember.").result()
 print(second.final_message)
 
-branch, branch_events = agent.fork_from(first)
+branch, branch_events = agent.fork(first)
 print(branch.prompt("What was the identifier?").result().final_message)
 
 branch.shutdown()
@@ -841,8 +845,8 @@ agent.shutdown()
 ```
 
 Python exposes typed event envelopes, steering, per-turn cancellation,
-compaction, thinking and fast-mode policy, `spawn`, `fork`, `fork_from`,
-snapshots, and resume. Start with the [Python guide](py/bindings/README.md) and
+compaction, thinking and fast-mode policy, `spawn`, `fork` (latest, at a
+completed turn, or at a checkpoint), portable `SessionCheckpoint`s, and resume. Start with the [Python guide](py/bindings/README.md) and
 the runnable [`examples/python`](examples/python) consumers.
 
 ## Web search and a real browser agent

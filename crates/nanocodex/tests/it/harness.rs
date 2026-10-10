@@ -2,10 +2,11 @@
 //! builders, Code Mode, registry admission, eviction and routing run normally.
 use axum::{Json, Router, routing::post};
 use nanocodex::{
-    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model, Nanocodex, NanocodexError,
-    OpenAi, ReasoningMode, Thinking,
+    Claude, ClaudeModel, DurableAgentExt as _, Harness, HarnessFamily, HarnessModel, Model,
+    Mutability, Nanocodex, NanocodexError, OpenAi, ReasoningMode, SessionCheckpoint, Thinking,
     agent::{AgentHandle, SpawnOptions},
     claude::{ClaudeClient, ClaudeToolReply, ClaudeTools, ToolResultContent},
+    durability::{MemoryStore, SessionRecord, SessionStore},
     oai::transport::ResponsesTransport,
     tools::{ToolContext, Tools, runtime::ToolRuntime},
 };
@@ -307,12 +308,12 @@ async fn journey() {
     );
     assert!(haiku_request["request"].get("thinking").is_none());
     assert!(haiku_request["request"].get("output_config").is_none());
-    let used_snapshot = opus.runtime_snapshot().await.unwrap();
+    let used_snapshot = opus.checkpoint().await.unwrap();
     let used_session = opus.session_id().to_owned();
     opus.shutdown().await.unwrap();
     let (restored, _events) =
         Nanocodex::builder(Claude::new(claude.clone(), ClaudeModel::Haiku45.as_str()))
-            .restore_runtime(used_snapshot)
+            .resume(used_snapshot)
             .unwrap()
             .build()
             .unwrap();
@@ -321,10 +322,9 @@ async fn journey() {
         restored.set_harness_model(ClaudeModel::Opus55.into()).await,
         Err(NanocodexError::InvalidRequest(_))
     ));
-    assert!(matches!(
-        restored.set_thinking(Thinking::None).await,
-        Err(NanocodexError::InvalidRequest(_))
-    ));
+    // Effort follows the advertised capability; the model stays locked.
+    assert_eq!(restored.capabilities().thinking, Mutability::Anytime);
+    restored.set_thinking(Thinking::None).await.unwrap();
     restored
         .prompt("claude-retained-history")
         .await
@@ -350,11 +350,11 @@ async fn journey() {
             .unwrap()
             .build()
             .unwrap();
-    let untouched_snapshot = untouched.runtime_snapshot().await.unwrap();
+    let untouched_snapshot = untouched.checkpoint().await.unwrap();
     untouched.shutdown().await.unwrap();
     let (mutable, _events) =
         Nanocodex::builder(Claude::new(claude.clone(), ClaudeModel::Haiku45.as_str()))
-            .restore_runtime(untouched_snapshot)
+            .resume(untouched_snapshot)
             .unwrap()
             .build()
             .unwrap();
@@ -436,12 +436,11 @@ async fn journey() {
                             capture(&handles, &handle);
                             Ok(registry_tools(handle, Arc::clone(&registry)))
                         });
-                    if let Some(nanocodex::agent::ChildSnapshot::Codex(snapshot)) = request.snapshot
-                    {
-                        builder = builder.session_id(snapshot.session_id.parse().unwrap());
-                        if let Some(conversation) = snapshot.conversation {
-                            builder = builder.resume(conversation);
-                        }
+                    if let Some(checkpoint) = request.checkpoint {
+                        builder = builder.resume(checkpoint)?;
+                    }
+                    if let Some(state) = request.durable_state {
+                        builder = builder.durability(state).await?;
                     }
                     builder.build()
                 }
@@ -457,7 +456,7 @@ async fn journey() {
                 let registry = Arc::clone(&registry);
                 let handles = Arc::clone(&handles);
                 recipe_calls.fetch_add(1, Ordering::SeqCst);
-                if request.snapshot.is_some() {
+                if request.checkpoint.is_some() {
                     restore_calls.fetch_add(1, Ordering::SeqCst);
                 }
                 async move {
@@ -470,8 +469,11 @@ async fn journey() {
                                 capture(&handles, &handle);
                                 Ok(claude_tools(handle, Arc::clone(&registry)))
                             });
-                    if let Some(snapshot) = request.snapshot {
-                        builder = builder.restore_runtime(snapshot)?;
+                    if let Some(checkpoint) = request.checkpoint {
+                        builder = builder.resume(checkpoint)?;
+                    }
+                    if let Some(state) = request.durable_state {
+                        builder = builder.durability(state).await?;
                     }
                     builder.build()
                 }
@@ -486,7 +488,7 @@ async fn journey() {
     let session = parent.session_id().to_owned();
     let owner = handles.lock().unwrap()[&session].clone();
     // The handle predates both updates. Omitted child defaults must be live.
-    parent.set_model(Model::Luna).await.unwrap();
+    parent.set_harness_model(Model::Luna.into()).await.unwrap();
     parent.set_thinking(Thinking::High).await.unwrap();
     assert_eq!(
         harness
@@ -646,9 +648,144 @@ async fn journey() {
         "INVALID_SELECTION family/model mismatch and unsupported effort rejected before recipes"
     );
 
+    // A host reopens a serialized root checkpoint of either family through the
+    // same router: identity, model and committed history survive.
+    for model in [
+        HarnessModel::Codex(Model::Sol),
+        HarnessModel::Claude(ClaudeModel::Sonnet55),
+    ] {
+        let (root, _events) = harness.start(model).await.unwrap();
+        let first = root
+            .prompt("Remember cobalt-resume for the resumed session.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let saved = first.checkpoint().unwrap().to_json().unwrap();
+        let session_id = root.session_id().to_owned();
+        root.shutdown().await.unwrap();
+        let checkpoint = SessionCheckpoint::from_json(&saved).unwrap();
+        assert_eq!(checkpoint.turn_id(), first.turn_id());
+        assert_eq!(checkpoint.model(), model);
+        let (resumed, _events) = harness.resume(checkpoint).await.unwrap();
+        assert_eq!(resumed.session_id(), session_id);
+        assert_eq!(resumed.harness_family(), model.family());
+        resumed
+            .prompt("Recall cobalt-resume after resuming.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let recall = transcript
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|frame| {
+                frame["request"]
+                    .to_string()
+                    .contains("Recall cobalt-resume after resuming.")
+            })
+            .unwrap()
+            .clone();
+        assert!(
+            recall["request"]
+                .to_string()
+                .contains("Remember cobalt-resume"),
+            "{model} resume must replay committed history"
+        );
+        resumed.shutdown().await.unwrap();
+    }
+    let mut foreign = serde_json::to_value(
+        SessionCheckpoint::from_json(&parent.checkpoint().await.unwrap().to_json().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    foreign["format"] = json!("nanocodex-session-checkpoint/0");
+    assert!(matches!(
+        SessionCheckpoint::from_json(&foreign.to_string()),
+        Err(NanocodexError::InvalidCheckpoint(_))
+    ));
+    println!("ROOT_RESUME Codex and Claude roots resumed from JSON checkpoints with history");
+
+    // A host creates catalog entries and reopens them by ID through the same
+    // router, whatever their family: the reopened session owns its durable
+    // state and keeps identity, model and committed history.
+    let store = SessionStore::new(MemoryStore::new().unwrap()).unwrap();
+    for model in [
+        HarnessModel::Codex(Model::Sol),
+        HarnessModel::Claude(ClaudeModel::Sonnet55),
+    ] {
+        let session_id = nanocodex::oai::session::SessionId::new().to_string();
+        drop(
+            store
+                .session(SessionRecord::root(session_id.clone(), model, None))
+                .await
+                .unwrap(),
+        );
+        let (opened, _events) = harness.open(&store, &session_id).await.unwrap();
+        assert_eq!(opened.session_id(), session_id);
+        assert_eq!(opened.harness_family(), model.family());
+        assert_eq!(
+            opened
+                .persistence()
+                .and_then(|persistence| persistence.durable_state_id),
+            Some(session_id.clone())
+        );
+        opened
+            .prompt("Remember cobalt-open for the reopened session.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        opened.shutdown().await.unwrap();
+        let (reopened, _events) = harness.open(&store, &session_id).await.unwrap();
+        assert_eq!(reopened.session_id(), session_id);
+        reopened
+            .prompt("Recall cobalt-open after reopening.")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let recall = transcript
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|frame| {
+                frame["request"]
+                    .to_string()
+                    .contains("Recall cobalt-open after reopening.")
+            })
+            .unwrap()
+            .clone();
+        assert!(
+            recall["request"]
+                .to_string()
+                .contains("Remember cobalt-open"),
+            "{model} open must replay durable history"
+        );
+        reopened.shutdown().await.unwrap();
+        assert_eq!(store.load(&session_id).await.unwrap().turns.len(), 2);
+    }
+    assert!(matches!(
+        harness
+            .open(
+                &store,
+                &nanocodex::oai::session::SessionId::new().to_string()
+            )
+            .await,
+        Err(NanocodexError::InvalidRequest(_))
+    ));
+    println!("OPEN Codex and Claude catalog sessions reopened by ID with durable history");
+
     let snapshot = {
         let (agent, _events) = owner.spawn_with(options).await.unwrap();
-        let snapshot = agent.runtime_snapshot().await.unwrap();
+        let snapshot = agent.checkpoint().await.unwrap();
         agent.shutdown().await.unwrap();
         snapshot
     };

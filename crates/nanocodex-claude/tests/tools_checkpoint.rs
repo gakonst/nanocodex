@@ -25,8 +25,12 @@ impl CheckpointPolicy {
 // Test-only host policy. This tests the native seam, not store fencing or an
 // exactly-once service; those remain the durability crate's integration tests.
 impl ClaudeExecutionPolicy for CheckpointPolicy {
+    /// Durable state (and so session) identity: one per checkpoint file.
     fn state_id(&self) -> &str {
-        "tools-only-checkpoint"
+        self.path
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("tools-only-checkpoint")
     }
     fn admit(&self, id: String, _: Value, _: bool) -> PolicyFuture<'_, (String, Admission)> {
         Box::pin(async move { Ok((id, Admission::Execute)) })
@@ -325,5 +329,110 @@ async fn older_custom_policy_preserves_plain_steering() {
         json!({"scenario":"older-custom-policy-plain-steering","requests":transcript,"outcome":"plain steering retained; identified input not downgraded"})
     );
     agent.shutdown().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn rewound_checkpoints_branch_from_their_source_session() {
+    use nanocodex_agent::{Lineage, Origin};
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let temp = tempfile::tempdir().unwrap();
+    let policy = |name: &str| {
+        Arc::new(CheckpointPolicy {
+            path: temp.path().join(name),
+            cursors: Mutex::new(vec![]),
+        })
+    };
+    let saved = |name: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(temp.path().join(name)).unwrap()).unwrap()
+    };
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = requests.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let mut log = log.lock().unwrap();
+                log.push(body);
+                let text = format!("reply {}", log.len());
+                (
+                    [("content-type", "text/event-stream")],
+                    sse(json!({"type":"text","text":text}), "end_turn"),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(reqwest::Client::new(), endpoint, "synthetic");
+    let open = |name: &str, checkpoint: Option<Value>| {
+        Nanocodex::builder(Claude::new(client.clone(), "claude-sonnet-4-6"))
+            .max_tokens(128_000)
+            .execution_policy(policy(name), checkpoint)
+            .unwrap()
+            .build()
+            .unwrap()
+            .0
+    };
+
+    let source = open("source.json", None);
+    let source_id = source.session_id().to_owned();
+    source
+        .prompt("first")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let first = saved("source.json");
+    source
+        .prompt("second")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let latest = saved("source.json");
+    source.shutdown().await.unwrap();
+
+    // Rewinding to the first turn publishes a branch of the source session.
+    let rewound = nanocodex_claude::rewind_checkpoint(&source_id, Some(first), latest).unwrap();
+    let branch = open("branch.json", Some(rewound));
+    let branch_id = branch.session_id().to_owned();
+    assert_ne!(branch_id, source_id);
+    let expected = Lineage::new(
+        source_id.clone(),
+        Some(source_id.clone()),
+        Origin::Branch,
+        1,
+    );
+    assert_eq!(branch.session().lineage, expected);
+    // The branch continues from the selected boundary, not the later turn.
+    branch
+        .prompt("third")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    let continued = requests.lock().unwrap().last().unwrap()["messages"].to_string();
+    assert!(continued.contains("first") && continued.contains("third"));
+    assert!(!continued.contains("second"), "{continued}");
+    assert_eq!(branch.checkpoint().await.unwrap().lineage(), &expected);
+    let branch_latest = saved("branch.json");
+    branch.shutdown().await.unwrap();
+
+    // Rewinding the branch stays in the same tree, one level deeper.
+    let nested = open(
+        "nested.json",
+        Some(nanocodex_claude::rewind_checkpoint(&branch_id, None, branch_latest).unwrap()),
+    );
+    assert_eq!(
+        nested.session().lineage,
+        Lineage::new(source_id, Some(branch_id), Origin::Branch, 2)
+    );
+    nested.shutdown().await.unwrap();
     server.abort();
 }

@@ -1899,21 +1899,38 @@ async fn fast_mode_applies_per_accepted_turn_on_supported_models() {
         .await
         .unwrap();
 
-    let sonnet = agent("claude-sonnet-4-6");
-    sonnet
-        .prompt("unsupported")
+    // Explicit fast mode on a model that does not offer it fails before any
+    // request, naming the remedy, instead of silently running at standard speed.
+    let error = Nanocodex::builder(Claude::new(
+        ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        ),
+        "claude-sonnet-4-6",
+    ))
+    .fast_mode(true)
+    .build()
+    .err()
+    .expect("unsupported fast mode must be rejected")
+    .to_string();
+    assert!(
+        error.contains("Claude Sonnet 4.6 (claude-sonnet-4-6) does not support fast mode"),
+        "{error}"
+    );
+    let error = opus
+        .set_thinking(nanocodex_agent::Thinking::None)
         .await
-        .unwrap()
-        .result()
-        .await
-        .unwrap();
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("supported thinking: low, medium, high, xhigh, max"),
+        "{error}"
+    );
 
     let fast = (Some("fast".to_owned()), true);
     let standard = (None, false);
-    assert_eq!(
-        *received.lock().unwrap(),
-        [fast.clone(), fast, standard.clone(), standard]
-    );
+    assert_eq!(*received.lock().unwrap(), [fast.clone(), fast, standard]);
     server.abort();
 }
 
@@ -3425,4 +3442,61 @@ async fn progress_updates_stream_before_tools_and_preserve_private_continuation(
         std::fs::write(dir.join(format!("{model}-subscription-{subscription}.json")), serde_json::to_vec_pretty(&json!({"model":model,"subscription":subscription,"updates":updates,"progress_before_tool":true,"private_continuation_preserved":true,"events":evidence})).unwrap()).unwrap();
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn spawned_children_inherit_fast_mode_only_on_models_that_offer_it() {
+    use nanocodex_agent::{ClaudeModel, SpawnOptions};
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Records each request's model and speed field.
+    let received = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+    let requests = received.clone();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push((
+                    body["model"].as_str().unwrap_or_default().to_owned(),
+                    body["speed"].as_str().map(str::to_owned),
+                ));
+                let text = json!({"type":"text","text":"ok"});
+                (
+                    [("content-type", "text/event-stream")],
+                    stream(vec![text], "end_turn"),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = ClaudeClient::new(
+        reqwest::Client::new(),
+        format!("http://{address}/v1/messages"),
+        "synthetic",
+    );
+    let (parent, _events) = Nanocodex::builder(Claude::new(client, ClaudeModel::Opus55.as_str()))
+        .fast_mode(true)
+        .build()
+        .unwrap();
+    let child = |model: ClaudeModel| SpawnOptions::new().harness_model(model.into());
+    // A child on a model without fast mode runs at standard speed instead of
+    // failing to build; a same-model child keeps the inherited fast mode.
+    let (sonnet, _) = parent
+        .spawn_with(child(ClaudeModel::Sonnet46))
+        .await
+        .expect("a fast parent spawns a child on a model without fast mode");
+    let (opus, _) = parent.spawn_with(child(ClaudeModel::Opus55)).await.unwrap();
+    for (agent, prompt) in [(&sonnet, "sonnet child"), (&opus, "opus child")] {
+        agent.prompt(prompt).await.unwrap().result().await.unwrap();
+    }
+    assert_eq!(
+        *received.lock().unwrap(),
+        [
+            ("claude-sonnet-4-6".to_owned(), None),
+            ("claude-opus-5-5".to_owned(), Some("fast".to_owned())),
+        ]
+    );
+    server.abort();
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-#[cfg(feature = "openai")]
+#[cfg(any(feature = "openai", feature = "rollout"))]
 use std::{io, path::PathBuf};
 
 #[cfg(feature = "openai")]
@@ -141,19 +141,17 @@ pub enum NanocodexError {
     TurnCancelled,
 
     /// A fork was requested before any safe committed boundary existed.
-    #[cfg(feature = "openai")]
     #[error("the agent has no safe conversation boundary to fork")]
     ForkBeforeCompletedTurn,
 
     /// A historical result came from a different conversation lineage.
-    #[cfg(feature = "openai")]
     #[error("the completed turn belongs to a different conversation lineage")]
     CheckpointLineageMismatch,
 
-    /// A serialized session snapshot failed structural or policy validation.
-    #[cfg(feature = "openai")]
-    #[error("invalid session snapshot: {0}")]
-    InvalidSessionSnapshot(String),
+    /// A session checkpoint, or the backend-native conversation it carries,
+    /// failed structural or policy validation.
+    #[error("invalid session checkpoint: {0}")]
+    InvalidCheckpoint(String),
 
     /// A higher-layer execution policy or its host store failed.
     #[error("{layer} execution policy failed: {source}")]
@@ -191,8 +189,8 @@ pub enum NanocodexError {
         capability: &'static str,
     },
 
-    /// A context-inheriting branch was requested from an execution-policy-owned session.
-    #[cfg(feature = "openai")]
+    /// A context-inheriting branch was requested from an execution-policy-owned
+    /// session whose policy cannot persist the branch. Shared by every family.
     #[error(
         "cannot {operation} from an agent with an attached execution policy; build the branch with its own execution policy"
     )]
@@ -207,9 +205,17 @@ pub enum NanocodexError {
     ExecutionPayload(#[source] serde_json::Error),
 
     /// A policy-replayed result does not retain an in-process fork checkpoint.
-    #[cfg(feature = "openai")]
     #[error("a policy-replayed result cannot be used as an in-process fork checkpoint")]
     ReplayedCheckpointUnavailable,
+
+    /// A checkpoint produced by one harness family was given to another.
+    #[error("checkpoint belongs to the {found:?} harness, not {expected:?}")]
+    CheckpointFamilyMismatch {
+        /// Family of the receiving backend.
+        expected: crate::HarnessFamily,
+        /// Family that produced the checkpoint.
+        found: crate::HarnessFamily,
+    },
 
     /// The selected backend does not implement one lifecycle capability.
     #[error("the selected agent backend does not support {capability}")]
@@ -245,7 +251,7 @@ pub enum NanocodexError {
     TokioRuntimeUnavailable,
 
     /// Codex-compatible rollout recording could not be initialized.
-    #[cfg(feature = "openai")]
+    #[cfg(any(feature = "openai", feature = "rollout"))]
     #[error("failed to initialize a Codex rollout under {codex_home}: {source}")]
     InitializeRollout {
         /// Codex state directory selected by the caller.
@@ -256,7 +262,7 @@ pub enum NanocodexError {
     },
 
     /// A committed rollout could not be durably persisted.
-    #[cfg(feature = "openai")]
+    #[cfg(any(feature = "openai", feature = "rollout"))]
     #[error("failed to persist Codex rollout at {path}: {source}")]
     PersistRollout {
         /// Rollout file that could not be written.

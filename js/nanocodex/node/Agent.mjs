@@ -8,6 +8,7 @@ import { agentActions } from "../actions/index.mjs";
 import {
   activateHost,
   bindHostSession,
+  checkpointWorkspace,
   createAgentClient,
   createEventChannel,
   createSessionId,
@@ -87,7 +88,7 @@ export function create(options = {}) {
     filesystem,
     tools: hostTools,
     toolMode,
-    workspace: workspace ?? filesystem?.root ?? resume?.workspace,
+    workspace: workspace ?? filesystem?.root ?? checkpointWorkspace(resume),
     codeEvaluator,
     codeEffectJournal,
     onDispose: () => { releaseDefinitionHost(hostDefinitionId); void harnesses?.close(); },

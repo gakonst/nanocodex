@@ -19,7 +19,8 @@ use std::{
 
 struct Admissions {
     current: ClaudeTools,
-    cells: HashMap<String, (ClaudeTools, Option<Arc<str>>)>,
+    /// Admitted catalog, host context and conversation root of each cell.
+    cells: HashMap<String, (ClaudeTools, Option<Arc<str>>, String)>,
 }
 
 struct Catalog {
@@ -61,7 +62,7 @@ impl DynamicToolProvider for Catalog {
         input: Value,
         context: ToolContext<'_>,
     ) -> Option<ToolOutput> {
-        let (admitted, host_context) = self
+        let (admitted, host_context, root_session_id) = self
             .admissions
             .lock()
             .expect("code admission lock")
@@ -85,6 +86,7 @@ impl DynamicToolProvider for Catalog {
         let invocation = ClaudeToolInvocation {
             model: context.model().into(),
             session_id: context.session_id().into(),
+            root_session_id,
             turn_id: context.turn_id().unwrap_or(context.call_id()).into(),
             call_id: context.call_id().into(),
             instruction_revision: context.instruction_revision(),
@@ -289,7 +291,11 @@ pub(super) fn wrap(native: ClaudeTools) -> nanocodex::agent::Result<ClaudeTools>
                         admissions.current = snapshot.clone();
                         admissions.cells.insert(
                             invocation.call_id.clone(),
-                            (snapshot, invocation.host_context.clone()),
+                            (
+                                snapshot,
+                                invocation.host_context.clone(),
+                                invocation.root_session_id.clone(),
+                            ),
                         );
                     }
                     let mut progress = LiveProgress(invocation.progress.clone());

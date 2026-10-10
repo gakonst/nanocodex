@@ -114,6 +114,7 @@ pub(crate) use contract::ToolOutputBody;
 #[cfg(all(not(target_family = "wasm"), feature = "workspace-runtime"))]
 pub(crate) use contract::ToolOutputContent;
 pub use contract::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult};
+pub use nanocodex_home::SessionEnvironment;
 #[cfg(all(not(target_family = "wasm"), feature = "workspace-runtime"))]
 pub(crate) use nanocodex_oai_api::ImageDetail;
 #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]

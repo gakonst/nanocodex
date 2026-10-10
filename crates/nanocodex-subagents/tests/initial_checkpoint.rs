@@ -1,6 +1,6 @@
 #![cfg(feature = "claude")]
 
-use nanocodex_agent::Nanocodex;
+use nanocodex_agent::{Nanocodex, Origin};
 use nanocodex_claude::ClaudeTools;
 use nanocodex_claude::{Claude, ClaudeClient};
 use nanocodex_subagents::{
@@ -40,6 +40,14 @@ impl SubagentStore for RecordingStore {
             Ok(())
         })
     }
+    fn record_session<'a>(
+        &'a self,
+        root: &'a str,
+        checkpoint: nanocodex_agent::SessionCheckpoint,
+    ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
+        self.inner.record_session(root, checkpoint)
+    }
+
     fn load_record<'a>(
         &'a self,
         root: &'a str,
@@ -112,6 +120,21 @@ async fn first_claude_turn_is_recoverable_before_provider_returns() {
             }
         }
         assert!(running_restores > 0, "must restore an in-flight journal");
+        // The child is also its own durable session: distinct identity,
+        // subagent provenance under this root, resumable checkpoint.
+        let recorded = loop {
+            let ids = store.inner.sessions();
+            if !ids.is_empty() { break ids; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(recorded.len(), 1, "one child session: {recorded:?}");
+        assert_ne!(recorded[0], root, "child needs its own session ID");
+        let session = store.inner.session(&recorded[0]).unwrap();
+        session.validate().unwrap();
+        assert_eq!(session.lineage().origin, Origin::Subagent);
+        assert_eq!(session.lineage().root_session_id, root);
+        assert_eq!(session.lineage().parent_session_id.as_deref(), Some(root.as_str()));
+        assert_eq!(session.lineage().depth, 1);
         eprintln!("Claude HTTP request held open; every saved child journal restored as interrupted, with no unrecoverable children");
         registry.close(&root, child.agent_id).await.unwrap();
         parent.shutdown().await.unwrap();

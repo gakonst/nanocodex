@@ -1,4 +1,4 @@
-from nanocodex import AgentEvents, Nanocodex, SessionSnapshot, TurnResult, Usage
+from nanocodex import AgentEvents, Nanocodex, SessionCheckpoint, TurnResult, Usage
 
 
 def consume_result(result: TurnResult) -> str:
@@ -6,8 +6,13 @@ def consume_result(result: TurnResult) -> str:
     estimated = usage["estimated_cost"]
     if estimated is not None:
         _ = estimated["usd"]
-    snapshot: SessionSnapshot = result.snapshot()
-    return snapshot.to_json()
+    checkpoint: SessionCheckpoint = result.checkpoint()
+    session_id: str = checkpoint.session_id
+    family: str = checkpoint.family
+    turn_id: str | None = checkpoint.turn_id
+    has_conversation: bool = checkpoint.has_conversation
+    _ = (session_id, family, turn_id, has_conversation)
+    return checkpoint.to_json()
 
 
 def consume_events(events: AgentEvents) -> None:
@@ -30,18 +35,21 @@ def consume_events(events: AgentEvents) -> None:
 
 
 def owned_lifecycle(api_key: str, encoded: str) -> None:
-    snapshot = SessionSnapshot.from_json(encoded)
+    checkpoint = SessionCheckpoint.from_json(encoded)
     agent, events = Nanocodex(
         api_key,
         instructions="Preserve exact identifiers and run relevant tests.",
-        resume=snapshot,
+        resume=checkpoint,
     )
     turn = agent.prompt("Inspect the parser failure.")
     turn.steer("Keep the public grammar unchanged.")
     result = turn.result()
-    branch, branch_events = agent.fork_from(result)
+    branch, branch_events = agent.fork(result)
+    replay, replay_events = agent.fork(at=checkpoint)
+    latest, latest_events = agent.fork()
     _ = consume_result(result)
     consume_events(events)
-    branch.shutdown()
+    for child in (branch, replay, latest):
+        child.shutdown()
     agent.shutdown()
-    _ = branch_events
+    _ = (branch_events, replay_events, latest_events)

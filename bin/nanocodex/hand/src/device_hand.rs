@@ -248,6 +248,11 @@ fn request_os_permissions() -> Value {
     }
 }
 
+/// Latest live screen outcome of this daemon's screen supervisor, answered on
+/// permission checks so a status report reflects the running process itself.
+/// Null until the supervisor reports its first outcome.
+static SCREEN: std::sync::Mutex<Value> = std::sync::Mutex::new(Value::Null);
+
 async fn answer_permissions(
     mut stream: impl tokio::io::AsyncWrite + Unpin,
     consent: fn() -> Value,
@@ -260,9 +265,14 @@ async fn answer_permissions(
         tracing::info!(target: "nanocodex2", stage = "hand.permissions.requested", %permissions,
             "Requested OS permissions on explicit user action");
     }
-    let mut reply =
-        serde_json::to_vec(&json!({"daemon": daemon_identity(), "permissions": permissions}))
-            .unwrap_or_default();
+    let screen = SCREEN
+        .lock()
+        .map(|screen| screen.clone())
+        .unwrap_or(Value::Null);
+    let mut reply = serde_json::to_vec(
+        &json!({"daemon": daemon_identity(), "permissions": permissions, "screen": screen}),
+    )
+    .unwrap_or_default();
     reply.push(b'\n');
     let _ = stream.write_all(&reply).await;
     let _ = stream.shutdown().await;
@@ -398,12 +408,14 @@ async fn share(
             // while capture starts, repair helpers in place, and retain replacement
             // fences instead of leaving a failed screen idle until daemon restart.
             let screen_target = client.account_attachment_target()?;
-            let result = super::screen_supervisor::while_attached_observed(
+            let desktop = super::screen_native::DesktopSlot::default();
+            let result = super::screen_supervisor::while_attached_reported(
                 || {
-                    super::screen_native::NativeScreen::start(
+                    super::screen_native::NativeScreen::start_retaining(
                         &screen_target,
                         &state.machine,
                         directory,
+                        &desktop,
                     )
                 },
                 super::native_hand::run_observed(
@@ -425,9 +437,26 @@ async fn share(
                         emit(&status);
                     },
                 ),
-                |error| {
+                |report| {
+                    use super::screen_supervisor::{Report, Stop};
+                    let (state, error, reason) = match report {
+                        Report::Starting => ("starting", None, None),
+                        Report::Ready => ("ready", None, None),
+                        Report::Reconnecting => ("reconnecting", None, Some("publication_lost")),
+                        Report::Recovering => ("recovering", None, Some("capture_repair")),
+                        Report::Unavailable(error) => ("unavailable", Some(error.to_string()), None),
+                        Report::Stopped(Stop::Finished) => ("stopped", None, Some("publisher_stopped")),
+                        Report::Stopped(Stop::Shutdown) => ("stopped", None, Some("attachment_ended")),
+                    };
+                    let since_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+                    let screen = json!({"status": state, "transport": "webrtc", "error": error, "reason": reason, "since_ms": since_ms});
+                    if let Ok(mut current) = SCREEN.lock() {
+                        *current = screen.clone();
+                    }
                     let mut status = status.lock().unwrap();
-                    status["screen"] = json!({"status": if error.is_none() { "ready" } else { "unavailable" }, "transport":"webrtc", "error": error.map(ToString::to_string)});
+                    status["screen"] = screen;
                     let _ = publish(directory, &status);
                 },
             )

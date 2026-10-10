@@ -15,6 +15,7 @@ use super::{
         writer::{RolloutWriter, write_line},
     },
 };
+use crate::session::TranscriptItem;
 
 fn message(text: &str) -> ResponseItem {
     ResponseItem::message(
@@ -179,8 +180,9 @@ fn recorder(home: &Path) -> RolloutRecorder {
             cwd: Path::new("/worktree"),
             instructions: "base instructions",
             origin: RolloutOrigin {
-                kind: "root",
+                start: crate::session::SessionStart::New(crate::session::Origin::Root),
                 parent_thread_id: None,
+                root_session_id: None,
             },
             resume_history_len: None,
         },
@@ -301,9 +303,9 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
     assert_eq!(
         session.transcript(),
         [
-            RolloutTranscriptItem::User("visible prompt".to_owned()),
-            RolloutTranscriptItem::Reasoning("checking the workspace".to_owned()),
-            RolloutTranscriptItem::Assistant("visible answer".to_owned()),
+            TranscriptItem::User("visible prompt".to_owned()),
+            TranscriptItem::Reasoning("checking the workspace".to_owned()),
+            TranscriptItem::Assistant("visible answer".to_owned()),
         ]
     );
 }
@@ -343,7 +345,7 @@ fn moved_rollout_payload_preserves_tool_transcript_and_compacted_history() {
         .expect("load compacted rollout");
     assert_eq!(
         session.transcript(),
-        [RolloutTranscriptItem::Tool {
+        [TranscriptItem::Tool {
             call_id: "call-1".to_owned(),
             name: "search".to_owned(),
             arguments: "{\"query\":\"rust\"}".to_owned(),
@@ -536,7 +538,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
             "name": "exec",
             "input": "text(true);"
         })),
-        Some(RolloutTranscriptItem::Tool {
+        Some(TranscriptItem::Tool {
             call_id: "custom-1".to_owned(),
             name: "exec".to_owned(),
             arguments: "text(true);".to_owned(),
@@ -550,7 +552,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
             "name": "wait",
             "arguments": "{\"cell_id\":\"1\"}"
         })),
-        Some(RolloutTranscriptItem::Tool {
+        Some(TranscriptItem::Tool {
             call_id: "function-1".to_owned(),
             name: "wait".to_owned(),
             arguments: "{\"cell_id\":\"1\"}".to_owned(),
@@ -567,7 +569,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
                 "arguments": {"code": "return true"}
             }
         })),
-        Some(RolloutTranscriptItem::Tool {
+        Some(TranscriptItem::Tool {
             call_id: "mcp-1".to_owned(),
             name: "node_repl.js".to_owned(),
             arguments: "{\"code\":\"return true\"}".to_owned(),
@@ -581,7 +583,7 @@ fn reconstructs_custom_function_and_mcp_tool_activity() {
         "action": {"type": "search", "queries": ["Nanocodex"]}
     }))
     .expect("web search activity");
-    let RolloutTranscriptItem::Tool {
+    let TranscriptItem::Tool {
         call_id,
         name,
         arguments,
@@ -732,8 +734,9 @@ async fn legacy_resume_roots_new_children_at_the_resumed_session() {
             cwd: Path::new("/worktree"),
             instructions: "instructions",
             origin: RolloutOrigin {
-                kind: "resume",
+                start: crate::session::SessionStart::Resume,
                 parent_thread_id: None,
+                root_session_id: None,
             },
             resume_history_len: Some(0),
         },
@@ -772,8 +775,9 @@ async fn resumed_writer_repairs_a_rollout_behind_the_durable_boundary() {
             cwd: Path::new("/worktree"),
             instructions: "base instructions",
             origin: RolloutOrigin {
-                kind: "resume",
+                start: crate::session::SessionStart::Resume,
                 parent_thread_id: None,
+                root_session_id: None,
             },
             // The durable snapshot already contains `two`, but its rollout append failed.
             resume_history_len: Some(2),
@@ -853,8 +857,9 @@ async fn fork_metadata_retains_parent_identity() {
             cwd: Path::new("/worktree"),
             instructions: "base instructions",
             origin: RolloutOrigin {
-                kind: "fork",
+                start: crate::session::SessionStart::New(crate::session::Origin::Fork),
                 parent_thread_id: Some(parent),
+                root_session_id: None,
             },
             resume_history_len: None,
         },

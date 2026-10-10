@@ -118,3 +118,20 @@ test("webhook verification accepts authentic deliveries and rejects tampering, s
   await assert.rejects(Agent.verifyWebhook(signed(), "wrong-secret-".repeat(4)));
   await assert.rejects(Agent.verifyWebhook(signed(body, "1"), secret));
 });
+
+test("model settings unsupported by the managed service reject before any request, naming supported values", async () => {
+  const requests = [];
+  const options = { baseUrl: "https://managed.example", fetch: async (url, init) => { requests.push(url); return Response.json({ agent_id: id }); } };
+  const create = (settings) => Agent.create({ ...options, settings: { reasoningMode: "standard", fastMode: false, ...settings } });
+  await assert.rejects(create({ model: "claude-opus-5-5", thinking: "max" }), /claude-opus-5-5 does not support max thinking on the managed service; supported thinking: low, medium, high/);
+  await assert.rejects(create({ model: "claude-opus-5-5", thinking: "high", fastMode: true }), /does not support fast mode on the managed service/);
+  await assert.rejects(create({ model: "claude-sonnet-4-6", thinking: "low", reasoningMode: "pro" }), /does not support pro reasoning mode/);
+  await assert.rejects(create({ model: "kimi-k3", thinking: "low", fastMode: true }), /kimi-k3 does not support fast mode/);
+  await assert.rejects(create({ model: "gpt-6.1-sol", thinking: "none" }), /supported thinking: low, medium, high, xhigh, max/);
+  assert.equal(requests.length, 0, "unsupported settings must not reach the control plane");
+  const agent = await create({ model: "claude-opus-5-5", thinking: "high" });
+  assert.equal(requests.length, 1);
+  await assert.rejects(agent.settings.update({ model: "claude-sonnet-5-5", thinking: "xhigh" }), /supported thinking: low, medium, high/);
+  assert.equal(requests.length, 1, "an unsupported patch must not reach the control plane");
+});
+

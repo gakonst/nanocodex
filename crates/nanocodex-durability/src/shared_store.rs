@@ -32,6 +32,14 @@ enum Command {
         records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
+    Peek {
+        state_id: String,
+        result: oneshot::Sender<Result<crate::StoredState, StoreError>>,
+    },
+    ListStates {
+        limit: usize,
+        result: oneshot::Sender<Result<Vec<String>, StoreError>>,
+    },
 }
 
 /// Cloneable serialized access to one caller-owned store.
@@ -96,6 +104,12 @@ impl SharedStore {
                                     .await,
                             ),
                         );
+                    }
+                    Command::Peek { state_id, result } => {
+                        drop(result.send(store.peek(&state_id).await));
+                    }
+                    Command::ListStates { limit, result } => {
+                        drop(result.send(store.list_states(limit).await));
                     }
                 }
             }
@@ -181,6 +195,37 @@ impl StateStore for SharedStore {
                     records: records.to_vec(),
                     result,
                 })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn peek<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<crate::StoredState, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::Peek {
+                    state_id: state_id.to_owned(),
+                    result,
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn list_states<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::ListStates { limit, result })
                 .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?

@@ -110,14 +110,16 @@ async fn manual_compaction_before_first_prompt_reinjects_cached_context_and_pers
         .build()?;
 
     agent.compact().await?;
-    let (fork, fork_events) = agent.fork().await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::latest()).await?;
     fork.shutdown().await?;
     drop((fork, fork_events));
-    agent.flush_rollout().await?;
+    agent.flush().await?;
     let rollout_path = agent
-        .rollout()
+        .persistence()
+        .and_then(|persistence| persistence.rollout)
         .ok_or_else(|| eyre!("manual compaction rollout was not configured"))?
-        .path();
+        .path()
+        .to_path_buf();
     let lines = std::fs::read_to_string(rollout_path)?
         .lines()
         .map(serde_json::from_str::<Value>)
@@ -455,11 +457,13 @@ async fn a_later_manual_compaction_replaces_a_stuck_manual_compaction() -> Resul
     ));
     assert_eq!(calls.load(Ordering::Relaxed), 3);
 
-    agent.flush_rollout().await?;
+    agent.flush().await?;
     let rollout_path = agent
-        .rollout()
+        .persistence()
+        .and_then(|persistence| persistence.rollout)
         .ok_or_else(|| eyre!("replacement rollout was not configured"))?
-        .path();
+        .path()
+        .to_path_buf();
     let lines = std::fs::read_to_string(rollout_path)?
         .lines()
         .map(serde_json::from_str::<Value>)
@@ -836,7 +840,9 @@ async fn pre_turn_compaction_keeps_creation_time_agents_md() -> Result<()> {
 
     let snapshot = serde_json::to_value(
         second
-            .snapshot()
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
             .expect("local turns always retain a snapshot"),
     )?;
     let history = snapshot["history"]
@@ -962,7 +968,13 @@ async fn client_developer_provenance_survives_resume_and_compaction(
     agent.prompt("first request").await?.result().await?;
     agent.append_developer_message(NOTICE).await?;
     let second = agent.prompt("save this boundary").await?.result().await?;
-    let encoded = serde_json::to_vec(&second.snapshot().expect("local snapshot"))?;
+    let encoded = serde_json::to_vec(
+        &second
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
+            .expect("local snapshot"),
+    )?;
     let serialized: Value = serde_json::from_slice(&encoded)?;
     let history = serialized["history"].as_array().expect("snapshot history");
     let client_ids = [CLIENT, NOTICE].map(|text| {
@@ -1017,13 +1029,19 @@ async fn client_developer_provenance_survives_resume_and_compaction(
     };
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
         .session_id(thread_id.parse()?)
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()?;
     resumed.compact().await?;
     let final_turn = resumed.prompt("after compaction").await?.result().await?;
     assert_eq!(final_turn.final_message(), "done");
-    let final_snapshot = serde_json::to_value(final_turn.snapshot().expect("resumed snapshot"))?;
+    let final_snapshot = serde_json::to_value(
+        final_turn
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
+            .expect("resumed snapshot"),
+    )?;
     assert_eq!(
         final_snapshot["client_authored"],
         serialized["client_authored"]
@@ -1108,14 +1126,24 @@ async fn supported_reasoning_compaction_commits_new_pin_only_on_success() -> Res
         agent.prompt("first medium").await?.result().await?;
         agent.set_thinking(Thinking::High).await?;
         agent.prompt("second high").await?.result().await?;
-        let before = serde_json::to_value(agent.snapshot().await?)?;
+        let before = serde_json::to_value(
+            agent
+                .checkpoint()
+                .await
+                .map(|checkpoint| conversation(&checkpoint))?,
+        )?;
         let compact = agent.compact().await;
         if fail_compaction {
             assert!(compact.is_err(), "mock provider rejected compaction");
         } else {
             compact?;
         }
-        let after = serde_json::to_value(agent.snapshot().await?)?;
+        let after = serde_json::to_value(
+            agent
+                .checkpoint()
+                .await
+                .map(|checkpoint| conversation(&checkpoint))?,
+        )?;
         if fail_compaction {
             assert_eq!(
                 after["history"], before["history"],

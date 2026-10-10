@@ -13,23 +13,56 @@ pub(in crate::agent) struct BranchSpawner<S> {
     pub(in crate::agent) before_compaction: Option<Arc<dyn execution::BeforeCompaction>>,
     pub(in crate::agent) context_config: ContextSourceConfig,
     pub(in crate::agent) context_source: ContextSource,
-    pub(in crate::agent) depth: u32,
+    /// This session's own provenance; children derive theirs from it.
+    pub(in crate::agent) lineage: Lineage,
     pub(in crate::agent) execution: ExecutionConfig,
     pub(in crate::agent) restored_snapshot: Option<SessionSnapshot>,
     pub(in crate::agent) host_context: Option<Arc<str>>,
     pub(in crate::agent) service_factory: ServiceFactory<S>,
 }
 
+/// How a driver started and the provenance its handle reports.
 #[derive(Clone)]
 pub(in crate::agent) struct AgentOrigin {
-    pub(in crate::agent) kind: &'static str,
-    pub(in crate::agent) depth: u32,
-    pub(in crate::agent) parent_session_id: Option<Arc<str>>,
+    pub(in crate::agent) start: crate::session::SessionStart,
+    pub(in crate::agent) lineage: Lineage,
+}
+
+impl AgentOrigin {
+    pub(in crate::agent) const fn kind(&self) -> &'static str {
+        self.start.kind()
+    }
+
+    pub(in crate::agent) const fn depth(&self) -> u32 {
+        self.lineage.depth
+    }
+
+    pub(in crate::agent) fn parent_session_id(&self) -> Option<&str> {
+        self.lineage.parent_session_id.as_deref()
+    }
+
+    /// Parent recorded in rollout metadata. Roots never have one; a resumed
+    /// session keeps its persisted parent, so a reopened branch is still
+    /// mirrored as a branch of its source.
+    pub(in crate::agent) fn recorded_parent(&self) -> Option<&str> {
+        match self.start {
+            crate::session::SessionStart::New(crate::Origin::Root) => None,
+            _ => self.parent_session_id(),
+        }
+    }
 }
 
 impl<S> BranchSpawner<S> {
-    fn for_new_thread(&self, operation: &'static str) -> Result<Self> {
-        Ok(self.with_execution(self.execution.for_new_thread(operation)?))
+    fn for_new_thread(
+        &self,
+        operation: &'static str,
+        branch_policy: Option<Arc<dyn execution::ExecutionPolicy>>,
+    ) -> Result<Self> {
+        Ok(self.with_execution(self.execution.for_new_thread(
+            operation,
+            branch_policy,
+            self.child_journal.is_some(),
+        )?))
     }
 
     fn with_execution(&self, execution: ExecutionConfig) -> Self {
@@ -48,7 +81,7 @@ impl<S> BranchSpawner<S> {
             before_compaction: None,
             context_config: self.context_config.clone(),
             context_source: self.context_source.clone(),
-            depth: self.depth,
+            lineage: self.lineage.clone(),
             execution,
             restored_snapshot: None,
             host_context: self.host_context.as_ref().map(Arc::clone),
@@ -66,41 +99,64 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_fork(
         &self,
-        checkpoint: &CommittedSession,
+        point: ForkFrom,
+        latest: Option<&Arc<CommittedSession>>,
         parent_session_id: &str,
         model: Model,
         thinking: Thinking,
         service_tier: ServiceTier,
         host_context: Option<Arc<str>>,
-        side_conversation: bool,
+        origin: crate::Origin,
+        session_id: SessionId,
+        branch_policy: Option<Arc<dyn execution::ExecutionPolicy>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
-        let session_id = SessionId::new();
-        let workspace = Some(Arc::<str>::from(checkpoint.model().workspace()));
-        let mut spawner = self.for_new_thread("fork")?;
+        let mut spawner = self.for_new_thread("fork", branch_policy)?;
         spawner.context_source = spawner.context_config.build();
+        let (workspace, initial) = match point {
+            ForkFrom::Latest => {
+                let checkpoint = latest.ok_or(NanocodexError::ForkBeforeCompletedTurn)?;
+                (
+                    Arc::<str>::from(checkpoint.model().workspace()),
+                    InitialResume::Exact(Box::new(checkpoint.model().clone())),
+                )
+            }
+            ForkFrom::Live(checkpoint) => (
+                Arc::<str>::from(checkpoint.model().workspace()),
+                InitialResume::Exact(Box::new(checkpoint.model().clone())),
+            ),
+            ForkFrom::Snapshot(snapshot) => {
+                spawner.restored_snapshot = Some((*snapshot).clone());
+                let resume = snapshot.into_resume()?;
+                let resolved = spawner
+                    .context_source
+                    .resolve_workspace(Some(&resume.workspace))?;
+                if resolved != resume.workspace {
+                    return Err(NanocodexError::InvalidCheckpoint(
+                        "fork workspace no longer resolves to the stored location".into(),
+                    ));
+                }
+                spawner.prompt_cache_key = Some(Arc::clone(&resume.prompt_cache_key));
+                (
+                    Arc::<str>::from(resume.workspace.as_str()),
+                    InitialResume::from_resume(resume),
+                )
+            }
+        };
         spawner.host_context = host_context;
         let mut config = (*spawner.config).clone();
         config.model = model;
         config.thinking = thinking;
         config.service_tier = service_tier;
         spawner.config = Arc::new(config);
-        spawner.depth = self.depth.saturating_add(1);
+        spawner.lineage = Lineage::child_of(&self.lineage, parent_session_id, origin);
         let service = (spawner.service_factory)(Arc::clone(&spawner.config));
         spawn_agent_driver(
             spawner,
             session_id,
-            workspace,
+            Some(workspace),
             service,
-            Some(InitialResume::Exact(Box::new(checkpoint.model().clone()))),
-            AgentOrigin {
-                kind: if side_conversation {
-                    "side_conversation"
-                } else {
-                    "fork"
-                },
-                depth: self.depth.saturating_add(1),
-                parent_session_id: Some(Arc::from(parent_session_id)),
-            },
+            Some(initial),
+            crate::session::SessionStart::New(origin),
         )
     }
 
@@ -114,10 +170,17 @@ where
         service_tier: ServiceTier,
         stateless_http: bool,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
         let session_id_text = session_id.to_string();
-        let depth = self.depth.saturating_add(1);
+        let lineage = Lineage::child_of(&self.lineage, parent_session_id, crate::Origin::Subagent);
+        // A subagent of a durable session is durable exactly like a fork.
+        let branch_policy = parent.branch_policy(&crate::SessionInfo::new(
+            session_id_text.as_str(),
+            crate::HarnessFamily::Codex,
+            lineage.clone(),
+        ))?;
         let mut config = (*self.config).clone();
         config.model = model;
         config.thinking = thinking;
@@ -147,8 +210,12 @@ where
             before_compaction: None,
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),
-            depth,
-            execution: self.execution.for_new_thread("spawn")?,
+            lineage,
+            execution: self.execution.for_new_thread(
+                "spawn",
+                branch_policy,
+                self.child_journal.is_some(),
+            )?,
             restored_snapshot: None,
             host_context,
             service_factory: Arc::clone(&self.service_factory),
@@ -160,32 +227,41 @@ where
             workspace,
             service,
             None,
-            AgentOrigin {
-                kind: "spawn",
-                depth,
-                parent_session_id: Some(Arc::from(parent_session_id)),
-            },
+            crate::session::SessionStart::New(crate::Origin::Subagent),
         )
     }
 
     pub(super) fn restore_child(
         &self,
-        snapshot: ChildRuntimeSnapshot,
+        snapshot: ChildState,
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<(Nanocodex, AgentEvents)> {
         snapshot.validate()?;
         let session_id = snapshot.session_id.parse::<SessionId>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid child session ID: {error}"))
+            NanocodexError::InvalidCheckpoint(format!("invalid child session ID: {error}"))
         })?;
-        // Rehydrate an in-memory idle child without inheriting the parent's policy.
-        let mut spawner = self.with_execution(self.execution.for_new_thread("restore")?);
+        // The restoring runtime is the parent; the child keeps how it was created.
+        let origin = match snapshot.lineage.origin {
+            crate::Origin::Root => crate::Origin::Subagent,
+            origin => origin,
+        };
+        let lineage = Lineage::child_of(&self.lineage, parent_session_id, origin);
+        // Rehydrate an evicted child under its own branch policy, which reopens
+        // the durable state and rollout it recorded under the same session ID.
+        let branch_policy = parent.branch_policy(&crate::SessionInfo::new(
+            snapshot.session_id.as_str(),
+            crate::HarnessFamily::Codex,
+            lineage.clone(),
+        ))?;
+        let mut spawner = self.for_new_thread("restore", branch_policy)?;
         spawner.restored_snapshot = snapshot.conversation.clone();
-        spawner.depth = self.depth.saturating_add(1);
+        spawner.lineage = lineage;
         spawner.context_source = spawner.context_config.build();
         spawner.host_context = host_context;
-        spawner.lineage_id = Arc::from(snapshot.session_id);
+        spawner.lineage_id = Arc::clone(&snapshot.conversation_id);
         let mut config = (*spawner.config).clone();
         config.model = snapshot.model;
         config.thinking = snapshot.thinking;
@@ -210,7 +286,7 @@ where
         if let Some(workspace) = &workspace {
             let resolved = spawner.context_source.resolve_workspace(Some(workspace))?;
             if resolved != workspace.as_ref() {
-                return Err(NanocodexError::InvalidSessionSnapshot(
+                return Err(NanocodexError::InvalidCheckpoint(
                     "child workspace no longer resolves to the stored location".into(),
                 ));
             }
@@ -221,21 +297,7 @@ where
                 let resume = conversation.into_resume()?;
                 spawner.lineage_id = Arc::clone(&resume.lineage_id);
                 spawner.prompt_cache_key = Some(Arc::clone(&resume.prompt_cache_key));
-                Ok(resume.checkpoint.map_or_else(
-                    || {
-                        InitialResume::History(Box::new(HistoryCheckpoint {
-                            workspace: resume.workspace,
-                            provider_session_id: resume.lineage_id,
-                            canonical_context: resume.canonical_context,
-                            history: resume.history,
-                            client_authored: resume.client_authored,
-                            prompt_cache_key: resume.prompt_cache_key,
-                            context_baseline: resume.context_baseline,
-                            reasoning: resume.reasoning,
-                        }))
-                    },
-                    |checkpoint| InitialResume::Exact(Box::new(checkpoint)),
-                ))
+                Ok(InitialResume::from_resume(resume))
             })
             .transpose()?;
         let service = (spawner.service_factory)(Arc::clone(&spawner.config));
@@ -245,14 +307,11 @@ where
             workspace,
             service,
             initial,
-            AgentOrigin {
-                kind: "restore",
-                depth: self.depth.saturating_add(1),
-                parent_session_id: Some(Arc::from(parent_session_id)),
-            },
+            crate::session::SessionStart::Restore,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_clean_many(
         &self,
         workspace: Option<Arc<str>>,
@@ -261,6 +320,7 @@ where
         count: usize,
         observer: Option<&SpawnObserver>,
         host_context: Option<Arc<str>>,
+        parent: &execution::Execution,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         let mut children = Vec::with_capacity(count);
         for _ in 0..count {
@@ -275,11 +335,17 @@ where
                     .as_ref()
                     .or(self.host_context.as_ref())
                     .map(Arc::clone),
+                parent,
             )?;
-            if let Some(observer) = observer {
-                observer(child.0.session_id());
-            }
             children.push(child);
+        }
+        // All or nothing: a failure above drops every created child, whose
+        // driver then stops before any turn recorded durable state or a
+        // rollout. Observers see only a batch that started completely.
+        if let Some(observer) = observer {
+            for (child, _) in &children {
+                observer(child.session_id());
+            }
         }
         Ok(children)
     }

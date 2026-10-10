@@ -68,9 +68,9 @@ for (const provider of ["openrouter", "vercel"]) test(`${provider}: compact, con
   const result = await f.agent.turn.prompt({ input: "Report the check count without rerunning." }).result();
   assert.match(result.finalMessage, /42 checks passed/);
   assert.ok(f.requests.at(-1).messages.some(message => message.role === "assistant" && message.content?.includes(summary)));
-  const snapshot = await result.snapshot();
+  const checkpoint = await result.checkpoint();
   await f.agent.session.shutdown();
-  const resumed = await f.open(JSON.parse(JSON.stringify(snapshot)));
+  const resumed = await f.open(JSON.parse(JSON.stringify(checkpoint)));
   await resumed.session.compact();
   assert.ok(f.requests.at(-1).messages.some(message => message.content?.includes(summary)), "a second compaction sees the prior summary");
   assert.match((await resumed.turn.prompt({ input: "Continue reporting the preserved result." }).result()).finalMessage, /42/);

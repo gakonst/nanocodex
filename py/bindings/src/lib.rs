@@ -1,8 +1,8 @@
 mod agent;
+mod checkpoint;
 mod error;
 mod events;
 mod runtime;
-mod snapshot;
 mod turn;
 mod usage;
 
@@ -14,8 +14,8 @@ use pyo3::{
 
 use self::{
     agent::Nanocodex,
+    checkpoint::SessionCheckpoint,
     events::{AgentEvent, AgentEvents},
-    snapshot::SessionSnapshot,
     turn::{Turn, TurnResult},
 };
 
@@ -27,6 +27,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<TurnResult>()?;
     module.add_class::<AgentEvent>()?;
     module.add_class::<AgentEvents>()?;
-    module.add_class::<SessionSnapshot>()?;
+    module.add_class::<SessionCheckpoint>()?;
     Ok(())
 }

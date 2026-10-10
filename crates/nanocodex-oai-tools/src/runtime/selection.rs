@@ -14,9 +14,6 @@ use serde_json::Value;
 #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
 use std::ffi::OsString;
 
-#[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
-pub(crate) const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
-
 /// Nanocodex's model-visible tool exposure policy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ToolExposure {
@@ -60,6 +57,15 @@ pub(crate) struct RegisteredTool {
 pub trait DynamicToolProvider: Send + Sync {
     /// Starts background discovery or connection work. Implementations must be idempotent.
     fn start(&self);
+
+    /// Receives the identity of the session about to start this provider.
+    ///
+    /// Called before [`Self::start`] whenever the starting tool selection is
+    /// bound with [`Tools::for_session`](crate::Tools::for_session).
+    /// Providers that launch processes export it to them (see
+    /// [`crate::SessionEnvironment`]); a provider shared by several sessions
+    /// keeps the first identity it receives.
+    fn bind_session(&self, _session: &crate::SessionEnvironment) {}
 
     /// Returns the provider's always-visible tools, such as `tool_search`.
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>>;
@@ -181,6 +187,8 @@ pub struct Tools {
     pub(super) default_shell: Option<Arc<str>>,
     #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
     process_environment: Arc<Vec<(OsString, OsString)>>,
+    #[cfg(not(target_family = "wasm"))]
+    session: Option<crate::SessionEnvironment>,
     #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
     remote_http_client: Option<reqwest::Client>,
     pub(crate) registered: Vec<RegisteredTool>,
@@ -213,6 +221,8 @@ impl Default for Tools {
             default_shell: None,
             #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
             process_environment: Arc::new(Vec::new()),
+            #[cfg(not(target_family = "wasm"))]
+            session: None,
             #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
             remote_http_client: None,
             registered: Vec::new(),
@@ -346,16 +356,31 @@ impl Tools {
 
     /// Returns this tool selection bound to one agent session.
     ///
-    /// An embedded execution host receives the session ID directly. Native
-    /// workspace commands additionally receive it through `CODEX_THREAD_ID`.
-    /// This binding does not mutate other clones of the tool selection.
+    /// An embedded execution host receives the session ID directly. Every
+    /// native tool subprocess (shell and `exec_command` sessions, Code Mode
+    /// commands, and MCP stdio servers started by this selection) receives the
+    /// session's [`SessionEnvironment`](crate::SessionEnvironment) variables,
+    /// overriding same-named caller or ambient values. This binding does not
+    /// mutate other clones of the tool selection.
     #[must_use]
     #[cfg(feature = "code-mode")]
-    pub fn for_session(mut self, session_id: &str) -> Self {
-        self.embedded_session_id = Some(Arc::from(session_id));
+    pub fn for_session(mut self, session: &crate::SessionEnvironment) -> Self {
+        self.embedded_session_id = Some(Arc::from(session.session_id()));
         #[cfg(not(target_family = "wasm"))]
-        self.insert_process_environment(CODEX_THREAD_ID_ENV_VAR.into(), session_id.into());
+        {
+            for (name, value) in session.os_variables() {
+                self.insert_process_environment(name, value);
+            }
+            self.session = Some(session.clone());
+        }
         self
+    }
+
+    /// Returns the session this selection is bound to, if any.
+    #[must_use]
+    #[cfg(not(target_family = "wasm"))]
+    pub const fn session(&self) -> Option<&crate::SessionEnvironment> {
+        self.session.as_ref()
     }
 
     #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
@@ -380,6 +405,9 @@ impl Tools {
     #[cfg(not(target_family = "wasm"))]
     pub fn start_providers(&self) {
         for provider in &self.providers {
+            if let Some(session) = &self.session {
+                provider.bind_session(session);
+            }
             provider.start();
         }
     }

@@ -29,6 +29,7 @@ mod hand_menu_status;
 mod hand_registry;
 mod hand_service;
 mod hand_setup;
+mod homes;
 mod install;
 #[cfg(target_os = "linux")]
 mod linux_hand_service;
@@ -43,11 +44,11 @@ mod nanocodex2;
 #[cfg(feature = "tui-bench")]
 #[doc(hidden)]
 pub use nanocodex2::tui::bench::tui_benches;
-mod native_sessions;
 mod observability;
 mod rewind;
 mod rollout_fork;
 mod run;
+mod sessions;
 mod setup;
 mod subagents;
 mod tool_calls;
@@ -170,10 +171,12 @@ enum Command {
     Run(Box<RunCommand>),
     /// Run a loopback-only managed-agent durability test server.
     ManagedServer(managed_server::ManagedServer),
-    /// Resume a saved session in the selected harness in the interactive TUI.
+    /// Resume a saved session of any harness in the interactive TUI.
     Resume(Box<ResumeCommand>),
-    /// Preview or restore native Claude file checkpoints.
-    Rewind(RewindCommand),
+    /// Branch a saved session at an earlier turn, or restore its file checkpoints.
+    Rewind(rewind::Rewind),
+    /// Show the Codex and Claude homes and preview or create their shared links.
+    Homes(homes::Homes),
     /// Install, cache, or switch CLI builds.
     Update(update::Update),
 }
@@ -194,37 +197,24 @@ struct RunCommand {
 }
 
 #[derive(Args)]
-struct RewindCommand {
-    #[arg(value_parser = NonEmptyStringValueParser::new())]
-    session: String,
-    /// Turn ID from the checkpoint preview.
-    #[arg(long, value_parser = NonEmptyStringValueParser::new())]
-    checkpoint: Option<String>,
-    /// Restore the selected checkpoint and later native file edits.
-    #[arg(long)]
-    restore: bool,
-    /// Restore files, branch the conversation, or do both.
-    #[arg(long, default_value = "files", value_parser = ["files", "conversation", "files-and-conversation"])]
-    mode: String,
-}
-
-#[derive(Args)]
 struct ResumeCommand {
-    /// Session ID to resume. Omit it to select from the selected harness’s sessions.
+    /// Session ID to resume. Omit it to choose from the saved sessions of every
+    /// harness; the session continues in the harness that recorded it.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
-    thread_id: Option<String>,
+    session: Option<String>,
 
-    /// Start a new Codex thread from this rollout file instead of a saved thread.
+    /// Start a new Codex thread from this rollout file instead of a saved session.
     ///
     /// The file is copied, never changed. The new thread's workspace is
     /// `--cwd`, or the current directory, so rollouts recorded elsewhere work.
-    #[arg(long, value_name = "ROLLOUT", conflicts_with = "thread_id")]
+    #[arg(long, value_name = "ROLLOUT", conflicts_with = "session")]
     from: Option<PathBuf>,
 
     /// Start from this point: a turn ID, or a completed-turn number from 1.
     ///
-    /// Forks the thread or `--from` rollout as a new Codex thread whose history
-    /// ends after that turn. The original thread and file are not changed.
+    /// Branches the session (in the harness that recorded it) or the `--from`
+    /// rollout (as a new Codex thread) into a new session whose history ends
+    /// after that turn. The original session and file are not changed.
     #[arg(long, value_name = "TURN", value_parser = NonEmptyStringValueParser::new())]
     at: Option<String>,
 
@@ -501,7 +491,12 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 async fn run(cli: Cli) -> Result<()> {
     // Interactive startup owns maintenance after its first editable frame.
     let observation = matches!(&cli.command, Some(Command::Hand(hand)) if hand.is_observation());
-    if !observation && !matches!(&cli.command, None | Some(Command::Resume(_))) {
+    if !observation
+        && !matches!(
+            &cli.command,
+            None | Some(Command::Resume(_) | Command::Homes(_))
+        )
+    {
         if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
             eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
         }
@@ -547,134 +542,62 @@ async fn run(cli: Cli) -> Result<()> {
             command.run.run(command.agent, command.vm).await
         }
         Some(Command::ManagedServer(command)) => command.run().await,
-        Some(Command::Rewind(command)) => {
-            rewind::run(
-                &command.session,
-                command.checkpoint.as_deref(),
-                command.restore,
-                &command.mode,
-            )
-            .await
-        }
-        Some(Command::Resume(mut command)) => {
+        Some(Command::Rewind(command)) => command.run().await,
+        Some(Command::Homes(command)) => command.run(),
+        Some(Command::Resume(command)) => {
+            let command = *command;
             let _observability = command.observability.install(true)?;
-            use nanocodex::HarnessFamily;
-            use nanocodex2::tui::local::{agent::LocalLaunch, sessions};
+            use nanocodex2::tui::local::{agent::LocalLaunch, sessions as local_sessions};
             let codex_home = config::default_codex_home()?;
-            let forking = command.from.is_some() || command.at.is_some();
-            if forking {
-                // Rollout files and turn points belong to Codex threads.
-                command.agent.resume_with_harness(HarnessFamily::Codex);
-            }
-            let explicit = command.agent.has_explicit_harness();
-            let mut thread_id = command.thread_id.take();
-            if thread_id.is_none() && !forking {
-                // One picker over Codex threads and Claude sessions, newest first;
-                // an explicit harness narrows it to that store.
-                let family = if explicit {
-                    Some(command.agent.selected_harness()?)
-                } else {
-                    None
-                };
-                let candidates = sessions::discover(&codex_home)?
+            let explicit = if command.agent.has_explicit_harness() {
+                Some(command.agent.selected_harness()?)
+            } else {
+                None
+            };
+            let id = if command.from.is_some() || command.at.is_some() {
+                resume_point(
+                    &codex_home,
+                    command.session,
+                    command.from,
+                    command.at.as_deref(),
+                    &command.agent,
+                    explicit,
+                )
+                .await?
+            } else if let Some(id) = command.session {
+                id
+            } else {
+                // One picker over the saved sessions of every harness, newest
+                // first; an explicit harness narrows it to that family.
+                let candidates = local_sessions::discover(&codex_home)
+                    .await?
                     .into_iter()
                     .filter(|session| {
-                        family.is_none_or(|family| {
-                            (family == HarnessFamily::Claude)
-                                == (session.harness == sessions::Harness::Claude)
+                        explicit.is_none_or(|family| {
+                            local_sessions::Harness::from(family) == session.harness
                         })
                     })
                     .collect::<Vec<_>>();
                 if candidates.is_empty() {
-                    return Err(sessions::none_found(&codex_home));
+                    return Err(local_sessions::none_found(&codex_home));
                 }
-                let Some(selected) = sessions::select(&candidates).await? else {
+                let Some(selected) = local_sessions::select(&candidates).await? else {
                     return Ok(());
                 };
-                if !explicit {
-                    command.agent.resume_with_harness(match selected.harness {
-                        sessions::Harness::Claude => HarnessFamily::Claude,
-                        sessions::Harness::Codex => HarnessFamily::Codex,
-                    });
-                }
-                thread_id = Some(selected.id);
-            } else if !explicit {
-                // A defaulted resume opens the store that owns the requested thread.
-                let claude = thread_id
-                    .as_deref()
-                    .is_some_and(|id| native_sessions::load(&codex_home, id).is_ok());
-                command.agent.resume_with_harness(if claude {
-                    HarnessFamily::Claude
-                } else {
-                    HarnessFamily::Codex
-                });
-            }
-            let mut launch = if command.agent.selected_harness()? == HarnessFamily::Claude {
-                if forking {
-                    return Err(eyre!(
-                        "--from and --at start Codex threads; use `nanocodex rewind` for Claude"
-                    ));
-                }
-                let id = thread_id.ok_or_else(|| eyre!("a Claude session ID is required"))?;
-                let session = native_sessions::load(&codex_home, &id)?;
-                LocalLaunch {
-                    args: command.agent.resume_claude(session)?,
-                    vm: command.vm,
-                    replaceable: false,
-                    initial_prompt: command.prompt,
-                    initial_instruction: None,
-                    resume: None,
-                }
-            } else {
-                let rollouts = RolloutConfig::new(&codex_home);
-                let source = match (command.from, &thread_id) {
-                    (Some(path), _) => Some(path),
-                    (None, Some(thread_id)) if command.at.is_some() => Some(
-                        rollouts
-                            .load_session(thread_id)
-                            .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?
-                            .rollout_path()
-                            .to_path_buf(),
-                    ),
-                    (None, None) if command.at.is_some() => {
-                        return Err(eyre!("--at needs a thread ID or --from"));
-                    }
-                    _ => None,
-                };
-                let thread_id = match (source, thread_id) {
-                    (Some(source), _) => {
-                        let workspace = match command.agent.requested_workspace() {
-                            Some(path) => path.to_path_buf(),
-                            None => std::env::current_dir()?,
-                        }
-                        .canonicalize()
-                        .wrap_err("failed to resolve the new thread's workspace")?;
-                        let point = rollout_fork::Point::parse(command.at.as_deref())?;
-                        let thread_id =
-                            rollout_fork::fork(&source, &point, &codex_home, &workspace)?;
-                        eprintln!(
-                            "Started Codex thread {thread_id} from {}.",
-                            source.display()
-                        );
-                        thread_id
-                    }
-                    (None, Some(thread_id)) => thread_id,
-                    (None, None) => return Err(eyre!("--at needs a thread ID or --from")),
-                };
-                // Fail before entering the terminal when the thread cannot load.
-                rollouts
-                    .load_session(&thread_id)
-                    .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?;
-                LocalLaunch {
-                    args: command.agent,
-                    vm: command.vm,
-                    replaceable: false,
-                    initial_prompt: command.prompt,
-                    initial_instruction: None,
-                    resume: Some(sessions::Resume::Codex(thread_id)),
-                }
+                selected.id
+            };
+            // Fail before entering the terminal when the session cannot load.
+            let session = sessions::load(&codex_home, &id).await?;
+            let mut launch = LocalLaunch {
+                args: command.agent.resume(session)?,
+                vm: command.vm,
+                replaceable: false,
+                initial_prompt: command.prompt,
+                initial_instruction: None,
+                resume: None,
             };
             launch.args.prefer_codex_for_vm(&launch.vm);
+            launch.args.validate_model_settings()?;
             nanocodex2::tui::run_local(launch)
                 .await
                 .map_err(|error| eyre!("{error}"))
@@ -684,7 +607,9 @@ async fn run(cli: Cli) -> Result<()> {
             let _observability = cli.observability.install(true)?;
             let mut agent = cli.agent;
             agent.prefer_codex_for_vm(&cli.vm);
-            let replaceable = agent.claude_resume.is_none();
+            // Explicit unsupported model settings fail before the terminal starts.
+            agent.validate_model_settings()?;
+            let replaceable = agent.resumed().is_none();
             nanocodex2::tui::run_local(nanocodex2::tui::local::agent::LocalLaunch {
                 args: agent,
                 vm: cli.vm,
@@ -697,6 +622,86 @@ async fn run(cli: Cli) -> Result<()> {
             .map_err(|error| eyre!("{error}"))
         }
     }
+}
+
+/// `resume --from ROLLOUT` / `resume ID --at TURN`: starts a new session from a
+/// saved point and returns its ID; the source is never changed.
+///
+/// A durable session of either harness branches through the session catalog in
+/// its own family. A rollout file, or a rollout-only Codex thread, is copied as
+/// a new Codex thread.
+async fn resume_point(
+    codex_home: &Path,
+    session: Option<String>,
+    from: Option<PathBuf>,
+    at: Option<&str>,
+    agent: &AgentArgs,
+    explicit: Option<nanocodex::HarnessFamily>,
+) -> Result<String> {
+    let point = rollout_fork::Point::parse(at)?;
+    if let Some(id) = session.as_deref()
+        && from.is_none()
+        && let Ok((store, turns)) = sessions::turns(codex_home, id).await
+    {
+        let at = match &point {
+            rollout_fork::Point::End => nanocodex_durability::BranchPoint::Latest,
+            rollout_fork::Point::Turn(turn) => {
+                nanocodex_durability::BranchPoint::Through(turn.clone())
+            }
+            rollout_fork::Point::Count(count) => {
+                let turn = count
+                    .checked_sub(1)
+                    .and_then(|index| turns.get(index))
+                    .ok_or_else(|| {
+                        eyre!(
+                            "session {id} has {} turns; --at {count} is out of range",
+                            turns.len()
+                        )
+                    })?;
+                nanocodex_durability::BranchPoint::Through(turn.id.clone())
+            }
+        };
+        let workspace = agent
+            .requested_workspace()
+            .map(Path::canonicalize)
+            .transpose()
+            .wrap_err("failed to resolve the new session's workspace")?;
+        let branched = sessions::branch(&store, id, at, workspace).await?;
+        eprintln!(
+            "Started {} session {} from {id}.",
+            branched.family(),
+            branched.id()
+        );
+        return Ok(branched.id().to_owned());
+    }
+    // Rollout files and rollout-only threads are Codex history.
+    if explicit == Some(nanocodex::HarnessFamily::Claude) {
+        return Err(eyre!(
+            "--from copies a Codex rollout into a new Codex thread and cannot start a Claude \
+             session; branch a stored Claude session with nanocodex resume ID --at TURN"
+        ));
+    }
+    let source = match (from, session) {
+        (Some(path), _) => path,
+        (None, Some(id)) => RolloutConfig::new(codex_home)
+            .load_session(&id)
+            .wrap_err_with(|| format!("unknown session {id}"))?
+            .rollout_path()
+            .to_path_buf(),
+        (None, None) => return Err(eyre!("--at needs a session ID or --from")),
+    };
+    let workspace = match agent.requested_workspace() {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir()?,
+    }
+    .canonicalize()
+    .wrap_err("failed to resolve the new thread's workspace")?;
+    let thread_id = rollout_fork::fork(&source, &point, codex_home, &workspace)?;
+    eprintln!(
+        "Started Codex thread {thread_id} from {}.",
+        source.display()
+    );
+    Ok(thread_id)
 }
 
 #[cfg(test)]
@@ -1102,7 +1107,7 @@ mod tests {
             panic!("resume command was not parsed");
         };
         assert_eq!(
-            command.thread_id.as_deref(),
+            command.session.as_deref(),
             Some("019c0d31-c308-7d91-bff4-5dca82d15ac6")
         );
         assert_eq!(command.prompt.as_deref(), Some("continue"));
@@ -1117,6 +1122,6 @@ mod tests {
         let Some(Command::Resume(command)) = cli.command else {
             panic!("resume command was not parsed");
         };
-        assert!(command.thread_id.is_none());
+        assert!(command.session.is_none());
     }
 }

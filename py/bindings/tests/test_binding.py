@@ -3,7 +3,7 @@ import unittest
 
 from nanocodex import (
     Nanocodex,
-    SessionSnapshot,
+    SessionCheckpoint,
     TurnResult,
 )
 
@@ -64,20 +64,20 @@ class BindingTests(unittest.TestCase):
         agent.shutdown()
         drain(events)
 
-    def test_fork_from_requires_a_typed_result(self) -> None:
+    def test_fork_requires_a_typed_boundary(self) -> None:
         agent, events = Nanocodex("test-key", thinking="low")
         turn = agent.prompt("incomplete")
         with self.assertRaises(TypeError):
-            agent.fork_from(turn)
+            agent.fork(turn)  # type: ignore[arg-type]
         turn.cancel()
         with self.assertRaises(RuntimeError):
             turn.result()
         agent.shutdown()
         drain(events)
 
-    def test_snapshot_rejects_invalid_json(self) -> None:
+    def test_checkpoint_rejects_invalid_json(self) -> None:
         with self.assertRaises(ValueError):
-            SessionSnapshot.from_json('{"version": 1}')
+            SessionCheckpoint.from_json('{"version": 1}')
 
     @unittest.skipUnless(
         os.environ.get("OPENAI_API_KEY"), "live API key not configured"

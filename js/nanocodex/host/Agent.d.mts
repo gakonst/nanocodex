@@ -21,7 +21,6 @@ type ToolExposureOptions = {
 };
 
 /** Creates Rust/WASM in the current Web API host isolate. */
-export function create(options: import('../runtime/claude.mjs').Options & { harness: 'claude' }): Promise<import('../runtime/claude.mjs').Agent>;
 export function create(options: create.ManagedOptions): Promise<AgentLifecycle>;
 export function create(options?: create.Options): Promise<create.ReturnType>;
 export declare namespace create {
@@ -29,7 +28,8 @@ export declare namespace create {
     transport: ManagedTransport;
     tools?: Tools | undefined;
   }>;
-  type Options = AgentOptions & ToolExposureOptions & {
+  /** Codex (OpenAI Responses) harness options. */
+  type CodexOptions = AgentOptions & ToolExposureOptions & {
     /** Caller-owned persistent filesystem mounted through standard workspace tools. */
     filesystem?: Workspace | undefined;
     /** Disable the legacy list/read/write workspace functions when a shell owns filesystem access. */
@@ -52,9 +52,13 @@ export declare namespace create {
     | {
       durability: DurabilityStore;
       durabilityId: string;
-      /** The root remains durable; all subagent children are ephemeral. */
+      /** The root remains durable, and so is every fork, side conversation and subagent: each reports its own `session.persistence()`. */
       tools?: ToolConfiguration<SubagentTool> | undefined;
     }
   );
+  /** Claude (Messages) harness options; see docs/CLAUDE_JAVASCRIPT.md. */
+  type ClaudeOptions = import('../runtime/claude.mjs').Options & { harness: 'claude' };
+  /** Options of either harness family, discriminated by `harness`; both return the same Agent. */
+  type Options = CodexOptions | ClaudeOptions;
   type ReturnType = Agent;
 }

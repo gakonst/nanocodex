@@ -6,6 +6,6 @@ export function create(options) {
   return createClaude(options, async (module) => {
     const wasm = await import('../pkg-web/nanocodex.js');
     await initializeBrowserEngine({ module });
-    return wasm.Nanoclaude;
+    return wasm.Nanocodex;
   }, 'browser');
 }

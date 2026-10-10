@@ -102,16 +102,14 @@ export function prepareTransport(agent) {
   return transportPreparations.get(agent)?.() ?? false;
 }
 
-/** Copies the latest safe committed boundary as a resumable SessionSnapshot. */
+/** Copies the latest safe committed boundary as a portable SessionCheckpoint. */
 export function checkpoint(agent) {
   return checkpointAgent(agent);
 }
 
 /** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
 export function route(agent, options) {
-  // Prefer the agent's own routed-turn wrapper (Claude retains host routes
-  // until its terminal receipt); Codex agents expose the same internal seam.
-  return typeof agent?.turn?.route === "function" ? agent.turn.route(options) : routePrompt(agent, options);
+  return routePrompt(agent, options);
 }
 
 /** Removes the package-owned durable history for one Cloudflare Agent. */
@@ -129,10 +127,11 @@ export function destroy(owner) {
   initializeAgentStorage(storage);
   const stateId = storedStateId(storage) ?? legacyStateId(storage);
   storage.transactionSync(() => {
-    if (stateId !== undefined) {
+    // The root conversation and its durable subagent task-tree journal.
+    for (const id of stateId === undefined ? [] : [stateId, `${stateId}:subagents`]) {
       const retained = storage.sql.exec(
         "SELECT fence FROM nanocodex_durable_owners WHERE state_id = ?",
-        stateId,
+        id,
       ).toArray();
       const fence = durabilityRevision(
         BigInt(durabilityRevision(retained[0]?.fence ?? "0")) + 1n,
@@ -140,23 +139,35 @@ export function destroy(owner) {
       storage.sql.exec(
         `INSERT INTO nanocodex_durable_owners (state_id, owner_id, fence) VALUES (?, ?, ?)
          ON CONFLICT (state_id) DO UPDATE SET owner_id = excluded.owner_id, fence = excluded.fence`,
-        stateId,
+        id,
         `destroy:${globalThis.crypto.randomUUID()}`,
         fence,
       );
-      // The durable child task-tree journal is a sibling state of the root
-      // (see nanocodex-durability child_journal); destroy removes both.
-      for (const id of [stateId, `${stateId}:subagents`]) {
-        storage.sql.exec("DELETE FROM nanocodex_durable_records WHERE state_id = ?", id);
-        storage.sql.exec("DELETE FROM nanocodex_durable_states WHERE state_id = ?", id);
-      }
+      storage.sql.exec(
+        "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
+        id,
+      );
+      storage.sql.exec(
+        "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
+        id,
+      );
     }
     storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_fork_resume");
     clearCloudflareEventSocket(context);
   });
 }
 
-/** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
+/** The durable root's task-tree journal is a companion state of its root. */
+function subagentsStateId(stateId) {
+  return `${stateId}:subagents`;
+}
+
+/**
+ * Fences and exports this inactive Cloudflare Agent's provider-neutral state.
+ * A durable task tree travels with its root: when the root has a task-tree
+ * journal, the archive carries it as a complete nested `subagents` archive,
+ * and a page request with `subagents: true` pages that journal state.
+ */
 export async function exportDurabilityState(owner, request, headOnly = false) {
   const context = reserveInactiveLifecycle(owner, "exporting durability state");
   try {
@@ -167,15 +178,36 @@ export async function exportDurabilityState(owner, request, headOnly = false) {
     if (stateId === undefined) {
       throw new Error("Cloudflare Agent has no durability state to export");
     }
-    return request === undefined
-      ? await exportPortableState(durability, stateId, { headOnly })
-      : await exportPortableStatePage(durability, stateId, request);
+    if (request !== undefined) {
+      if (request?.subagents === undefined) {
+        return await exportPortableStatePage(durability, stateId, request);
+      }
+      if (request.subagents !== true) {
+        throw new TypeError("Cloudflare durability page request subagents must be true when present");
+      }
+      const journalId = subagentsStateId(stateId);
+      if ((await durability.load(journalId)).revision === "0") {
+        throw new Error("Cloudflare Agent has no task-tree journal to export");
+      }
+      const { subagents: _selected, ...range } = request;
+      return await exportPortableStatePage(durability, journalId, range);
+    }
+    const root = await exportPortableState(durability, stateId, { headOnly });
+    const journalId = subagentsStateId(stateId);
+    // Probe without acquiring: exporting a root without children must not
+    // create an owner for an absent journal.
+    if ((await durability.load(journalId)).revision === "0") return root;
+    // The journal stages content-addressed child checkpoint records. A
+    // head-only export omits them exactly like the root's records: the host
+    // transfers both record sets through its bounded archive.
+    const subagents = await exportPortableState(durability, journalId, { headOnly });
+    return Object.freeze({ ...root, subagents });
   } finally {
     lifecycleFor(context).creating = false;
   }
 }
 
-/** Internal managed cutover: records are transferred through its bounded archive. */
+/** Internal managed cutover: root records are transferred through its bounded archive. */
 export function exportDurabilityHead(owner) { return exportDurabilityState(owner, undefined, true); }
 
 /** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
@@ -189,7 +221,17 @@ export async function importDurabilityState(owner, archive, module) {
       ? archive.stateId
       : "nanocodex-invalid-import";
     const validationStore = createMemoryDurabilityStore(validationStateId);
-    const validated = await importPortableState(validationStore, archive);
+    const { subagents, ...rootArchive } = archive && typeof archive === "object" ? archive : {};
+    const validated = await importPortableState(validationStore, archive === null || typeof archive !== "object" ? archive : rootArchive);
+    let validatedSubagents;
+    if (subagents !== undefined) {
+      if (subagents === null || typeof subagents !== "object"
+        || subagents.stateId !== subagentsStateId(archive.stateId)) {
+        throw new TypeError("Cloudflare durability import subagents must be the root's task-tree journal archive");
+      }
+      // The Rust runtime opening the root below also reads its journal.
+      validatedSubagents = await importPortableState(validationStore, subagents);
+    }
     if (module !== undefined) {
       const routeHost = {};
       const route = (await loadDurabilityRuntime()).own(
@@ -214,18 +256,25 @@ export async function importDurabilityState(owner, archive, module) {
         && retainedStateId === archive?.stateId
         && archive?.format === "nanocodex-durability-state-v2") {
         const retained = await durability.load(retainedStateId);
+        const journal = await durability.load(subagentsStateId(retainedStateId));
         if (retained.revision === validated.revision
-          && retained.payload === validated.payload) {
+          && retained.payload === validated.payload
+          && journal.revision === (validatedSubagents?.revision ?? "0")
+          && journal.payload === (validatedSubagents?.payload ?? null)) {
           return retained;
         }
       }
       throw new Error("Cloudflare Agent durability import requires a pristine Durable Object");
     }
-    const sessionId = uuidV7();
+    // A session-shaped state ID is the imported session's durable identity.
+    const sessionId = SESSION_ID_PATTERN.test(archive.stateId) ? archive.stateId : uuidV7();
     // Publish identity and the imported head together. Records staged by a
     // bounded host transfer survive rollback and can be reused on retry.
     return storage.transactionSync(() => {
       const imported = durability.importState(archive.stateId, validated, { records: archive.records });
+      if (validatedSubagents !== undefined) {
+        durability.importState(subagents.stateId, validatedSubagents, { records: subagents.records });
+      }
       storage.sql.exec(
         "INSERT INTO nanocodex_cloudflare_agent (singleton, session_id) VALUES (1, ?)", sessionId,
       );
@@ -340,8 +389,7 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   const initialForkResume = options?.[INTERNAL_FORK_RESUME];
   let initialForkDigest;
   if (initialForkResume !== undefined) {
-    if (!initialForkResume || typeof initialForkResume !== "object" || Array.isArray(initialForkResume))
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
+    requireForkSeed(initialForkResume);
     const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256",
       new TextEncoder().encode(JSON.stringify(initialForkResume))));
     initialForkDigest = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -477,9 +525,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   const durability = createCloudflareDurabilityStore(context.storage);
   let resumeDigest;
   if (forkResume !== undefined) {
-    if (!forkResume || typeof forkResume !== "object" || Array.isArray(forkResume)) {
-      throw new TypeError("Cloudflare Agent fork resume must be a SessionSnapshot");
-    }
+    requireForkSeed(forkResume);
     initializeAgentStorage(context.storage);
     context.storage.sql.exec(`CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_fork_resume (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -519,8 +565,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
   }
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
   if (internalConfiguration?.model?.startsWith("claude-")) {
-    if (forkResume !== undefined || internalRuntime?.workersAi || internalRuntime?.gateway) {
-      throw new Error("Claude requires its native checkpoint and subscription transport");
+    if (internalRuntime?.workersAi || internalRuntime?.gateway) {
+      throw new Error("Claude requires its subscription transport");
     }
     if (typeof internalRuntime?.claude?.create !== "function") {
       throw new Error("Claude subscription transport is unavailable; refusing Responses fallback");
@@ -563,6 +609,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
         instructions: agentOptions.instructions ?? agentOptions.additionalInstructions,
         tools: agentOptions.tools, module, durability, durabilityId: stateId,
         terminalReceiptRetention: agentOptions.terminalReceiptRetention,
+        ...(forkResume === undefined ? {} : { resume: forkResume }),
       });
       if (eventSocket) {
         const watcher = claude.events.watch();
@@ -820,10 +867,6 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
           { status: 409 },
         ),
       },
-      turn: {
-        ...owned.turn,
-        route: (options) => routePrompt(owned, options),
-      },
     }));
     const active = {};
     lifecycle.active = active;
@@ -1010,6 +1053,24 @@ function ephemeralApplicationOptions(options) {
   return options;
 }
 
+/**
+ * A fork seed must hold a committed conversation, exactly like
+ * `session.fork({ at })`. Resuming the same session from an empty
+ * checkpoint is valid; seeding a new durable fork from one is not.
+ */
+function requireForkSeed(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) {
+    throw new TypeError("Cloudflare Agent fork resume must be a SessionCheckpoint");
+  }
+  if (checkpoint.has_conversation === false) {
+    throw new Error("the agent has no safe conversation boundary to fork");
+  }
+}
+
+// Runtime session IDs are UUIDv7 (Rust rejects other versions); any other
+// state ID, such as a managed agent's idempotent UUIDv8, gets a fresh one.
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function durableIdentity(storage, configuredStateId) {
   initializeAgentStorage(storage);
   if (configuredStateId !== undefined
@@ -1023,7 +1084,11 @@ function durableIdentity(storage, configuredStateId) {
     && previousStateId !== configuredStateId) {
     throw new Error("Cloudflare Agent durabilityId does not match the retained state identity");
   }
-  const generated = previousSessionId ?? uuidV7();
+  // A durable session is identified by its state: an imported or configured
+  // session-shaped state ID is also the runtime session ID, as Rust reports it.
+  const knownStateId = previousStateId ?? configuredStateId;
+  const generated = previousSessionId
+    ?? (SESSION_ID_PATTERN.test(knownStateId ?? "") ? knownStateId : uuidV7());
   const generatedStateId = previousStateId
     ?? configuredStateId
     ?? (previousSessionId === undefined ? generated : `cloudflare:${previousSessionId}`);

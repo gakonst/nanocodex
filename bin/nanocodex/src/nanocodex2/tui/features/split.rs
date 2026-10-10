@@ -70,7 +70,7 @@ fn prepare(cx: &FeatureContext<'_>) -> Result<(btw_local::Side, String, Prepared
     // Forks without a rollout keep their history in this process only.
     let thread_id = side
         .agent
-        .rollout()
+        .persistence().and_then(|persistence| persistence.rollout)
         .map(|rollout| rollout.thread_id().to_owned())
         .ok_or("/split needs a resumable session, but this BTW is not saved to disk; use /collapse to bring it into main")?;
     let prepared = PreparedSplit::detect(cx.workspace).map_err(|error| error.to_string())?;

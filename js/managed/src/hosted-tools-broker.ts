@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   HostedToolsBrokerCore,
   hostedToolsAmbiguous,
@@ -8,6 +9,7 @@ import {
   type HostedToolsCallRow,
   type HostedToolsCallState,
   type HostedToolsLeasedAttachmentPolicy,
+  type HostedToolsResultArchive,
   type HostedToolsStateRow,
 } from "nanocodex-tools/hosted";
 
@@ -376,4 +378,65 @@ export class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
     ).toArray();
   }
 
+}
+
+/** Outcomes above 1 MiB of normalized UTF-8 are archived instead of stored in the ledger row. */
+export const HOSTED_TOOLS_INLINE_RESULT_BYTES = 1024 * 1024;
+const RESULT_ARCHIVE_KIND = "hosted_tool_result";
+
+/**
+ * Immutable, content-addressed R2 storage for complete large Hand outcomes,
+ * following the managed event archive: conditional create with an R2 SHA-256
+ * integrity check, head verification for an existing key, and verified reads.
+ * Objects are never expired; a crash after put and before the ledger
+ * compare-and-set leaves at most one orphan per distinct content.
+ */
+export class R2HostedToolsResultArchive implements HostedToolsResultArchive {
+  readonly #prefix: string;
+
+  constructor(
+    readonly bucket: R2Bucket,
+    ownerId: string,
+    readonly inlineLimitBytes = HOSTED_TOOLS_INLINE_RESULT_BYTES,
+  ) {
+    this.#prefix = "hosted-tools/" + ownerId + "/results/";
+  }
+
+  digest(bytes: Uint8Array): string {
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  async put(callId: string, bytes: Uint8Array, sha256: string): Promise<string> {
+    const key = this.#prefix + encodeURIComponent(callId) + "/" + sha256 + ".json";
+    const stored = await this.bucket.put(key, bytes, {
+      onlyIf: { etagDoesNotMatch: "*" },
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { kind: RESULT_ARCHIVE_KIND, sha256, version: "1" },
+      sha256,
+    });
+    if (stored) return key;
+    const existing = await this.bucket.head(key);
+    if (!existing || existing.size !== bytes.byteLength
+      || existing.customMetadata?.sha256 !== sha256 || existing.customMetadata?.kind !== RESULT_ARCHIVE_KIND) {
+      throw new Error("Hosted Tools result archive object conflicts with existing data");
+    }
+    return key;
+  }
+
+  async load(key: string, sha256: string, utf8Bytes: number): Promise<string> {
+    if (!key.startsWith(this.#prefix) || !key.endsWith("/" + sha256 + ".json")) {
+      throw new Error("Hosted Tools result archive reference does not belong to this ledger");
+    }
+    const object = await this.bucket.get(key);
+    if (!object) throw new Error("Hosted Tools result archive object is unavailable");
+    if (object.size !== utf8Bytes) {
+      await object.body.cancel();
+      throw new Error("Hosted Tools result archive object size does not match its reference");
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (bytes.byteLength !== utf8Bytes || this.digest(bytes) !== sha256) {
+      throw new Error("Hosted Tools result archive object checksum does not match its reference");
+    }
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  }
 }

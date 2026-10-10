@@ -1,17 +1,18 @@
 import {
   CLOUDFLARE_SESSION_RESERVATION, activateCloudflareAgentSession, activateHost, bindHostSession, createAgentClient, createEventChannel, createSessionId,
   defineRuntime, loadDurabilityRuntime, registerDefinitionHost, releaseDefinitionHost,
-  releaseHostSession, prompt, routePrompt, compact, shutdown, getTurnHostId,
+  releaseHostSession, prompt, ownRoutedTurns, compact, shutdown, getTurnHostId,
 } from '../internal.mjs';
-import { watch } from '../actions/events.mjs';
+import { agentActions } from '../actions/index.mjs';
 import { prepareHarnesses } from './harnesses.mjs';
 import { createClaudeHost } from './claude-host.mjs';
 
 const OPTION_KEYS = new Set([
   'toolMode', 'codeEvaluator', 'auth', 'fetch', 'endpoint', 'compatibilityProfile', 'subscriptionIdentity', 'model', 'instructions', 'sessionId', 'tools',
   'harness', 'harnesses', 'subagents', 'serverTools', 'durability', 'durabilityId', 'module', 'maxTokens', 'workspace',
-  'cache', 'adaptiveThinking', 'keepThinking', 'thinking', 'parallelTools', 'clientToolSearch',
+  'cache', 'adaptiveThinking', 'keepThinking', 'fastMode', 'thinking', 'parallelTools', 'clientToolSearch',
   'contextWindowTokens', 'autoCompactWindowTokens', 'autoCompact', 'systemBlocks', 'terminalReceiptRetention',
+  'resume',
 ]);
 
 export function toClaudeConfig(options = {}) {
@@ -35,7 +36,7 @@ export function toClaudeConfig(options = {}) {
   for (const key of ['sessionId', 'durabilityId']) if (options[key] !== undefined && (typeof options[key] !== 'string' || !options[key])) throw new TypeError(`Claude ${key} must be non-empty`);
   for (const key of ['maxTokens', 'contextWindowTokens', 'autoCompactWindowTokens']) if (options[key] !== undefined && (!Number.isSafeInteger(options[key]) || options[key] < 1)) throw new TypeError(`Claude ${key} must be a positive safe integer`);
   if (options.maxTokens > 4294967295) throw new TypeError('Claude maxTokens exceeds uint32');
-  for (const key of ['adaptiveThinking', 'keepThinking', 'parallelTools', 'clientToolSearch', 'autoCompact']) if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Claude ${key} must be boolean`);
+  for (const key of ['adaptiveThinking', 'keepThinking', 'fastMode', 'parallelTools', 'clientToolSearch', 'autoCompact']) if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new TypeError(`Claude ${key} must be boolean`);
   if (options.autoCompact === false) throw new TypeError('disabling Claude autoCompact is unsupported');
   for (const key of ['instructions', 'workspace']) if (options[key] !== undefined && typeof options[key] !== 'string') throw new TypeError(`Claude ${key} must be a string`);
   if (options.thinking !== undefined && !['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(options.thinking)) throw new TypeError('unsupported Claude thinking');
@@ -44,6 +45,7 @@ export function toClaudeConfig(options = {}) {
   for (const key of ['systemBlocks', 'serverTools']) if (options[key] !== undefined && !Array.isArray(options[key])) throw new TypeError(`Claude ${key} must be an array`);
   if (options.terminalReceiptRetention !== undefined && (options.durability === undefined || !Number.isSafeInteger(options.terminalReceiptRetention) || options.terminalReceiptRetention < 0 || options.terminalReceiptRetention > 4096)) throw new TypeError('terminalReceiptRetention requires durability and must be 0..4096');
   if (options.durabilityId !== undefined && options.sessionId !== undefined && options.durabilityId !== options.sessionId) throw new TypeError('durable Claude sessionId must equal durabilityId');
+  if (options.resume !== undefined && (!options.resume || typeof options.resume !== 'object' || Array.isArray(options.resume))) throw new TypeError('Claude resume must be a SessionCheckpoint');
   if (options.subscriptionIdentity !== undefined) {
     const identity = options.subscriptionIdentity;
     if (options.compatibilityProfile !== 'subscription' || !identity || typeof identity !== 'object' || Array.isArray(identity)) throw new TypeError('subscriptionIdentity requires subscription compatibility');
@@ -65,7 +67,7 @@ export function toClaudeConfig(options = {}) {
   return JSON.parse(JSON.stringify(config));
 }
 
-/** Shared host lifecycle; loader selects the actual Nanoclaude WASM class. */
+/** Shared host lifecycle; loader selects the Nanocodex WASM class for this host. */
 export async function createClaude(options, load, type, harnessDefaults) {
   const codeEvaluator = options?.codeEvaluator ?? harnessDefaults?.codeEvaluator;
   const reservation = options?.[CLOUDFLARE_SESSION_RESERVATION];
@@ -103,17 +105,18 @@ export async function createClaude(options, load, type, harnessDefaults) {
   if (parallelSafeTools.length) config.parallelSafeTools = parallelSafeTools;
   let owner;
   let cleaned = false;
-  let detached = false;
-  let detachedRaw;
+  // Every live handle (root, forks, side conversations, spawned siblings)
+  // shares this host. The host is released only after the last one detaches
+  // and every accepted turn has settled.
+  const live = new Set();
+  const detachedRaws = new Set();
   const pending = new Set();
+  let adopted = false;
   const finishDetached = () => {
-    if (!detached || pending.size) return;
-    cleanup();
-    if (detachedRaw) {
-      const raw = detachedRaw;
-      detachedRaw = undefined;
-      raw.free();
-    }
+    if (pending.size) return;
+    if (adopted && !live.size) cleanup();
+    for (const raw of detachedRaws) raw.free();
+    detachedRaws.clear();
   };
   const track = (operation) => {
     const result = Promise.resolve(operation).finally(() => {
@@ -137,7 +140,7 @@ export async function createClaude(options, load, type, harnessDefaults) {
     void harnesses.close();
   };
   const runtime = defineRuntime({
-    key: `claude-${type}-wasm`, name: 'Nanoclaude WASM', type,
+    key: `claude-${type}-wasm`, name: 'Nanocodex Claude WASM', type,
     async create() {
       try {
         if (durability !== undefined) {
@@ -145,32 +148,44 @@ export async function createClaude(options, load, type, harnessDefaults) {
           config.durabilityHostId = owner.id;
         }
         activateHost(host);
-        const Nanoclaude = await load(module);
+        const Nanocodex = await load(module);
         activateHost(host);
-        if (typeof Nanoclaude?.create !== 'function') throw new Error('this WASM build does not expose Nanoclaude');
+        if (typeof Nanocodex?.createClaude !== 'function') throw new Error('this WASM build does not expose the Claude harness');
         // Construction acquires the durable fence before adoption replaces
         // the live host route, matching the Codex lifecycle.
-        const raw = await Nanoclaude.create(JSON.stringify(config));
+        const raw = await Nanocodex.createClaude(JSON.stringify(config));
         if (!raw || typeof raw.prompt !== 'function') {
           raw?.free?.();
-          throw new TypeError('the runtime returned an invalid Nanoclaude handle');
+          throw new TypeError('the runtime returned an invalid Nanocodex handle');
         }
         if (reservation) activateCloudflareAgentSession(reservation);
         return raw;
       } catch (error) { cleanup(); throw error; }
     },
     adopt(raw) {
-      owner?.retain();
-      try { bindHostSession(host, raw.sessionId, reservation); events.addSource(raw); }
-      catch (error) { cleanup(); throw error; }
+      const root = raw.sessionId === config.sessionId;
+      // Derived handles are ephemeral and do not own the root durable store.
+      if (root) owner?.retain();
+      try { bindHostSession(host, raw.sessionId, reservation); events.addSource(raw); live.add(raw); adopted = true; }
+      catch (error) {
+        events.removeSource(raw);
+        if (root || !live.size) cleanup();
+        else releaseHostSession(host, raw.sessionId);
+        throw error;
+      }
     },
     release(raw) {
       events.removeSource(raw);
-      detached = true;
+      live.delete(raw);
+      if (raw.sessionId !== config.sessionId) {
+        host.releaseSession(raw.sessionId);
+        releaseHostSession(host, raw.sessionId);
+      }
       finishDetached();
     },
     dispose(raw) {
-      if (pending.size) detachedRaw = raw;
+      // Accepted work owns host/auth/durability routes until it settles.
+      if (pending.size) detachedRaws.add(raw);
       else raw.free();
     },
     async shutdown(raw) { host.cancelCodeTurn(raw.sessionId); await raw.shutdown(); },
@@ -199,8 +214,10 @@ export async function createClaude(options, load, type, harnessDefaults) {
           },
         });
       };
-      return agent.extend(() => ({
-        events: { watch: (options) => watch(agent, options) },
+      // Turns started by the internal live-input route own host routes too.
+      ownRoutedTurns(agent, own);
+      // The shared Agent actions; Claude only adds host-route ownership of turns.
+      return agent.extend(agentActions()).extend(() => ({
         session: { compact: () => track(compact(agent)), cancel: () => { host.cancelCodeTurn(raw.sessionId); return raw.cancel(); }, shutdown: () => shutdown(agent) },
         turn: {
           prompt: (options) => {
@@ -209,13 +226,6 @@ export async function createClaude(options, load, type, harnessDefaults) {
               throw new TypeError('Claude prompt requires non-empty text or content');
             }
             return own(prompt(agent, options));
-          },
-          // Live frontends (realtime voice) steer the active turn or start one.
-          // Steered input joins a turn that already owns its host routes.
-          route: async (options) => {
-            if (typeof options?.input !== 'string' || !options.input.trim()) throw new TypeError('Claude live input requires non-empty text');
-            const turn = await routePrompt(agent, options);
-            return turn === undefined ? undefined : own(turn);
           },
         },
       }));

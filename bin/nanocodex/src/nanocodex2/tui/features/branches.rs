@@ -10,7 +10,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nanocodex::agent::rollout::{RolloutConfig, RolloutTranscriptItem};
 
 use super::{Feature, FeatureCommand, FeatureContext, FeatureUpdate, KeyOutcome, btw_local};
 use crate::nanocodex2::tui::{
@@ -75,10 +74,13 @@ impl Feature for Branches {
 
     fn attach(&mut self, _parts: &mut LocalParts, cx: &FeatureContext<'_>) {
         if let Some(agent) = cx.agent {
-            let thread = agent.rollout().map_or_else(
-                || agent.session_id().to_owned(),
-                |rollout| rollout.thread_id().to_owned(),
-            );
+            let thread = agent
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
+                .map_or_else(
+                    || agent.session_id().to_owned(),
+                    |rollout| rollout.thread_id().to_owned(),
+                );
             self.registry
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -125,9 +127,10 @@ impl Branches {
             let launch = ready(cx)?.clone();
             let agent = cx.agent.ok_or("wait for the local agent to connect")?;
             BRANCH_HOST.set(cx.host.clone());
-            // Edits fork the Codex rollout; Claude sessions use ncl rewind instead.
+            // Edits branch the session through its rollout mirror, for either harness.
             let rollout = agent
-                .rollout()
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
                 .map(|rollout| (rollout.thread_id().to_owned(), rollout.path().to_path_buf()));
             Ok((launch, rollout))
         })();
@@ -141,29 +144,23 @@ impl Branches {
         let registry = Arc::clone(&self.registry);
         let host = cx.host.clone();
         let workspace = cx.workspace.to_path_buf();
-        // Claude sessions have no Codex rollout; their prompts come from the journal.
-        let claude = rollout
-            .is_none()
-            .then(|| cx.agent.map(|agent| agent.session_id().to_owned()))
-            .flatten();
+        // Prompts of the current session, Codex or Claude, from the session catalog.
+        let session = rollout
+            .as_ref()
+            .map(|(thread, _)| thread.clone())
+            .or_else(|| cx.agent.map(|agent| agent.session_id().to_owned()));
         // Reading the transcript touches the disk; keep it off the input loop.
         tokio::spawn(async move {
-            let thread = rollout.as_ref().map(|(thread, _)| thread.clone());
-            let prompts = tokio::task::spawn_blocking(move || match (thread, claude) {
-                (Some(thread), _) => prompts(&thread),
-                (None, Some(session)) => claude_prompts(&session),
-                (None, None) => Vec::new(),
+            let prompts = tokio::task::spawn_blocking(move || {
+                session
+                    .as_deref()
+                    .map(sessions::prompts)
+                    .unwrap_or_default()
             })
             .await
             .unwrap_or_default();
-            let navigator = BranchNavigator::new(
-                registry,
-                host.clone(),
-                launch,
-                workspace,
-                rollout.map(|(_, path)| path),
-                prompts,
-            );
+            let navigator =
+                BranchNavigator::new(registry, host.clone(), launch, workspace, rollout, prompts);
             host.send(FeatureUpdate::OpenOverlay(Box::new(navigator)));
         });
     }
@@ -217,51 +214,12 @@ fn ready<'a>(cx: &'a FeatureContext<'_>) -> Result<&'a LocalLaunch, String> {
         .ok_or_else(|| "branches need a local agent (run ncl)".to_owned())
 }
 
-/// User prompts of a Claude session journal, oldest first.
-fn claude_prompts(session: &str) -> Vec<String> {
-    let Ok(home) = crate::config::default_codex_home() else {
-        return Vec::new();
-    };
-    crate::native_sessions::load(&home, session)
-        .map(|session| {
-            session
-                .transcript
-                .iter()
-                .filter_map(|item| match item {
-                    RolloutTranscriptItem::User(text) => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// User prompts of a saved Codex thread, oldest first.
-fn prompts(thread: &str) -> Vec<String> {
-    let Ok(home) = crate::config::default_codex_home() else {
-        return Vec::new();
-    };
-    RolloutConfig::new(&home)
-        .load_session(thread)
-        .map(|session| {
-            session
-                .transcript()
-                .iter()
-                .filter_map(|item| match item {
-                    RolloutTranscriptItem::User(text) => Some(text.clone()),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Reopens the branch `thread` in place without disk access here; the connection
 /// task finds the Codex thread or Claude session and loads it.
 pub(crate) fn switch(launch: &LocalLaunch, thread: &str) {
-    // Branches of a Claude conversation are Claude sessions; resolve the harness
-    // in the connection task.
-    let launch = sessions::codex_launch(launch, sessions::Resume::Session(thread.to_owned()));
+    // Branches continue in the harness that recorded them; the connection task
+    // resolves it.
+    let launch = sessions::session_launch(launch, sessions::Resume::Session(thread.to_owned()));
     BRANCH_HOST.with_host(|host| host.send(FeatureUpdate::Relaunch(Box::new(launch))));
 }
 
@@ -271,7 +229,7 @@ pub(crate) fn edit(
     registry: &SharedRegistry,
     launch: &LocalLaunch,
     workspace: &std::path::Path,
-    rollout: Option<&std::path::Path>,
+    rollout: Option<(&str, &std::path::Path)>,
     index: usize,
     prompt: String,
 ) -> Result<LocalLaunch, String> {
@@ -287,15 +245,15 @@ pub(crate) fn edit(
         });
         fresh
     } else {
-        let source = rollout
-            .ok_or("editing history needs a saved Codex rollout; this session has none (Claude sessions use ncl rewind)")?
-            .to_path_buf();
-        sessions::codex_launch(
+        let (session, source) = rollout
+            .ok_or("editing history needs a saved session rollout; this session has none")?;
+        sessions::session_launch(
             launch,
             sessions::Resume::Branch {
                 thread: None,
                 fork: Some(sessions::Fork {
-                    source,
+                    session: session.to_owned(),
+                    source: source.to_path_buf(),
                     turns: index,
                     workspace: workspace.to_path_buf(),
                 }),

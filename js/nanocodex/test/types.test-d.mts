@@ -10,7 +10,10 @@ import {
   type McpServer,
   createMemoryChatGptSubscriptionStore,
   Subagents,
-  type SessionSnapshot,
+  type SessionCapabilities,
+  type SessionCheckpoint,
+  type SessionInfo,
+  type SessionPersistence,
   type Tool,
   Transport,
   type Turn,
@@ -447,7 +450,34 @@ async function check() {
   void realtimeDelegation;
   void realtimeTail;
   await agent.session.setFastMode(true);
+  await agent.session.setServiceTier("ultrafast");
+  // @ts-expect-error service tiers are a closed set
+  await agent.session.setServiceTier("turbo");
   await agent.session.setModel("gpt-6-astra");
+  const info: SessionInfo = agent.session.info();
+  const harness: "codex" | "claude" = info.harness;
+  const parentSessionId: string | null = info.lineage.parentSessionId;
+  const capabilities: SessionCapabilities = agent.session.capabilities();
+  const forkAt: boolean = capabilities.forkAt;
+  const resumable: boolean = capabilities.resume && capabilities.ultrafastServiceTier;
+  const modelMutability: "fixed" | "before_first_prompt" | "anytime" = capabilities.model;
+  const persistence: SessionPersistence | null = agent.session.persistence();
+  const latest: SessionCheckpoint = await agent.session.checkpoint();
+  await agent.session.cancel();
+  void harness;
+  void parentSessionId;
+  void forkAt;
+  void resumable;
+  void modelMutability;
+  void persistence;
+  // @ts-expect-error checkpoints are opaque; their payload is decoded only by Rust.
+  latest.payload;
+  // @ts-expect-error an arbitrary object is not a SessionCheckpoint.
+  await Actions.session.fork(agent, { at: { format: "nanocodex-session-checkpoint/1" } });
+  // @ts-expect-error fork origins are fork or side_conversation.
+  await agent.session.fork({ origin: "subagent" });
+  const side = await agent.session.fork({ at: latest, origin: "side_conversation" });
+  void side.session.info().lineage.origin;
   const options: Actions.turn.prompt.Options = { input: "hello" };
   const turn: Turn = agent.turn.prompt(options);
   const sameTurn: Actions.turn.prompt.ReturnType = Actions.turn.prompt(agent, options);
@@ -456,9 +486,9 @@ async function check() {
   const completed: TurnResult = await sameTurn.result();
   const sameResult: Actions.turn.getResult.ReturnType = completed;
   const message: string = completed.finalMessage;
-  const snapshotPromise: Promise<SessionSnapshot> = completed.snapshot();
+  const checkpointPromise: Promise<SessionCheckpoint> = completed.checkpoint();
   const usagePromise: Promise<Actions.turn.getUsage.ReturnType> = completed.usage();
-  const snapshot: Actions.turn.getSnapshot.ReturnType = await Actions.turn.getSnapshot(completed);
+  const checkpoint: Actions.turn.getCheckpoint.ReturnType = await Actions.turn.getCheckpoint(completed);
   const usage: Actions.turn.getUsage.ReturnType = await Actions.turn.getUsage(completed);
   usage.estimated_cost?.usd;
   const serviceTier: "standard" | "priority" | "fast" | "ultrafast" | undefined =
@@ -469,12 +499,17 @@ async function check() {
   void sameAcceptedId;
   void serviceTier;
   void sameResult;
-  void snapshotPromise;
+  void checkpointPromise;
   void usagePromise;
   void usage;
   void costStatus;
 
-  await Agent.create({ transport: Transport.openAi({ apiKey }), resume: snapshot });
+  await Agent.create({ transport: Transport.openAi({ apiKey }), resume: checkpoint });
+  // A stored checkpoint round-trips through JSON text.
+  await Agent.create({
+    transport: Transport.openAi({ apiKey }),
+    resume: JSON.parse(JSON.stringify(checkpoint)) as SessionCheckpoint,
+  });
   const tempoProvider = await createTempoProviderFromAccounts({
     wallet: accountsWallet,
     accessKey: "0x0000000000000000000000000000000000000001",
@@ -548,8 +583,8 @@ async function check() {
   fork.turn.prompt({ input: [{ type: "text", text: "continue" }] });
   // @ts-expect-error historical forks require a completed typed result.
   await Actions.session.fork(agent, { at: turn });
-  // @ts-expect-error snapshots belong to completed results, not active turns.
-  turn.snapshot();
+  // @ts-expect-error checkpoints belong to completed results, not active turns.
+  turn.checkpoint();
   completed.dispose();
 
   const watch: Actions.events.watch.Watcher = agent.events.watch();
@@ -675,22 +710,10 @@ async function check() {
     maxBufferedSendBytes: 1,
   });
 
-  const rolloutSnapshot: SessionSnapshot = {
-    version: 1,
-    model: "gpt-6.1-sol",
-    lineage_id: "thread",
-    prompt_cache_key: "thread",
-    workspace: "/tmp",
-    canonical_context: {
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: "hello" }],
-    },
-    history: [],
-  };
+  // @ts-expect-error resume accepts only an opaque SessionCheckpoint, not a native snapshot.
   await Agent.create({
     transport: Transport.openAi({ apiKey }),
-    resume: rolloutSnapshot,
+    resume: { version: 1, model: "gpt-6.1-sol", history: [] },
   });
 
   // @ts-expect-error actions are domain-grouped on the decorated Agent.

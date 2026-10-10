@@ -1,19 +1,25 @@
 //! Local session source for the unified TUI: the `ncl resume` picker, resuming
-//! saved Codex and Claude sessions (`ncl resume [ID] [--from ROLLOUT --at N]`), the
+//! saved sessions of either harness (`ncl resume [ID] [--from ROLLOUT --at N]`), the
 //! in-TUI /attach picker and the replay of a resumed session's history.
 //!
-//! The unified driver uses this to show and continue local sessions.
+//! Every lookup goes through the family-neutral durable catalog
+//! ([`crate::sessions`]), so lists, searches, switches and branches show and
+//! continue Codex and Claude sessions alike.
 
 use std::{
     borrow::Cow,
+    future::Future,
     io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use eyre::{Result, WrapErr as _, eyre};
-use nanocodex::agent::rollout::{RolloutConfig, RolloutToolOutcome, RolloutTranscriptItem};
+use nanocodex::{
+    HarnessFamily,
+    agent::session::{ToolOutcome, TranscriptItem},
+};
 use nanocodex_managed::{ManagedEvent, ManagedEventData, PromptInput};
 use ratatui::{
     Frame,
@@ -31,17 +37,16 @@ use crate::nanocodex2::{
     tui::{history::HistoryWindow, session::SessionSummary, terminal::TerminalSession},
 };
 
-/// A saved Codex thread to reopen when the local agent is (re)built. Claude
-/// sessions resume through `AgentArgs::resume_claude` instead.
+/// A saved session to reopen when the local agent is (re)built. A session
+/// resumed at startup is carried by `AgentArgs::resume` instead.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Resume {
-    Codex(String),
     /// A saved session of either harness (branch switch); the connection task
     /// resolves it with [`resolve`] so lookups stay off the input loop.
     Session(String),
-    /// A branch started by editing an earlier prompt: reopen `thread`, or copy
-    /// `fork` into a new thread first (None for both: a fresh session), and submit
-    /// `prompt` once it connects.
+    /// A branch started by editing an earlier prompt: reopen `thread`, or branch
+    /// `fork` into a new session first (None for both: a fresh session), and
+    /// submit `prompt` once it connects.
     Branch {
         thread: Option<String>,
         fork: Option<Fork>,
@@ -49,10 +54,11 @@ pub(crate) enum Resume {
     },
 }
 
-/// Where a branch copies its history from: the source rollout through
-/// `turns` completed turns, rooted at `workspace`.
+/// Where a branch copies its history from: session `session` (rollout `source`)
+/// through `turns` completed turns, rooted at `workspace`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Fork {
+    pub(crate) session: String,
     pub(crate) source: PathBuf,
     pub(crate) turns: usize,
     pub(crate) workspace: PathBuf,
@@ -74,6 +80,15 @@ impl Harness {
     }
 }
 
+impl From<HarnessFamily> for Harness {
+    fn from(family: HarnessFamily) -> Self {
+        match family {
+            HarnessFamily::Claude => Self::Claude,
+            _ => Self::Codex,
+        }
+    }
+}
+
 /// One resumable local session, Codex or Claude.
 #[derive(Clone, Debug)]
 pub(crate) struct LocalSession {
@@ -86,49 +101,44 @@ pub(crate) struct LocalSession {
     pub(crate) archived: bool,
 }
 
-/// Every resumable local session under `home`, newest activity first.
-pub(crate) fn discover(home: &Path) -> Result<Vec<LocalSession>> {
-    let mut sessions = Vec::new();
-    let codex = RolloutConfig::new(home)
-        .list_sessions()
-        .wrap_err_with(|| format!("failed to discover Codex threads under {}", home.display()))?;
-    sessions.extend(codex.into_iter().map(|session| LocalSession {
-        id: session.thread_id().to_owned(),
-        harness: Harness::Codex,
-        workspace: session.workspace().map(str::to_owned),
-        preview: session.preview().map(str::to_owned),
-        model: None,
-        updated: session.modified_at(),
-        archived: session.is_archived(),
-    }));
-    if crate::native_sessions::store_path(home).is_file() {
-        for session in crate::native_sessions::discover(home)? {
-            let preview = session.transcript.iter().find_map(|item| match item {
-                RolloutTranscriptItem::User(text) => Some(single_line(text)),
-                _ => None,
-            });
-            sessions.push(LocalSession {
-                updated: UNIX_EPOCH + Duration::from_secs(session.updated()),
-                workspace: session
-                    .workspace
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                model: session.model.map(|model| model.to_string()),
-                id: session.id,
-                harness: Harness::Claude,
-                preview,
-                archived: false,
-            });
+impl From<&crate::sessions::SessionSummary> for LocalSession {
+    fn from(session: &crate::sessions::SessionSummary) -> Self {
+        Self {
+            id: session.id().to_owned(),
+            harness: session.family().into(),
+            workspace: session.workspace().map(str::to_owned),
+            // Claude previews are raw first prompts; catalog previews of Codex
+            // threads are shown as recorded.
+            preview: session.preview().map(|preview| match session.family() {
+                HarnessFamily::Claude => single_line(preview),
+                _ => preview.to_owned(),
+            }),
+            model: session.model().map(|model| model.to_string()),
+            updated: session.modified_at(),
+            archived: session.is_archived(),
         }
     }
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.updated));
-    Ok(sessions)
+}
+
+/// Runs a catalog operation from the blocking pool, where every caller of
+/// these synchronous helpers already runs.
+fn blocking<T>(future: impl Future<Output = T>) -> T {
+    tokio::runtime::Handle::current().block_on(future)
+}
+
+/// Every resumable local session under `home`, newest activity first.
+pub(crate) async fn discover(home: &Path) -> Result<Vec<LocalSession>> {
+    Ok(crate::sessions::list(home)
+        .await?
+        .iter()
+        .map(LocalSession::from)
+        .collect())
 }
 
 /// Recent local Codex and Claude sessions for the in-TUI picker, newest first.
 pub(crate) fn list(workspace: &Path) -> Result<Vec<SessionSummary>> {
     let home = crate::config::default_codex_home()?;
-    Ok(discover(&home)?
+    Ok(blocking(discover(&home))?
         .into_iter()
         .map(|session| summary(&session, workspace))
         .collect())
@@ -171,31 +181,28 @@ pub(crate) fn search(
         return Ok(Vec::new());
     }
     let mut hits = Vec::new();
-    for session in discover(&home)? {
-        let transcript = match session.harness {
-            Harness::Codex => match RolloutConfig::new(&home).load_session(&session.id) {
-                Ok(loaded) => loaded.transcript().to_vec(),
-                Err(_) => continue,
-            },
-            Harness::Claude => match crate::native_sessions::load(&home, &session.id) {
-                Ok(loaded) => loaded.transcript,
-                Err(_) => continue,
-            },
+    for session in blocking(discover(&home))? {
+        let Ok(loaded) = blocking(crate::sessions::load(&home, &session.id)) else {
+            continue;
         };
-        let found = transcript.iter().enumerate().find_map(|(index, item)| {
-            let text = match item {
-                RolloutTranscriptItem::User(text)
-                | RolloutTranscriptItem::Assistant(text)
-                | RolloutTranscriptItem::Reasoning(text) => text.as_str(),
-                RolloutTranscriptItem::Tool { arguments, .. } => arguments.as_str(),
-                RolloutTranscriptItem::ToolResult { output, .. } => output.as_str(),
-            };
-            let lower = text.to_lowercase();
-            terms
-                .iter()
-                .all(|term| lower.contains(term))
-                .then(|| (index, excerpt(text, &terms[0])))
-        });
+        let found = loaded
+            .transcript()
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| {
+                let text = match item {
+                    TranscriptItem::User(text)
+                    | TranscriptItem::Assistant(text)
+                    | TranscriptItem::Reasoning(text) => text.as_str(),
+                    TranscriptItem::Tool { arguments, .. } => arguments.as_str(),
+                    TranscriptItem::ToolResult { output, .. } => output.as_str(),
+                };
+                let lower = text.to_lowercase();
+                terms
+                    .iter()
+                    .all(|term| lower.contains(term))
+                    .then(|| (index, excerpt(text, &terms[0])))
+            });
         if let Some((index, snippet)) = found {
             hits.push(nanocodex_managed::SessionSearchHit {
                 session_id: session.id.clone(),
@@ -236,42 +243,52 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
-/// Returns `base` relaunched against the saved session `id` (Codex thread UUID
-/// or Claude session id), keeping VM and other launch flags.
+/// User prompts of a saved session of either harness, oldest first. A durable
+/// session lists one prompt per turn, including the turns a branch continues
+/// from its source, so prompt `i` is the branch point [`branch`] resolves.
+pub(crate) fn prompts(id: &str) -> Vec<String> {
+    let Ok(home) = crate::config::default_codex_home() else {
+        return Vec::new();
+    };
+    if let Ok(prompts) = blocking(crate::sessions::conversation_prompts(&home, id)) {
+        return prompts.into_iter().map(|prompt| prompt.text).collect();
+    }
+    blocking(crate::sessions::load(&home, id))
+        .map(|session| {
+            session
+                .transcript()
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::User(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Returns `base` relaunched against the saved session `id` of either harness,
+/// keeping VM and other launch flags. The session continues in the harness
+/// that recorded it.
 pub(crate) fn relaunch(base: &LocalLaunch, id: &str) -> Result<LocalLaunch> {
     let home = crate::config::default_codex_home()?;
-    let mut args = base.args.clone().for_session_switch();
-    let resume = if crate::native_sessions::store_path(&home).is_file()
-        && let Ok(session) = crate::native_sessions::load(&home, id)
-    {
-        args.resume_with_harness(nanocodex::HarnessFamily::Claude);
-        args = args.resume_claude(session)?;
-        None
-    } else {
-        // Validate before replacing the running agent.
-        RolloutConfig::new(&home)
-            .load_session(id)
-            .wrap_err_with(|| format!("failed to load Codex thread {id}"))?;
-        args.resume_with_harness(nanocodex::HarnessFamily::Codex);
-        Some(Resume::Codex(id.to_owned()))
-    };
+    // Validate before replacing the running agent.
+    let session = blocking(crate::sessions::load(&home, id))?;
     Ok(LocalLaunch {
-        args,
+        args: base.args.clone().for_session_switch().resume(session)?,
         vm: base.vm.clone(),
         replaceable: false,
         initial_prompt: None,
         initial_instruction: None,
-        resume,
+        resume: None,
     })
 }
 
-/// `base` relaunched against a known Codex thread or branch without touching the
+/// `base` relaunched against a saved session or branch without touching the
 /// disk; the connection task loads (and validates) it.
-pub(crate) fn codex_launch(base: &LocalLaunch, resume: Resume) -> LocalLaunch {
-    let mut args = base.args.clone().for_session_switch();
-    args.resume_with_harness(nanocodex::HarnessFamily::Codex);
+pub(crate) fn session_launch(base: &LocalLaunch, resume: Resume) -> LocalLaunch {
     LocalLaunch {
-        args,
+        args: base.args.clone().for_session_switch(),
         vm: base.vm.clone(),
         replaceable: false,
         initial_prompt: None,
@@ -282,10 +299,8 @@ pub(crate) fn codex_launch(base: &LocalLaunch, resume: Resume) -> LocalLaunch {
 
 /// Returns `base` relaunched as a fresh session (/clear).
 pub(crate) fn fresh(base: &LocalLaunch) -> LocalLaunch {
-    let mut args = base.args.clone();
-    args.claude_resume = None;
     LocalLaunch {
-        args,
+        args: base.args.clone().fresh_session(),
         vm: base.vm.clone(),
         replaceable: true,
         initial_prompt: None,
@@ -294,16 +309,88 @@ pub(crate) fn fresh(base: &LocalLaunch) -> LocalLaunch {
     }
 }
 
-/// Resolves a [`Resume::Session`] launch to the harness that saved it, on the
-/// blocking pool; other launches are returned unchanged.
+/// Resolves a saved-session or branch launch to the harness that saved it, on
+/// the blocking pool; other launches are returned unchanged. Branch copies
+/// happen here: a durable session branches in its own family through the
+/// catalog; a rollout-only Codex thread is copied with `rollout_fork`.
 pub(crate) async fn resolve(launch: LocalLaunch) -> Result<LocalLaunch> {
-    let id = match &launch.resume {
-        Some(Resume::Session(id)) => id.clone(),
-        _ => return Ok(launch),
-    };
-    tokio::task::spawn_blocking(move || relaunch(&launch, &id))
+    if !matches!(
+        &launch.resume,
+        Some(
+            Resume::Session(_)
+                | Resume::Branch {
+                    thread: Some(_),
+                    ..
+                }
+                | Resume::Branch { fork: Some(_), .. }
+        )
+    ) {
+        return Ok(launch);
+    }
+    tokio::task::spawn_blocking(move || resolve_blocking(launch))
         .await
         .wrap_err("session lookup task failed")?
+}
+
+fn resolve_blocking(mut launch: LocalLaunch) -> Result<LocalLaunch> {
+    let home = crate::config::default_codex_home()?;
+    let id = match launch.resume.clone() {
+        Some(Resume::Session(id)) => return relaunch(&launch, &id),
+        Some(Resume::Branch {
+            thread: Some(thread),
+            ..
+        }) => thread,
+        Some(Resume::Branch {
+            thread: None,
+            fork: Some(fork),
+            prompt,
+        }) => {
+            let thread = branch(&home, &fork).wrap_err("could not start a branch")?;
+            launch.resume = Some(Resume::Branch {
+                thread: Some(thread.clone()),
+                fork: None,
+                prompt,
+            });
+            thread
+        }
+        _ => return Ok(launch),
+    };
+    let session = blocking(crate::sessions::load(&home, &id))?;
+    launch.args = launch.args.resume(session)?;
+    Ok(launch)
+}
+
+/// Starts a new session holding the first `fork.turns` prompts of its source's
+/// conversation. Kept turns a branch continues from its own source are branched
+/// from the session that stores them.
+fn branch(home: &Path, fork: &Fork) -> Result<String> {
+    if let Ok(prompts) = blocking(crate::sessions::conversation_prompts(home, &fork.session)) {
+        let (store, session, at) = match prompts.get(fork.turns) {
+            Some(prompt) => (
+                prompt.store.clone(),
+                prompt.session.clone(),
+                nanocodex_durability::BranchPoint::Before(prompt.turn.clone()),
+            ),
+            None => (
+                blocking(crate::sessions::turns(home, &fork.session))?.0,
+                fork.session.clone(),
+                nanocodex_durability::BranchPoint::Latest,
+            ),
+        };
+        let branched = blocking(crate::sessions::branch(
+            &store,
+            &session,
+            at,
+            Some(fork.workspace.clone()),
+        ))?;
+        return Ok(branched.id().to_owned());
+    }
+    crate::rollout_fork::fork(
+        &fork.source,
+        &crate::rollout_fork::Point::Count(fork.turns),
+        home,
+        &fork.workspace,
+    )
 }
 
 /// What building a (possibly resumed) local agent produced.
@@ -311,85 +398,32 @@ pub(crate) struct Built {
     pub(crate) agent: ConfiguredAgent,
     pub(crate) workspace: PathBuf,
     /// Visible history of a resumed session, oldest first.
-    pub(crate) transcript: Vec<RolloutTranscriptItem>,
+    pub(crate) transcript: Vec<TranscriptItem>,
 }
 
-/// Builds the local agent for `launch`, reopening its saved session if any. File work
-/// (branch copies, rollout materialization) runs on the blocking pool. A
-/// [`Resume::Session`] launch must be [`resolve`]d first.
+/// Builds the local agent for `launch`, continuing its resumed session if any.
+/// A saved-session or branch launch must be [`resolve`]d first.
 pub(crate) async fn build(launch: &LocalLaunch) -> Result<Built> {
     if let Some(Resume::Session(id)) = &launch.resume {
         return Err(eyre!("saved session {id} was not resolved before building"));
     }
-    let thread = match &launch.resume {
-        Some(
-            Resume::Codex(thread)
-            | Resume::Branch {
-                thread: Some(thread),
-                ..
-            },
-        ) => Some(thread.clone()),
-        Some(Resume::Branch {
-            thread: None,
-            fork: Some(fork),
-            ..
-        }) => {
-            let fork = fork.clone();
-            let thread = tokio::task::spawn_blocking(move || -> Result<String> {
-                let home = crate::config::default_codex_home()?;
-                crate::rollout_fork::fork(
-                    &fork.source,
-                    &crate::rollout_fork::Point::Count(fork.turns),
-                    &home,
-                    &fork.workspace,
-                )
-            })
-            .await
-            .wrap_err("branch copy task failed")?
-            .wrap_err("could not start a branch")?;
-            Some(thread)
-        }
-        _ => None,
-    };
-    if let Some(thread_id) = thread {
-        let session = tokio::task::spawn_blocking(move || -> Result<_> {
-            let home = crate::config::default_codex_home()?;
-            RolloutConfig::new(&home)
-                .load_session(&thread_id)
-                .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))
-        })
-        .await
-        .wrap_err("thread load task failed")??;
-        let workspace = PathBuf::from(session.workspace());
-        let transcript = session.transcript().to_vec();
-        let model = nanocodex::HarnessModel::from(session.model());
-        let mut agent = launch
-            .args
-            .clone()
-            .build_resumed_tui(session, launch.vm.clone())
-            .await
-            .wrap_err("could not resume the local agent")?;
-        // The resumed thread keeps its model; the footer and picker show it.
-        agent.model = model;
-        return Ok(Built {
-            agent,
-            workspace,
-            transcript,
-        });
-    }
-    let workspace = launch.args.cwd().to_path_buf();
-    let transcript = launch
-        .args
-        .claude_resume
-        .as_ref()
-        .map(|session| session.transcript.clone())
+    let resumed = launch.args.resumed();
+    let workspace = resumed
+        .and_then(crate::sessions::ResumedSession::workspace)
+        .map_or_else(|| launch.args.cwd().to_path_buf(), Path::to_path_buf);
+    let transcript = resumed
+        .map(|session| session.transcript().to_vec())
         .unwrap_or_default();
     let agent = launch
         .args
         .clone()
         .build_tui(launch.vm.clone())
         .await
-        .wrap_err("could not start the local agent")?;
+        .wrap_err(if resumed.is_some() {
+            "could not resume the local agent"
+        } else {
+            "could not start the local agent"
+        })?;
     Ok(Built {
         agent,
         workspace,
@@ -400,7 +434,7 @@ pub(crate) async fn build(launch: &LocalLaunch) -> Result<Built> {
 /// The visible history of a resumed session as managed history events, so the
 /// driver projects it exactly like a managed session's durable history.
 pub(in crate::nanocodex2::tui) fn history_window(
-    transcript: &[RolloutTranscriptItem],
+    transcript: &[TranscriptItem],
     request_id: &str,
 ) -> HistoryWindow {
     let mut replay = Replay {
@@ -414,7 +448,7 @@ pub(in crate::nanocodex2::tui) fn history_window(
     };
     for item in transcript {
         match item {
-            RolloutTranscriptItem::User(text) => {
+            TranscriptItem::User(text) => {
                 replay.finish_turn();
                 replay.turns += 1;
                 let id = format!("resume-turn-{}", replay.turns);
@@ -425,14 +459,14 @@ pub(in crate::nanocodex2::tui) fn history_window(
                     replayed: true,
                 });
             }
-            RolloutTranscriptItem::Reasoning(text) => {
+            TranscriptItem::Reasoning(text) => {
                 replay.ensure_turn();
                 replay.agent(
                     "reasoning.summary.delta",
                     json!({"model_call_index": replay.call, "text": text}),
                 );
             }
-            RolloutTranscriptItem::Assistant(text) => {
+            TranscriptItem::Assistant(text) => {
                 replay.ensure_turn();
                 let item = format!("resume-message-{}", replay.events.len());
                 replay.agent(
@@ -442,7 +476,7 @@ pub(in crate::nanocodex2::tui) fn history_window(
                 replay.final_message.clone_from(text);
                 replay.call += 1;
             }
-            RolloutTranscriptItem::Tool {
+            TranscriptItem::Tool {
                 call_id,
                 name,
                 arguments,
@@ -459,7 +493,7 @@ pub(in crate::nanocodex2::tui) fn history_window(
                     .open_tools
                     .push((call_id.clone(), name.clone(), parent_call_id.clone()));
             }
-            RolloutTranscriptItem::ToolResult {
+            TranscriptItem::ToolResult {
                 call_id,
                 output,
                 outcome,
@@ -490,11 +524,11 @@ pub(in crate::nanocodex2::tui) fn history_window(
 
 /// A replayed outcome in the shape live tools publish. Shell success depends
 /// on an exit status; when the receipt reports none the outcome stays unknown.
-fn replayed_result(name: &str, output: &str, outcome: RolloutToolOutcome) -> (Value, &'static str) {
+fn replayed_result(name: &str, output: &str, outcome: ToolOutcome) -> (Value, &'static str) {
     let status = match outcome {
-        RolloutToolOutcome::Completed => "completed",
-        RolloutToolOutcome::Failed => "failed",
-        RolloutToolOutcome::Unknown => "unknown",
+        ToolOutcome::Completed => "completed",
+        ToolOutcome::Failed => "failed",
+        ToolOutcome::Unknown => "unknown",
     };
     if crate::nanocodex2::tui::transcript::ToolEntry::tool_family(name) != "exec_command" {
         let result = if output.is_empty() {
@@ -514,7 +548,7 @@ fn replayed_result(name: &str, output: &str, outcome: RolloutToolOutcome) -> (Va
         result["exit_code"] = json!(exit_code);
     } else if let Some(session_id) = reported("Process running with session ID ") {
         result["session_id"] = json!(session_id);
-    } else if outcome == RolloutToolOutcome::Completed {
+    } else if outcome == ToolOutcome::Completed {
         return (result, "unknown");
     }
     (result, status)

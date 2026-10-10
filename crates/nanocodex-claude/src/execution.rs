@@ -2,9 +2,9 @@
 //!
 //! The `nanocodex-durability` crate supplies the store-backed implementation.
 //! Payloads retain provider-native blocks without translating signed content.
-use nanocodex_agent::{NanocodexError, Result};
+use nanocodex_agent::{NanocodexError, Result, SessionInfo};
 use serde_json::{Value, value::RawValue};
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 /// Future returned by a host execution policy.
 #[cfg(not(target_family = "wasm"))]
@@ -149,4 +149,34 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     fn release(&self, id: String) -> PolicyFuture<'_, ()>;
     fn shutdown(&self) -> PolicyFuture<'_, ()>;
     fn checkpoint(&self, state: Value) -> PolicyFuture<'_, ()>;
+    /// Persists a just-created child's first checkpoint so it is listed and
+    /// resumable before its first turn. A store that reopens a restored child
+    /// must keep the checkpoint it already holds; a fresh subagent's snapshot
+    /// carries its model, effort and speed before any conversation. The model
+    /// names the child's own model for its catalog record. The default
+    /// persists nothing.
+    fn initial_checkpoint(
+        &self,
+        _state: Value,
+        _model: nanocodex_agent::HarnessModel,
+    ) -> PolicyFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Retracts state written only by [`Self::initial_checkpoint`] when the
+    /// child's creation is abandoned. The default keeps it.
+    fn discard_initial(&self) -> PolicyFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Opens independent durable state for a fork, side conversation or
+    /// subagent of this session before it starts (or reopens it for a restored
+    /// subagent), so the child is resumable on its own.
+    ///
+    /// The returned policy's `state_id` must equal `child.session_id`; a
+    /// fork's inherited transcript is committed as its first checkpoint.
+    /// `None` (the default) means the policy cannot persist children; the
+    /// spawn or fork then fails with `NanocodexError::ExecutionPolicyBranchUnsupported`,
+    /// exactly as for Codex, instead of silently creating an ephemeral child.
+    fn branch(&self, _child: &SessionInfo) -> Result<Option<Arc<dyn ClaudeExecutionPolicy>>> {
+        Ok(None)
+    }
 }

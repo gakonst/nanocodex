@@ -200,6 +200,52 @@ impl StateStore for SqliteStore {
             self.replace_transactional(state_id, owner, expected_revision, payload, records, || {});
         Box::pin(async move { result })
     }
+
+    fn peek<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        let result = self
+            .connection
+            .query_row(
+                "SELECT revision, payload FROM nanocodex_durable_states WHERE state_id = ?1",
+                [state_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(backend)
+            .and_then(|row| match row {
+                None => Ok(StoredState::default()),
+                Some((revision, payload)) => Ok(StoredState {
+                    revision: u64::try_from(revision).map_err(|_| {
+                        StoreError::Backend("SQLite state revision is negative".to_owned())
+                    })?,
+                    payload: Some(payload),
+                }),
+            });
+        Box::pin(async move { result })
+    }
+
+    fn list_states<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        let result = (|| {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT state_id FROM nanocodex_durable_states ORDER BY rowid DESC LIMIT ?1",
+                )
+                .map_err(backend)?;
+            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            statement
+                .query_map([limit], |row| row.get::<_, String>(0))
+                .map_err(backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend)
+        })();
+        Box::pin(async move { result })
+    }
 }
 
 fn validate_owner_schema(connection: &Connection) -> Result<(), StoreError> {

@@ -20,9 +20,12 @@ impl Config {
         self.rollout = Some(rollout);
     }
 
-    pub(super) const fn for_new_thread(&self) -> Self {
-        // Child history belongs to the running parent, never a resumable disk session.
-        Self { rollout: None }
+    pub(super) fn for_new_thread(&self) -> Self {
+        // Every fork, side conversation and subagent is its own resumable
+        // conversation and records its own rollout beside its parent.
+        Self {
+            rollout: self.rollout.as_ref().map(RolloutConfig::for_branch),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -32,13 +35,36 @@ impl Config {
         prompt_cache_key: &str,
         workspace: Option<&str>,
         instructions: &str,
-        origin_kind: &'static str,
+        start: crate::session::SessionStart,
+        lineage_origin: crate::Origin,
         parent_session_id: Option<&str>,
+        root_session_id: &str,
         resume_history_len: Option<usize>,
     ) -> Result<Execution> {
         let Some(config) = &self.rollout else {
             return Ok(Execution::default());
         };
+        // A restored child or a session resumed from durable state continues
+        // the rollout it already recorded; the recorder appends only history
+        // newer than the file, so the mirror never duplicates a turn.
+        let reopened = if matches!(
+            start,
+            crate::session::SessionStart::Restore | crate::session::SessionStart::Resume
+        ) {
+            config
+                .reopening(session_id)
+                .map_err(|source| NanocodexError::InitializeRollout {
+                    codex_home: config.codex_home().to_path_buf(),
+                    source,
+                })?
+        } else {
+            None
+        };
+        let resume_history_len = match &reopened {
+            Some(_) => Some(resume_history_len.unwrap_or(0)),
+            None => resume_history_len,
+        };
+        let config = reopened.as_ref().unwrap_or(config);
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| NanocodexError::TokioRuntimeUnavailable)?;
         let cwd =
@@ -55,8 +81,9 @@ impl Config {
                 cwd: &cwd,
                 instructions,
                 origin: RolloutOrigin {
-                    kind: origin_kind,
+                    start: start.for_new_mirror(lineage_origin),
                     parent_thread_id: parent_session_id,
+                    root_session_id: Some(root_session_id),
                 },
                 resume_history_len,
             },

@@ -19,11 +19,15 @@ pub(crate) struct Setup {
     /// Skip the persistent local Hand service.
     #[arg(long)]
     skip_hand: bool,
+    /// Preview the shared Codex/Claude home links without creating them.
+    #[arg(long)]
+    dry_run_homes: bool,
 }
 
 impl Setup {
     pub(crate) async fn run(self) -> Result<()> {
         eprintln!("Setting up Nanocodex…");
+        crate::homes::link_for_setup(self.dry_run_homes);
         // Install the local service before any login prompt or network work.
         // It remains dormant until a verified saved account is available.
         if !self.skip_hand && cfg!(any(target_os = "macos", target_os = "linux")) {

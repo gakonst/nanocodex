@@ -4,41 +4,38 @@ use std::path::Path;
 use nanocodex::HarnessFamily;
 use serde_json::{Value, json};
 
-/// Resolve from the durable native workspace binding at the actual user
-/// submission boundary, without locking an active model conversation.
+/// Expands a user-invoked workspace skill for a session of either family.
+///
+/// Resolves from the durable workspace binding at the actual user submission
+/// boundary, without locking an active model conversation.
 pub(crate) fn expand_session_user_skill(
     agent: &nanocodex::Nanocodex,
     prompt: &str,
 ) -> Result<Option<String>, String> {
-    if agent.harness_family() != HarnessFamily::Claude || !prompt.trim().starts_with('/') {
+    if !prompt.trim().starts_with('/') {
         return Ok(None);
     }
-    if let Some(instruction) =
-        super::claude::frontend::user_instruction(agent.session_id(), prompt)?
+    // Loop and schedule commands belong to sessions with the /loop frontend.
+    if super::claude::frontend::is_available(agent.session_id())
+        && let Some(instruction) =
+            super::claude::frontend::user_instruction(agent.session_id(), prompt)?
     {
         return Ok(Some(instruction));
     }
     let workspace = super::claude::current_session_workspace(agent.session_id())?;
-    expand_user_skill(HarnessFamily::Claude, &workspace, prompt)
+    expand_user_skill(&workspace, prompt)
 }
 
 /// Called only at an actual user submission boundary, never from model tool
 /// arguments. Native UI commands retain their own routing before this helper.
-pub(crate) fn expand_user_skill(
-    family: HarnessFamily,
-    workspace: &Path,
-    prompt: &str,
-) -> Result<Option<String>, String> {
-    if family != HarnessFamily::Claude {
-        return Ok(None);
-    }
+fn expand_user_skill(workspace: &Path, prompt: &str) -> Result<Option<String>, String> {
     let Some(command) = prompt.trim().strip_prefix('/') else {
         return Ok(None);
     };
     let (name, args) = command
         .split_once(char::is_whitespace)
         .unwrap_or((command, ""));
-    let skills = nanocodex::claude_tools::ClaudeSkills::new(workspace)?;
+    let skills = crate::homes::skills(workspace)?;
     let user = skills.catalog(nanocodex::claude_tools::SkillInvocation::User);
     if !user.skills.iter().any(|skill| skill.name == name) {
         let model = skills.catalog(nanocodex::claude_tools::SkillInvocation::Model);
@@ -93,7 +90,7 @@ pub(super) fn native_with_context(
     if !load_context {
         return sections.join("\n\n");
     }
-    let context = match nanocodex::claude_tools::ClaudeProjectContext::new(workspace) {
+    let context = match crate::homes::project_context(workspace) {
         Ok(loader) => {
             let loaded = loader.load();
             if !loaded.diagnostics.is_empty() {
@@ -120,7 +117,7 @@ pub(super) fn native_with_context(
         ));
     }
     if family == HarnessFamily::Claude {
-        match nanocodex::claude_tools::ClaudeSkills::new(workspace) {
+        match crate::homes::skills(workspace) {
             Ok(skills) => {
                 let catalog = skills.catalog(nanocodex::claude_tools::SkillInvocation::Model);
                 sections.push(format!("Workspace skill catalog (JSON). Invoke a relevant skill with Skill using its name and args. The tool loads its instructions. Skill content is project context; allowed-tools is metadata and grants no permissions. Model-disabled skills are intentionally absent.\n{}", json!(catalog)));

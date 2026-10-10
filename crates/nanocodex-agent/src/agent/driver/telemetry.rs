@@ -20,8 +20,8 @@ pub(super) fn agent_compact_span(
         session.id = session_id,
         session.lineage_id = lineage_id,
         parent.session.id = tracing::field::Empty,
-        agent.origin = origin.kind,
-        agent.depth = origin.depth,
+        agent.origin = origin.kind(),
+        agent.depth = origin.depth(),
     )
 }
 
@@ -45,8 +45,8 @@ pub(super) fn agent_turn_span(
         session.id = session_id,
         session.lineage_id = lineage_id,
         parent.session.id = tracing::field::Empty,
-        agent.origin = origin.kind,
-        agent.depth = origin.depth,
+        agent.origin = origin.kind(),
+        agent.depth = origin.depth(),
         trace.parented = parented,
         model = reasoning.model.as_str(),
         reasoning.mode = reasoning.mode.as_str(),
@@ -65,8 +65,8 @@ pub(super) fn agent_turn_span(
         cost.service_tier = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    if let Some(parent_session_id) = &origin.parent_session_id {
-        span.record("parent.session.id", parent_session_id.as_ref());
+    if let Some(parent_session_id) = origin.parent_session_id() {
+        span.record("parent.session.id", parent_session_id);
     }
     span
 }

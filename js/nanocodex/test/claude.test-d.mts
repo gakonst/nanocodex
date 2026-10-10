@@ -3,6 +3,8 @@ import { Claude as NodeClaude } from '../node/index.mjs';
 import { Claude as BrowserClaude } from '../browser/index.mjs';
 import { Claude as WorkerClaude } from '../worker/index.mjs';
 import type { Options, NativeToolResult, ToolResult } from '../node/Claude.mjs';
+import { Agent as NodeAgent, Transport as NodeTransport, type SessionCheckpoint, type SessionInfo } from '../node/index.mjs';
+import type { Agent as DefaultAgent } from '../node/Agent.mjs';
 const options: Options = {
   model: 'claude-explicit', auth: { headers: async () => ({ authorization: 'host-owned' }) },
   tools: [{ name: 'Read', description: 'Explicit capability', strict: true, deferLoading: false, inputSchema: { type: 'object' }, handler(_input, context) {
@@ -18,12 +20,24 @@ NodeClaude.create(options).then(async agent => {
   const output: string = result.finalMessage;
   const tokens: number = (await result.usage()).input_tokens;
   void output; void tokens;
+  // One harness-neutral session contract for both families.
+  const info: SessionInfo = agent.session.info();
+  const claudeFamily: 'codex' | 'claude' = info.harness;
+  const checkpoint: SessionCheckpoint = await result.checkpoint();
+  const fork: DefaultAgent = await agent.session.fork({ at: checkpoint, origin: 'side_conversation' });
+  const resumed: DefaultAgent = await NodeClaude.create({ ...options, resume: await agent.session.checkpoint() });
+  await agent.session.setModel('claude-sonnet-4-6');
+  void claudeFamily; void fork; void resumed;
   await agent.session.cancel(); await agent.session.compact(); await agent.session.shutdown();
-  // @ts-expect-error Claude does not claim Codex voice/subagent/fork support.
-  agent.session.fork();
-  // @ts-expect-error This SDK supports text prompts, not Codex content input.
+  // @ts-expect-error Prompt content uses the shared PromptItem shape, not Responses input items.
   agent.turn.prompt({ input: [{ type: 'input_text', text: 'x' }] });
 });
+// Both families return the same Agent type from the same factory.
+const sameAgentType: Promise<DefaultAgent>[] = [
+  NodeAgent.create({ harness: 'claude', ...options }),
+  NodeAgent.create({ transport: NodeTransport.openAi({ apiKey: 'synthetic-key' }) }),
+];
+void sameAgentType;
 HostClaude.create(options); BrowserClaude.create(options); WorkerClaude.create(options);
 const result: ToolResult = { output: [{ type: 'input_image', image_url: 'data:image/png;base64,aA==' }], success: false };
 void result;

@@ -39,6 +39,9 @@ libc.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+# Codex-compatible rollout transcripts and mirrors, shared by every harness.
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.7", default-features = false, features = ["rollout"] }
+nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.7", default-features = false, features = ["events"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-futures.workspace = true

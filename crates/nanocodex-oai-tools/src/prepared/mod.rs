@@ -69,8 +69,12 @@ impl PreparedTools {
         if tools.workspace_enabled()
             && let Some(workspace) = tools.workspace_tools.as_ref()
         {
-            let workspace = Arc::new(crate::workspace_runtime::WorkspaceToolRuntime::new(
-                workspace.root.clone(),
+            let root = workspace.root.clone();
+            let workspace = Arc::new(tools.session().map_or_else(
+                || crate::workspace_runtime::WorkspaceToolRuntime::unbound(root.clone()),
+                |session| {
+                    crate::workspace_runtime::WorkspaceToolRuntime::new(root.clone(), session)
+                },
             ));
             for tool in [
                 crate::StandardTool::ApplyPatch,
