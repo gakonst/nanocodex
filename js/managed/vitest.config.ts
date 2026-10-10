@@ -13,7 +13,8 @@ export default defineConfig(async () => ({
   test: {
     include: ["test/**/*.test.ts"],
     setupFiles: ["./test/durable-object-settle.ts"],
-    exclude: ["test/user-data-*.test.ts", "test/prompt-apps.test.ts", "test/jev-reliability.test.ts", "test/router-telemetry.test.ts", "test/provider-probe-schedule.test.ts", "test/provider-probe-slots.test.ts", "test/provider-telemetry-routing.test.ts", "test/thread-model-routing.test.ts", "test/account-hosted-tools.test.ts", "test/hosted-tools-broker.test.ts", "test/hosted-tools-protocol.test.ts"],
+    // managed-image-journey needs vitest.images.config.ts bindings (npm run test:images).
+    exclude: ["test/managed-image-journey.test.ts", "test/user-data-*.test.ts", "test/prompt-apps.test.ts", "test/jev-reliability.test.ts", "test/router-telemetry.test.ts", "test/provider-probe-schedule.test.ts", "test/provider-probe-slots.test.ts", "test/provider-telemetry-routing.test.ts", "test/thread-model-routing.test.ts", "test/account-hosted-tools.test.ts", "test/hosted-tools-broker.test.ts", "test/hosted-tools-protocol.test.ts"],
     // Bundle payment dependencies as Wrangler does; lazy loading otherwise pays
     // thousands of Vite/Workers module transforms inside the first tool call.
     deps: { optimizer: { ssr: {
