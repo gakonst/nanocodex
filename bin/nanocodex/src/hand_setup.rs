@@ -664,7 +664,7 @@ async fn daemon_permission_reply(
     // The running daemon's own executable speaks its own IPC protocol.
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        Command::new(&executable)
+        Command::new(executable)
             .args([
                 "__device-hand",
                 if check {
