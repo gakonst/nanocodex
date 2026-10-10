@@ -36,6 +36,10 @@ static INITIALIZING: AtomicBool = AtomicBool::new(false);
 static UPDATES: AtomicU64 = AtomicU64::new(0);
 /// Set when a layout used a formula that is still rendering.
 static PENDING: AtomicBool = AtomicBool::new(false);
+/// [UPDATES] as read just before the last [drain_commands]. A worker queues its
+/// upload before bumping [UPDATES], so a difference means an upload may have
+/// been queued after the last drain.
+static DRAINED_UPDATES: AtomicU64 = AtomicU64::new(0);
 
 /// Starts terminal detection and the renderer off the input loop. Idempotent.
 pub fn start() {
@@ -85,6 +89,7 @@ pub fn shutdown() {
 
 /// Terminal uploads queued by the renderer, in order. Write before the frame.
 pub fn drain_commands(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<u64> {
+    DRAINED_UPDATES.store(UPDATES.load(Ordering::Acquire), Ordering::Release);
     let commands = match RENDERER
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -127,9 +132,17 @@ pub fn clear_pending() {
     PENDING.store(false, Ordering::Release);
 }
 
-/// Poll cadence while a formula is rendering; idle terminals never wake for math.
+/// Poll cadence while a formula is rendering or a finished upload has not been
+/// drained yet. A formula can finish after a frame drains uploads but before
+/// that frame's layout. The layout then sees it ready and nothing is pending,
+/// but its upload still needs a frame. Idle terminals never wake for math.
 pub fn deadline(now: Instant) -> Option<Instant> {
-    pending().then(|| now + Duration::from_millis(33))
+    (pending() || undrained()).then(|| now + Duration::from_millis(33))
+}
+
+/// A formula finished after the last upload drain; the next frame writes it.
+pub fn undrained() -> bool {
+    UPDATES.load(Ordering::Acquire) != DRAINED_UPDATES.load(Ordering::Acquire)
 }
 
 pub enum Rendered {

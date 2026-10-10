@@ -1535,7 +1535,8 @@ impl LayoutCache {
             self.entries
                 .retain(|_, entry| entry.image_state != markdown::ImageState::Pending);
         }
-        self.poll_terminal_images(now) || math_changed
+        // An upload queued after the last frame drained needs one more frame.
+        self.poll_terminal_images(now) || math_changed || math::undrained()
     }
 
     fn poll_terminal_images(&mut self, now: Instant) -> bool {
