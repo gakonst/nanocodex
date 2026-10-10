@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
-use nanocodex_agent::{ClaudeModel, HarnessModel};
+use nanocodex_agent::{ClaudeModel, HarnessModel, ModelCapabilities, ModelTransport};
 use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
@@ -48,57 +48,60 @@ impl ManagedModel {
         }
     }
 
-    /// Default effort for a newly selected model (not account availability).
+    /// Native agent-loop family whose conversation format this model uses.
     #[must_use]
-    pub const fn default_thinking(self) -> Thinking {
+    pub const fn family(self) -> nanocodex_agent::HarnessFamily {
         match self {
-            Self::Oai(model) => model.default_thinking(),
-            Self::ClaudeSonnet46
-            | Self::ClaudeOpus46
-            | Self::ClaudeSonnet55
-            | Self::ClaudeOpus55
-            | Self::ClaudeHaiku55
-            | Self::ClaudeFable51 => Thinking::Medium,
-            Self::ClaudeHaiku45 => Thinking::None,
-        }
-    }
-
-    /// Whether this known model supports an effort; availability requires the catalog.
-    #[must_use]
-    pub const fn supports_thinking(self, thinking: Thinking) -> bool {
-        match self {
-            Self::Oai(model) => model.supports_thinking(thinking),
-            Self::ClaudeSonnet46
-            | Self::ClaudeOpus46
-            | Self::ClaudeSonnet55
-            | Self::ClaudeOpus55
-            | Self::ClaudeHaiku55
-            | Self::ClaudeFable51 => {
-                matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
-            }
-            Self::ClaudeHaiku45 => matches!(thinking, Thinking::None),
-        }
-    }
-
-    /// Whether this known model supports a reasoning execution mode.
-    #[must_use]
-    pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
-        match self {
-            Self::Oai(model) => model.supports_reasoning_mode(mode),
+            Self::Oai(_) => nanocodex_agent::HarnessFamily::Codex,
             Self::ClaudeSonnet46
             | Self::ClaudeOpus46
             | Self::ClaudeSonnet55
             | Self::ClaudeOpus55
             | Self::ClaudeHaiku55
             | Self::ClaudeFable51
-            | Self::ClaudeHaiku45 => matches!(mode, ReasoningMode::Standard),
+            | Self::ClaudeHaiku45 => nanocodex_agent::HarnessFamily::Claude,
         }
     }
 
-    /// Whether fast processing can be requested; only the three GPT models support it.
+    /// Managed identity of a shared harness model, when the service hosts it.
+    #[must_use]
+    pub fn from_harness(model: nanocodex_agent::HarnessModel) -> Option<Self> {
+        match model {
+            nanocodex_agent::HarnessModel::Codex(model) => Some(Self::Oai(model)),
+            nanocodex_agent::HarnessModel::Claude(model) => model.as_str().parse().ok(),
+        }
+    }
+
+    /// Settings the managed control plane accepts for this model, from the
+    /// shared capability source. The account catalog ([`ModelCatalog`]) can
+    /// narrow availability further but never widen it.
+    #[must_use]
+    pub const fn capabilities(self) -> ModelCapabilities {
+        self.harness().capabilities(ModelTransport::Managed)
+    }
+
+    /// Default effort for a newly selected model (not account availability).
+    #[must_use]
+    pub const fn default_thinking(self) -> Thinking {
+        self.capabilities().default_thinking()
+    }
+
+    /// Whether this known model supports an effort; availability requires the catalog.
+    #[must_use]
+    pub const fn supports_thinking(self, thinking: Thinking) -> bool {
+        self.capabilities().supports_thinking(thinking)
+    }
+
+    /// Whether this known model supports a reasoning execution mode.
+    #[must_use]
+    pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
+        self.capabilities().supports_reasoning_mode(mode)
+    }
+
+    /// Whether fast processing can be requested on the managed service.
     #[must_use]
     pub const fn supports_fast_mode(self) -> bool {
-        matches!(self, Self::Oai(Model::Astra | Model::Sol | Model::Luna))
+        self.capabilities().fast_mode()
     }
 
     /// The native Responses identity, if this is not a Claude model.

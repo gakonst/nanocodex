@@ -34,7 +34,7 @@ pub(crate) struct BranchNavigator {
     host: FeatureHost,
     launch: LocalLaunch,
     workspace: PathBuf,
-    rollout: Option<PathBuf>,
+    rollout: Option<(String, PathBuf)>,
     prompts: Vec<String>,
     branch: usize,
     prompt: usize,
@@ -48,7 +48,7 @@ impl BranchNavigator {
         host: FeatureHost,
         launch: LocalLaunch,
         workspace: PathBuf,
-        rollout: Option<PathBuf>,
+        rollout: Option<(String, PathBuf)>,
         prompts: Vec<String>,
     ) -> Self {
         let (branch, focus) = {
@@ -138,7 +138,9 @@ impl BranchNavigator {
             &self.registry,
             &self.launch,
             &self.workspace,
-            self.rollout.as_deref(),
+            self.rollout
+                .as_ref()
+                .map(|(session, path)| (session.as_str(), path.as_path())),
             self.prompt,
             text,
         ) {
@@ -242,7 +244,7 @@ impl FeatureOverlay for BranchNavigator {
                 if self.rollout.is_some() {
                     "  No completed prompts yet."
                 } else {
-                    "  This session has no Codex rollout to branch from."
+                    "  This session has no rollout to branch from."
                 },
                 muted,
             ));

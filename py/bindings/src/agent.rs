@@ -1,22 +1,22 @@
 use std::sync::{Arc, Mutex};
 
 use nanocodex::{
-    Model, Nanocodex as RustNanocodex, OpenAi, ReasoningMode, Thinking,
+    ForkRequest, HarnessModel, Model, Nanocodex as RustNanocodex, OpenAi, ReasoningMode, Thinking,
     agent::session::SessionId,
     oai::auth::{OpenAiAuth, load_chatgpt_auth},
 };
 use pyo3::{
-    Py, PyResult, Python,
+    FromPyObject, Py, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     prelude::{pyclass, pymethods},
 };
 use tokio::runtime::Runtime;
 
 use crate::{
+    checkpoint::SessionCheckpoint,
     error::{lock_error, runtime_error},
     events::AgentEvents,
     runtime::{runtime, shared_http_client},
-    snapshot::SessionSnapshot,
     turn::{Turn, TurnResult},
 };
 
@@ -63,7 +63,7 @@ impl Nanocodex {
         instructions: Option<String>,
         session_id: Option<String>,
         prompt_cache_key: Option<String>,
-        resume: Option<Py<SessionSnapshot>>,
+        resume: Option<Py<SessionCheckpoint>>,
         websocket_url: Option<String>,
         api_base_url: Option<String>,
     ) -> PyResult<(Self, AgentEvents)> {
@@ -75,7 +75,7 @@ impl Nanocodex {
             .map(|session_id| session_id.parse::<SessionId>())
             .transpose()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        let resume = resume.map(|snapshot| snapshot.borrow(py).inner().clone());
+        let resume = resume.map(|checkpoint| checkpoint.borrow(py).inner().clone());
         let mut openai = OpenAi::builder(auth)
             .model(model)
             .reasoning_mode(reasoning_mode)
@@ -99,6 +99,12 @@ impl Nanocodex {
             .detach(move || {
                 runtime_for_build.block_on(async move {
                     let mut builder = RustNanocodex::builder(openai);
+                    // Resume first: later settings override the checkpoint's,
+                    // so an explicit session_id starts a new root that
+                    // continues the checkpointed conversation tree.
+                    if let Some(resume) = resume {
+                        builder = builder.resume(resume)?;
+                    }
                     if let Some(workspace) = workspace {
                         builder = builder.workspace(workspace);
                     }
@@ -110,9 +116,6 @@ impl Nanocodex {
                     }
                     if let Some(prompt_cache_key) = prompt_cache_key {
                         builder = builder.prompt_cache_key(prompt_cache_key);
-                    }
-                    if let Some(resume) = resume {
-                        builder = builder.resume(resume);
                     }
                     builder.build()
                 })
@@ -151,7 +154,7 @@ impl Nanocodex {
         let model = parse_model(model)?;
         let runtime = Arc::clone(&self.runtime);
         let agent = self.agent()?;
-        py.detach(move || runtime.block_on(agent.set_model(model)))
+        py.detach(move || runtime.block_on(agent.set_harness_model(HarnessModel::Codex(model))))
             .map_err(runtime_error)
     }
 
@@ -181,23 +184,23 @@ impl Nanocodex {
         Ok(wrap_agent(Arc::clone(&self.runtime), child, events))
     }
 
-    /// Fork from the latest safe model boundary.
-    fn fork(&self, py: Python<'_>) -> PyResult<(Self, AgentEvents)> {
+    /// Fork this conversation into an independently driven agent.
+    ///
+    /// Without `at`, forks from the latest safe boundary. A completed
+    /// `TurnResult` forks from the exact boundary that turn retained; a
+    /// `SessionCheckpoint` forks from a portable boundary of this
+    /// conversation tree.
+    #[pyo3(signature = (at = None))]
+    fn fork(&self, py: Python<'_>, at: Option<ForkAt<'_>>) -> PyResult<(Self, AgentEvents)> {
+        let request = match at {
+            None => ForkRequest::latest(),
+            Some(ForkAt::Turn(completed)) => ForkRequest::at_turn(completed.inner()),
+            Some(ForkAt::Checkpoint(checkpoint)) => ForkRequest::at(checkpoint.inner().clone()),
+        };
         let runtime = Arc::clone(&self.runtime);
         let agent = self.agent()?;
         let (child, events) = py
-            .detach(move || runtime.block_on(agent.fork()))
-            .map_err(runtime_error)?;
-        Ok(wrap_agent(Arc::clone(&self.runtime), child, events))
-    }
-
-    /// Fork from the exact checkpoint retained by a completed historical turn.
-    fn fork_from(&self, py: Python<'_>, completed: &TurnResult) -> PyResult<(Self, AgentEvents)> {
-        let completed = completed.inner().clone();
-        let runtime = Arc::clone(&self.runtime);
-        let agent = self.agent()?;
-        let (child, events) = py
-            .detach(move || runtime.block_on(agent.fork_from(&completed)))
+            .detach(move || runtime.block_on(agent.fork(request)))
             .map_err(runtime_error)?;
         Ok(wrap_agent(Arc::clone(&self.runtime), child, events))
     }
@@ -218,6 +221,13 @@ impl Nanocodex {
     fn __repr__(&self) -> String {
         format!("Nanocodex(session_id='{}')", self.session_id)
     }
+}
+
+/// Boundary accepted by `Nanocodex.fork(at=...)`.
+#[derive(FromPyObject)]
+enum ForkAt<'py> {
+    Turn(PyRef<'py, TurnResult>),
+    Checkpoint(PyRef<'py, SessionCheckpoint>),
 }
 
 impl Nanocodex {

@@ -1,9 +1,29 @@
 import { gatewayAvailability, type GatewaySecrets } from "./gateway-runtime";
 import { fetchResponseWithDeadline } from "./deadline";
-import { DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS, type ManagedAgentSettings } from "./agent-settings";
+import { AGENT_REASONING_MODES, AGENT_THINKING, DEFAULT_AGENT_SETTINGS, DEFAULT_OPENAI_AGENT_SETTINGS, validateAgentSettings, type ManagedAgentSettings } from "./agent-settings";
 
 type ModelRuntime = GatewaySecrets & { NANOCODEX_THREAD_ROUTING?: string };
 const openAIModels = [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"], ["gpt-6-luna", "GPT-6 Luna"]] as const;
+/**
+ * A model's offered settings, derived from managed admission
+ * (validateAgentSettings), which nanocodex's model-capabilities test checks
+ * against the shared Rust capability source for every model and setting.
+ */
+function offeredSettings(model: ManagedAgentSettings["model"]) {
+  const accepts = (thinking: string, reasoningMode: string, fastMode: boolean) => {
+    try {
+      validateAgentSettings({ model, thinking, reasoning_mode: reasoningMode, fast_mode: fastMode } as ManagedAgentSettings);
+      return true;
+    } catch { return false; }
+  };
+  const thinking = AGENT_THINKING.filter(level => accepts(level, "standard", false));
+  const base = thinking[0];
+  return {
+    thinking: [...thinking] as string[],
+    fast_mode: base !== undefined && accepts(base, "standard", true),
+    reasoning_modes: AGENT_REASONING_MODES.filter(mode => base !== undefined && accepts(base, mode, false)) as string[],
+  };
+}
 const connected = (value: unknown) => !!value && typeof value === "object" && (value as { connected?: unknown }).connected === true;
 
 async function credentialStatus(broker: Fetcher, userId: string) {
@@ -82,7 +102,7 @@ async function modelsFromStatus(broker: Fetcher, userId: string, runtime: ModelR
   const data: Array<{ id: ManagedAgentSettings["model"]; name: string; provider: string; thinking: string[]; fast_mode: boolean; reasoning_modes: string[] }> = [];
   if (connected(status.chatgpt) || connected(status.openai)) {
     for (const [id, name] of openAIModels)
-      data.push({ id, name, provider: "openai", thinking: [...(id === "gpt-6-luna" ? ["none"] : []), "low", "medium", "high", "xhigh", "max"], fast_mode: true, reasoning_modes: ["standard", "pro"] });
+      data.push({ id, name, provider: "openai", ...offeredSettings(id) });
   }
   // Provider access is independent from credentials being connected. The public
   // catalog is the intersection of that live grant and this runtime's verified
@@ -93,11 +113,11 @@ async function modelsFromStatus(broker: Fetcher, userId: string, runtime: ModelR
   let claudePartial = false;
   const routing = runtime.NANOCODEX_THREAD_ROUTING === "true" && typeof runtime.AI?.run === "function";
   if (routing) {
-    if (typeof runtime.AI?.run === "function") data.push({ id: "@cf/zai-org/glm-5.3", name: "GLM 5.3", provider: "workers_ai", thinking: ["low", "medium", "high"], fast_mode: false, reasoning_modes: ["standard"] });
+    if (typeof runtime.AI?.run === "function") data.push({ id: "@cf/zai-org/glm-5.3", name: "GLM 5.3", provider: "workers_ai", ...offeredSettings("@cf/zai-org/glm-5.3") });
     const gateway = gatewayAvailability(runtime);
     if (gateway.openrouter || gateway.vercel) {
-      data.push({ id: "kimi-k3", name: "Kimi K3", provider: "gateway", thinking: ["low", "high"], fast_mode: false, reasoning_modes: ["standard"] });
-      data.push({ id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "gateway", thinking: ["low", "medium", "high"], fast_mode: false, reasoning_modes: ["standard"] });
+      data.push({ id: "kimi-k3", name: "Kimi K3", provider: "gateway", ...offeredSettings("kimi-k3") });
+      data.push({ id: "mimo-v2.6-pro", name: "MiMo V2.6 Pro", provider: "gateway", ...offeredSettings("mimo-v2.6-pro") });
     }
   }
   if (connected(status.claude)) {
@@ -112,7 +132,7 @@ async function modelsFromStatus(broker: Fetcher, userId: string, runtime: ModelR
     if (!Array.isArray(allowed.models)) throw new Error("invalid Claude model catalog");
     for (const [id, name] of [["claude-sonnet-4-6", "Claude Sonnet 4.6"], ["claude-opus-4-6", "Claude Opus 4.6"],
       ["claude-sonnet-5-5", "Claude Sonnet 5.5"], ["claude-opus-5-5", "Claude Opus 5.5"]] as const) {
-      if (allowed.models.some(model => model.id === id)) data.push({ id, name, provider: "claude", thinking: ["low", "medium", "high"], fast_mode: false, reasoning_modes: ["standard"] });
+      if (allowed.models.some(model => model.id === id)) data.push({ id, name, provider: "claude", ...offeredSettings(id) });
     }
     } catch { claudeUnavailable = true; if (!data.length) throw new Error("Claude model catalog is unavailable"); }
   }

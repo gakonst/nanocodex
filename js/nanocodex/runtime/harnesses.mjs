@@ -26,7 +26,7 @@ export async function prepareHarnesses(harnesses, emit, {
   try {
     if (harnesses.claude) {
       const options = { ...harnesses.claude, codeEvaluator: harnesses.claude.codeEvaluator ?? codeEvaluator };
-      if (options.durability !== undefined || options.durabilityId !== undefined || options.sessionId !== undefined || options.harnesses !== undefined) throw new TypeError('child harness capabilities must be ephemeral and cannot contain nested harnesses');
+      if (options.durability !== undefined || options.durabilityId !== undefined || options.sessionId !== undefined || options.harnesses !== undefined || options.resume !== undefined) throw new TypeError('child harness capabilities must be ephemeral and cannot contain nested harnesses');
       const config = toClaudeConfig(options);
       const host = createClaudeHost({ ...options, onEvent: emit, subagentSessions, subagentRouting, codeEffectJournal, traceTool });
       const id = registerDefinitionHost(host, cloudflareReservation);

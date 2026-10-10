@@ -5,6 +5,7 @@ mod code_mode_drain;
 mod native_mcp;
 mod oauth;
 mod preempt;
+mod session_environment;
 mod support;
 mod tool_macro;
 mod tracing;

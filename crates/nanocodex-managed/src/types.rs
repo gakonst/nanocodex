@@ -492,39 +492,12 @@ impl AgentSettings {
     }
 
     pub(crate) fn validate(self) -> Result<Self, ManagedError> {
-        if !self.model.supports_thinking(self.thinking) {
-            return Err(ManagedError::Configuration(
-                (if self.model == ManagedModel::ClaudeHaiku45 {
-                    "Claude Haiku 4.5 supports only none reasoning effort"
-                } else if self.model.oai().is_none() {
-                    "Claude requires low, medium, or high reasoning effort"
-                } else if self.model == Model::Glm53 {
-                    "GLM-5.3 requires low, medium, or high reasoning effort"
-                } else if self.model == Model::Sol {
-                    "GPT-6.1 Sol requires low, medium, high, xhigh, or max reasoning effort"
-                } else {
-                    "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort"
-                })
-                .to_owned(),
-            ));
-        }
-        if !self.model.supports_reasoning_mode(self.reasoning_mode) {
-            return Err(ManagedError::Configuration(
-                (if self.model.oai().is_none() {
-                    "Claude does not support pro reasoning mode"
-                } else if self.model == Model::Glm53 {
-                    "GLM-5.3 does not support pro reasoning mode"
-                } else {
-                    "the selected gateway model does not support pro reasoning mode"
-                })
-                .to_owned(),
-            ));
-        }
-        if self.fast_mode && !self.model.supports_fast_mode() {
-            return Err(ManagedError::Configuration(
-                "Selected model does not support fast mode".to_owned(),
-            ));
-        }
+        let capabilities = self.model.capabilities();
+        capabilities
+            .check_thinking(self.thinking)
+            .and_then(|()| capabilities.check_reasoning_mode(self.reasoning_mode))
+            .and_then(|()| capabilities.check_fast_mode(self.fast_mode))
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
         Ok(self)
     }
 

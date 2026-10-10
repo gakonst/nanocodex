@@ -1063,12 +1063,17 @@ type CredentialBindingOwnership = Readonly<{
   strategy?: "session_v1";
 }>;
 
-type PortableDurabilityArchive = Readonly<{
+type PortableDurabilityStateArchive = Readonly<{
   records: readonly Readonly<{ key: string; value: string }>[];
   format: "nanocodex-durability-state-v2";
   payload: string;
   revision: string;
   stateId: string;
+}>;
+
+/** A root archive; its durable task-tree journal, when present, travels nested. */
+type PortableDurabilityArchive = PortableDurabilityStateArchive & Readonly<{
+  subagents?: PortableDurabilityStateArchive;
 }>;
 
 type ManagedDurabilityArchive = Readonly<{
@@ -1454,11 +1459,84 @@ function dropStaleSubagentStatus(rootSessionId: string, sessionId: string, reaso
   return undefined;
 }
 
+/**
+ * Resolves authority for a root-level child restored by managed durability
+ * import whose spawning turn belongs to the source agent. Returns undefined
+ * unless this agent adopted imported history, rootSessionId is this agent's own
+ * root, and a destination root turn is live.
+ */
+export type ManagedImportedSubagentAuthority = (rootSessionId: string) => TurnAuthorization | undefined;
+
+/**
+ * The live root turn's authority for an imported child, or undefined unless
+ * this agent completed a managed portability adoption and rootSessionId is
+ * its own root runtime session. Agents that never adopted history keep the
+ * strict spawning-turn requirement.
+ */
+export function managedImportedSubagentAuthority(
+  storage: DurableObjectStorage,
+  rootSessionId: string,
+  activeAuthorization: TurnAuthorization | undefined,
+): TurnAuthorization | undefined {
+  if (activeAuthorization === undefined) return undefined;
+  const adopted = storage.sql.exec<{ singleton: number }>(
+    "SELECT singleton FROM managed_portability_restoration WHERE singleton = 1",
+  ).toArray().length > 0;
+  if (!adopted) return undefined;
+  const ownRoot = storage.sql.exec<{ session_id: string }>(
+    "SELECT session_id FROM nanocodex_cloudflare_agent WHERE singleton = 1",
+  ).toArray()[0]?.session_id;
+  return ownRoot !== undefined && ownRoot === rootSessionId ? activeAuthorization : undefined;
+}
+
+/**
+ * Child routes are destination-local and are never imported. Export refuses
+ * routed or cross-harness children, and import accepts only native GPT roots,
+ * so every child of an adopted tree ran on its parent's unrouted native
+ * transport at the source. On first inference, a restored child of that
+ * imported lineage (adopted agent, live binding whose journal host context
+ * names no destination turn) receives exactly that native route, and a nested
+ * child only below a native parent route. Fresh spawns commit their route
+ * before first inference and never reach this. Anything else gets no route and
+ * fails closed. Callers must have checked that the root is native GPT.
+ */
+export function adoptImportedSubagentRoute(
+  storage: DurableObjectStorage,
+  bindings: ManagedSubagentBindings,
+  rootSessionId: string,
+  sessionId: string,
+): RetainedChildRoute | undefined {
+  const binding = bindings.authorizations.get(sessionId);
+  if (binding === undefined || binding.root_session_id !== rootSessionId || bindings.routes.has(sessionId)) return undefined;
+  if (storage.sql.exec<{ singleton: number }>(
+    "SELECT singleton FROM managed_portability_restoration WHERE singleton = 1",
+  ).toArray().length === 0) return undefined;
+  if (storage.sql.exec<{ id: string }>(
+    "SELECT id FROM managed_turns WHERE id = ?", binding.host_context_ref,
+  ).toArray().length !== 0) return undefined;
+  let parentSessionId = rootSessionId;
+  if (binding.parentAgentId !== null) {
+    const parent = [...bindings.authorizations.values()].find(row =>
+      row.root_session_id === rootSessionId && row.agentId === binding.parentAgentId);
+    const parentRoute = parent === undefined ? undefined : bindings.routes.get(parent.sessionId);
+    if (parent === undefined || parentRoute === undefined || parentRoute.route !== null
+      || parentRoute.claudeModel !== undefined || parentRoute.codexModel !== undefined
+      || parent.host_context_ref !== binding.host_context_ref) return undefined;
+    parentSessionId = parent.sessionId;
+  }
+  const route: RetainedChildRoute = {
+    routeId: crypto.randomUUID(), parentSessionId, hostContextRef: binding.host_context_ref, route: null,
+  };
+  bindings.routes.set(sessionId, route);
+  return route;
+}
+
 /** Managed half of the private live Cloudflare subagent lifecycle. */
 export function applyManagedSubagentLifecycle(
   storage: DurableObjectStorage,
   bindings: ManagedSubagentBindings,
   value: unknown,
+  importedAuthority?: ManagedImportedSubagentAuthority,
 ): ManagedSubagentAuthorizationRow | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("invalid managed subagent lifecycle event");
@@ -1532,8 +1610,23 @@ export function applyManagedSubagentLifecycle(
       "SELECT authorization_json FROM managed_turns WHERE id = ?",
       hostContextRef,
     ).toArray()[0];
-    if (turn === undefined) throw new ManagedSubagentLifecycleError("subagent_authorization_turn_missing", "managed subagent authorization turn is missing");
-    authorizationJson = JSON.stringify(parseTurnAuthorization(turn.authorization_json));
+    if (turn !== undefined) {
+      authorizationJson = JSON.stringify(parseTurnAuthorization(turn.authorization_json));
+    } else {
+      // A managed import restores the source task tree, but the source's
+      // spawning turns exist only in its turn archive, never as destination
+      // managed_turns rows, and source authority does not transfer. On an
+      // adopted agent, a root-level child whose spawning turn is absent is
+      // bound with exactly the authority of the live destination root turn
+      // that first binds it (in place of the absent spawning turn), and not at
+      // all without a live turn. Like a locally spawned child, the binding then
+      // persists: later turns reuse it unchanged (the retained branch above),
+      // and nested children inherit it. It keeps the journal host context, so
+      // status, release and conflict checks match exactly.
+      const adopted = importedAuthority?.(rootSessionId);
+      if (adopted === undefined) throw new ManagedSubagentLifecycleError("subagent_authorization_turn_missing", "managed subagent authorization turn is missing");
+      authorizationJson = JSON.stringify(parseTurnAuthorization(JSON.stringify(adopted)));
+    }
   } else {
     const parent = [...bindings.authorizations.values()].find(row =>
       row.root_session_id === rootSessionId && row.agentId === descriptor.parentAgentId);
@@ -5456,6 +5549,12 @@ export class DurableAgentSession extends DurableComputerObject {
         || this.ctx.storage.sql.exec("SELECT turn_id FROM managed_output_checkpoints LIMIT 1").toArray().length
         || this.ctx.storage.sql.exec("SELECT name FROM managed_connect_inputs LIMIT 1").toArray().length)
         return json({ error: "session_resources_not_portable", message: "Configured sessions, webhooks and published artifacts are not yet portable." }, { status: 409 });
+      // Child routes are not portable (see adoptImportedSubagentRoute): only
+      // trees whose children all use the unrouted native transport export.
+      if ([...this.#subagentBindings.routes.values()].some(route => route.route !== null
+        || route.claudeModel !== undefined || route.codexModel !== undefined)) {
+        return json({ error: "subagent_routes_not_portable", message: "Routed or cross-harness subagents are not yet portable. Close them before exporting this agent." }, { status: 409 });
+      }
       if (this.#goals.get()) return json({ error: "goal_present", message: "Clear the goal with /goal clear before exporting; goals are not portable yet." }, { status: 409 });
       if (this.#cronTriggers.hasTriggers() || this.#cronTriggers.hasDeliveries()) {
         return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
@@ -10843,7 +10942,9 @@ export class DurableAgentSession extends DurableComputerObject {
               assertRoutingAuthority(this.#activeTurnAuthorization());
           }
         } else {
-          const binding = readChildRoute(sessionId);
+          const binding = readChildRoute(sessionId) ?? (!this.#threadRoute()
+            && ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"].includes(this.#settings().model)
+            ? adoptImportedSubagentRoute(this.ctx.storage, bindings, rootSessionId, sessionId) : undefined);
           if (!binding) throw new Error("Child route is missing; refusing parent transport");
           const authorization = managedAuthorizationForRouting(
             this.ctx.storage, bindings, rootSessionId, sessionId, binding.hostContextRef,
@@ -11655,7 +11756,9 @@ export class DurableAgentSession extends DurableComputerObject {
         inferenceForSession,
         preserveRootTransport: !this.#threadRoute(),
         subagentLifecycle: (event: unknown) => {
-          const completed = applyManagedSubagentLifecycle(this.ctx.storage, bindings, event);
+          const completed = applyManagedSubagentLifecycle(
+            this.ctx.storage, bindings, event, rootSessionId => this.#importedSubagentAuthority(rootSessionId),
+          );
           if (completed?.parentAgentId === null) {
             this.ctx.waitUntil(this.#track(this.#continueAfterSubagent(completed, bindings, runtimeGeneration)).catch(error => {
               if (error instanceof ManagedRequestError && error.code === "subagent_continuation_superseded") return;
@@ -12220,6 +12323,11 @@ A direct subagent completed after the previous turn ended. Continue the current 
     });
     if (!response.ok) throw await userDataResponseError(response);
     return response.json<unknown>();
+  }
+
+  /** Live root-turn authority for children restored by managed import; see applyManagedSubagentLifecycle. */
+  #importedSubagentAuthority(rootSessionId: string): TurnAuthorization | undefined {
+    return managedImportedSubagentAuthority(this.ctx.storage, rootSessionId, this.#activeTurnAuthorization());
   }
 
   #activeTurnAuthorization(): TurnAuthorization | undefined {
@@ -15110,12 +15218,16 @@ function validateManagedDurabilityArchive(value: unknown): ManagedDurabilityArch
     || archive.format !== "nanocodex-managed-durability-state-v2"
     || typeof archive.source_agent_id !== "string" || !SESSION_ID.test(archive.source_agent_id)
     || !durability || Array.isArray(durability)
-    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload", "records", "subagents"].includes(key))
     || durability.format !== "nanocodex-durability-state-v2"
     || typeof durability.stateId !== "string" || durability.stateId.length === 0
     || typeof durability.revision !== "string" || !/^[1-9][0-9]*$/.test(durability.revision)
     || typeof durability.payload !== "string"
     || !Array.isArray(durability.records) || durability.records.length !== 0
+    || !validPortableSubagentsArchive(durability.stateId, durability.subagents)
+    // Journal records travel through the bounded R2 archive, like the root's.
+    || (durability.subagents !== undefined
+      && (durability.subagents as { records: unknown[] }).records.length !== 0)
     || !validManagedPortableArchiveIdentity(archive.managed_durability_records)
     || !identity || Array.isArray(identity)
     || Object.keys(identity).some((key) => ![
@@ -15286,14 +15398,27 @@ function portableDurabilityStateId(value: unknown): string {
     throw new Error("portable durability archive is invalid");
   }
   const archive = value as Record<string, unknown>;
-  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload", "records", "subagents"].includes(key))
     || archive.format !== "nanocodex-durability-state-v2"
     || typeof archive.stateId !== "string" || archive.stateId.length === 0
     || typeof archive.revision !== "string" || !/^[1-9][0-9]*$/.test(archive.revision)
-    || typeof archive.payload !== "string") {
+    || typeof archive.payload !== "string"
+    || !validPortableSubagentsArchive(archive.stateId, archive.subagents)) {
     throw new Error("portable durability archive is invalid");
   }
   return archive.stateId;
+}
+
+/** The optional nested task-tree journal must be exactly its root's companion state. */
+function validPortableSubagentsArchive(rootStateId: string, value: unknown): boolean {
+  if (value === undefined) return true;
+  return isRecord(value)
+    && !Object.keys(value).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    && value.format === "nanocodex-durability-state-v2"
+    && value.stateId === `${rootStateId}:subagents`
+    && typeof value.revision === "string" && /^[1-9][0-9]*$/.test(value.revision)
+    && typeof value.payload === "string"
+    && Array.isArray(value.records);
 }
 
 function validDurabilityImportPreparation(value: unknown): boolean {

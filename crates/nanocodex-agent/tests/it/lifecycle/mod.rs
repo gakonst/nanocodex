@@ -9,9 +9,11 @@ use std::{
     time::Duration,
 };
 
+use crate::conversation;
 use async_trait::async_trait;
 use nanocodex_agent::{
-    Nanocodex, NanocodexError, OpenAi, PromptRequest, ResponseError, Tools,
+    ForkRequest, Nanocodex, NanocodexError, OpenAi, PromptRequest, ResponseError,
+    SessionCheckpoint, Tools,
     rollout::RolloutConfig,
     session::SessionId,
     transport::{ResponsesAttempt, ResponsesServiceResponse},

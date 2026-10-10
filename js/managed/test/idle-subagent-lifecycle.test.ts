@@ -93,7 +93,9 @@ async function setup(instance: DurableAgentSession, state: DurableObjectState, i
     }));
   };
   const created = await request("/create", {
-    session_id: "0198d3f0-8844-7000-8000-000000000092", owner_id: principal.userId,
+    // Fresh per fixture: a managed session ID is its runtime session ID, which
+    // is unique per isolate across Durable Objects (one DO per session).
+    session_id: "0198d3f0-8844-7000-8000-" + crypto.randomUUID().slice(-12), owner_id: principal.userId,
     organization_id: principal.organizationId, team_id: principal.teamId, authorization_epoch: 1,
     public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS,
     configuration: {},

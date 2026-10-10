@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn forking_before_a_completed_turn_is_typed() {
     let (agent, events) = Nanocodex::builder(test_openai()).build().unwrap();
-    let Err(error) = agent.fork().await else {
+    let Err(error) = agent.fork(ForkRequest::latest()).await else {
         panic!("fork unexpectedly succeeded");
     };
     assert!(matches!(error, NanocodexError::ForkBeforeCompletedTurn));
@@ -11,7 +11,7 @@ async fn forking_before_a_completed_turn_is_typed() {
 }
 
 #[tokio::test]
-async fn live_snapshot_requires_a_safe_boundary_and_does_not_change_parent() {
+async fn live_checkpoint_tracks_safe_boundaries_and_does_not_change_parent() {
     let (retained, _retained_attempts) = mpsc::unbounded_channel();
     let openai = OpenAi::builder("test")
         .service(move || RetainingCompletedService {
@@ -21,8 +21,13 @@ async fn live_snapshot_requires_a_safe_boundary_and_does_not_change_parent() {
         .unwrap();
     let tools = Tools::builder().without_defaults().build().unwrap();
     let (agent, events) = Nanocodex::builder(openai).tools(tools).build().unwrap();
+    // Before the first boundary a checkpoint keeps identity but no conversation.
+    let empty = agent.checkpoint().await.unwrap();
+    assert!(!empty.has_conversation());
+    assert_eq!(empty.session_id(), agent.session_id());
+    assert_eq!(empty.lineage(), &agent.session().lineage);
     assert!(matches!(
-        agent.snapshot().await,
+        agent.fork(ForkRequest::at(empty)).await,
         Err(NanocodexError::ForkBeforeCompletedTurn)
     ));
 
@@ -33,11 +38,15 @@ async fn live_snapshot_requires_a_safe_boundary_and_does_not_change_parent() {
         .result()
         .await
         .unwrap();
-    let first_snapshot = serde_json::to_value(first.snapshot().unwrap()).unwrap();
-    let copied = serde_json::to_value(agent.snapshot().await.unwrap()).unwrap();
+    let first_checkpoint = first.checkpoint().unwrap();
+    assert!(first_checkpoint.has_conversation());
+    assert!(first_checkpoint.turn_id().is_some());
+    assert_eq!(first_checkpoint.turn_id(), first.turn_id());
+    let first_snapshot = serde_json::to_value(conversation(&first_checkpoint)).unwrap();
+    let copied = serde_json::to_value(conversation(&agent.checkpoint().await.unwrap())).unwrap();
     assert_eq!(copied, first_snapshot);
     assert_eq!(
-        serde_json::to_value(agent.snapshot().await.unwrap()).unwrap(),
+        serde_json::to_value(conversation(&agent.checkpoint().await.unwrap())).unwrap(),
         copied
     );
 
@@ -50,9 +59,10 @@ async fn live_snapshot_requires_a_safe_boundary_and_does_not_change_parent() {
         .result()
         .await
         .unwrap();
-    let second_snapshot = serde_json::to_value(second.snapshot().unwrap()).unwrap();
+    let second_snapshot =
+        serde_json::to_value(conversation(&second.checkpoint().unwrap())).unwrap();
     assert_eq!(
-        serde_json::to_value(agent.snapshot().await.unwrap()).unwrap(),
+        serde_json::to_value(conversation(&agent.checkpoint().await.unwrap())).unwrap(),
         second_snapshot
     );
     assert_ne!(copied["history"], second_snapshot["history"]);
@@ -363,7 +373,7 @@ async fn an_agent_handle_does_not_keep_its_driver_alive() {
         panic!("agent handle unexpectedly kept its driver alive");
     };
     assert!(matches!(error, NanocodexError::AgentStopped));
-    let Err(error) = handle.fork().await else {
+    let Err(error) = handle.fork(ForkRequest::latest()).await else {
         panic!("agent handle unexpectedly kept its driver alive");
     };
     assert!(matches!(error, NanocodexError::AgentStopped));
@@ -375,5 +385,237 @@ fn building_requires_a_tokio_runtime() {
     assert!(matches!(
         Nanocodex::builder(test_openai()).build(),
         Err(NanocodexError::TokioRuntimeUnavailable)
+    ));
+}
+
+/// A recipe whose every turn completes without network access.
+macro_rules! completing_openai {
+    () => {{
+        let (retained, retained_attempts) = mpsc::unbounded_channel();
+        let openai = OpenAi::builder("test")
+            .service(move || RetainingCompletedService {
+                retained: retained.clone(),
+            })
+            .build()
+            .unwrap();
+        (openai, retained_attempts)
+    }};
+}
+
+macro_rules! tool_free_agent {
+    ($openai:expr) => {
+        Nanocodex::builder($openai)
+            .tools(Tools::builder().without_defaults().build().unwrap())
+            .build()
+            .unwrap()
+    };
+}
+
+#[tokio::test]
+async fn sessions_report_identity_lineage_capabilities_and_persistence() {
+    use nanocodex_agent::{Capabilities, HarnessFamily, Mutability, Origin};
+
+    let (openai, _attempts) = completing_openai!();
+    let (agent, events) = tool_free_agent!(openai);
+    let session = agent.session();
+    assert_eq!(session.session_id, agent.session_id());
+    assert_eq!(session.family, HarnessFamily::Codex);
+    assert_eq!(session.lineage.root_session_id, agent.session_id());
+    assert_eq!(session.lineage.parent_session_id, None);
+    assert_eq!(session.lineage.origin, Origin::Root);
+    assert_eq!(session.lineage.depth, 0);
+    let capabilities: Capabilities = agent.capabilities();
+    assert!(
+        capabilities.checkpoint
+            && capabilities.resume
+            && capabilities.fork
+            && capabilities.fork_at
+            && capabilities.side_conversation
+            && capabilities.spawn
+            && capabilities.steering
+            && capabilities.identified_steering
+            && capabilities.compaction
+            && capabilities.developer_messages
+            && capabilities.context
+            && capabilities.ultrafast_service_tier,
+        "a local Codex session supports every lifecycle operation: {capabilities:?}"
+    );
+    assert_eq!(capabilities.model, Mutability::BeforeFirstPrompt);
+    assert_eq!(capabilities.thinking, Mutability::Anytime);
+    assert_eq!(capabilities.service_tier, Mutability::Anytime);
+    assert!(
+        agent.persistence().is_none(),
+        "no rollout or durable policy"
+    );
+    agent.flush().await.unwrap();
+
+    agent.prompt("first").await.unwrap().result().await.unwrap();
+    let (side, side_events) = agent
+        .fork(ForkRequest::latest().side_conversation())
+        .await
+        .unwrap();
+    let lineage = &side.session().lineage;
+    assert_eq!(lineage.origin, Origin::SideConversation);
+    assert_eq!(
+        lineage.parent_session_id.as_deref(),
+        Some(agent.session_id())
+    );
+    assert_eq!(lineage.root_session_id, agent.session_id());
+    assert_eq!(lineage.depth, 1);
+    let (grandchild, grandchild_events) = side.fork(ForkRequest::latest()).await.unwrap();
+    let lineage = &grandchild.session().lineage;
+    assert_eq!(lineage.origin, Origin::Fork);
+    assert_eq!(
+        lineage.parent_session_id.as_deref(),
+        Some(side.session_id())
+    );
+    assert_eq!(lineage.root_session_id, agent.session_id());
+    assert_eq!(lineage.depth, 2);
+    let (spawned, spawned_events) = agent.spawn().await.unwrap();
+    assert_eq!(spawned.session().lineage.origin, Origin::Subagent);
+    assert_eq!(spawned.session().lineage.depth, 1);
+    for child in [&side, &grandchild, &spawned] {
+        child.shutdown().await.unwrap();
+    }
+    agent.shutdown().await.unwrap();
+    drop((events, side_events, grandchild_events, spawned_events));
+}
+
+#[tokio::test]
+async fn portable_checkpoints_resume_and_fork_only_within_their_conversation() {
+    let (openai, _attempts) = completing_openai!();
+    let (agent, events) = tool_free_agent!(openai.clone());
+    let first = agent.prompt("first").await.unwrap().result().await.unwrap();
+    let checkpoint =
+        SessionCheckpoint::from_json(&first.checkpoint().unwrap().to_json().unwrap()).unwrap();
+    assert_eq!(checkpoint.session_id(), agent.session_id());
+    assert_eq!(checkpoint.family(), nanocodex_agent::HarnessFamily::Codex);
+    assert_eq!(checkpoint.turn_id(), first.turn_id());
+
+    // A portable checkpoint and a live turn boundary both fork this conversation.
+    let (from_checkpoint, from_checkpoint_events) = agent
+        .fork(ForkRequest::at(checkpoint.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        from_checkpoint
+            .session()
+            .lineage
+            .parent_session_id
+            .as_deref(),
+        Some(agent.session_id())
+    );
+    let branched = from_checkpoint
+        .prompt("continue the branch")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert_eq!(
+        branched.checkpoint().unwrap().conversation_id(),
+        checkpoint.conversation_id(),
+        "forks share the conversation tree"
+    );
+    let (from_turn, from_turn_events) = agent.fork(ForkRequest::at_turn(&first)).await.unwrap();
+
+    // Resume reopens the same session (identity, lineage, model, thinking)
+    // in a fresh runtime with the retained conversation.
+    let (resumed, resumed_events) = Nanocodex::builder(openai.clone())
+        .tools(Tools::builder().without_defaults().build().unwrap())
+        .resume(checkpoint.clone())
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(resumed.session_id(), agent.session_id());
+    assert_eq!(resumed.session().lineage, agent.session().lineage);
+    let resumed_checkpoint = resumed.checkpoint().await.unwrap();
+    assert!(resumed_checkpoint.has_conversation());
+    assert_eq!(resumed_checkpoint.model(), checkpoint.model());
+    assert_eq!(resumed_checkpoint.thinking(), checkpoint.thinking());
+    assert_eq!(
+        resumed_checkpoint.conversation_id(),
+        checkpoint.conversation_id()
+    );
+    resumed
+        .prompt("continue after resume")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+
+    // Boundaries of an unrelated conversation are rejected.
+    let (other, other_events) = tool_free_agent!(openai.clone());
+    let other_first = other.prompt("other").await.unwrap().result().await.unwrap();
+    assert!(matches!(
+        agent
+            .fork(ForkRequest::at(other.checkpoint().await.unwrap()))
+            .await,
+        Err(NanocodexError::CheckpointLineageMismatch)
+    ));
+    assert!(matches!(
+        agent.fork(ForkRequest::at_turn(&other_first)).await,
+        Err(NanocodexError::CheckpointLineageMismatch)
+    ));
+
+    // A durable store's native snapshot and a legacy child record convert to
+    // checkpoints of the same conversation.
+    let native = checkpoint.codex_snapshot().unwrap().expect("conversation");
+    let rewrapped = SessionCheckpoint::codex(
+        agent.session_id(),
+        agent.session().lineage.clone(),
+        checkpoint.thinking(),
+        native.clone(),
+    )
+    .unwrap();
+    assert_eq!(rewrapped.conversation_id(), checkpoint.conversation_id());
+    let legacy = serde_json::json!({
+        "session_id": agent.session_id(),
+        "model": match checkpoint.model() {
+            nanocodex_agent::HarnessModel::Codex(model) => model,
+            other => panic!("unexpected model {other:?}"),
+        },
+        "thinking": checkpoint.thinking(),
+        "fast_mode": true,
+        "conversation": native,
+    });
+    let legacy =
+        SessionCheckpoint::from_legacy_codex_child(legacy, agent.session().lineage.clone())
+            .unwrap();
+    assert_eq!(
+        legacy.payload()["service_tier"],
+        serde_json::to_value(nanocodex_agent::ServiceTier::Fast).unwrap()
+    );
+    let (from_legacy, from_legacy_events) = agent.fork(ForkRequest::at(legacy)).await.unwrap();
+    from_legacy.shutdown().await.unwrap();
+    drop(from_legacy_events);
+
+    // Another family's checkpoint is rejected before its payload is decoded.
+    let mut foreign = serde_json::to_value(&checkpoint).unwrap();
+    foreign["model"] = serde_json::json!(
+        nanocodex_agent::HarnessFamily::Claude
+            .default_model()
+            .as_str()
+    );
+    let foreign = SessionCheckpoint::from_json(&foreign.to_string()).unwrap();
+    assert!(matches!(
+        agent.fork(ForkRequest::at(foreign.clone())).await,
+        Err(NanocodexError::CheckpointFamilyMismatch { .. })
+    ));
+    assert!(matches!(
+        Nanocodex::builder(openai).resume(foreign),
+        Err(NanocodexError::CheckpointFamilyMismatch { .. })
+    ));
+
+    for handle in [&from_checkpoint, &from_turn, &resumed, &other, &agent] {
+        handle.shutdown().await.unwrap();
+    }
+    drop((
+        events,
+        from_checkpoint_events,
+        from_turn_events,
+        resumed_events,
+        other_events,
     ));
 }

@@ -452,13 +452,18 @@ test("a failed speculative connection does not authorize a later managed text tu
   }
 });
 
-test("Cloudflare checkpoint rejects before the first safe boundary and fork resume requires pristine storage", async () => {
+test("Cloudflare checkpoint before the first turn cannot seed a fork and fork resume requires pristine storage", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
   const owner = durableOwner(storage);
   const agent = await create(module, owner);
   try {
-    await assert.rejects(checkpoint(agent), /safe conversation boundary/);
+    // A fresh session has a portable boundary, but no conversation to continue.
+    const empty = await checkpoint(agent);
+    assert.deepEqual(JSON.parse(JSON.stringify(empty)), empty);
+    await assert.rejects(create(module, durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID), {
+      [Symbol.for("nanocodex.cloudflare.internalForkResume")]: empty,
+    }), /no safe conversation boundary to fork/);
     await assert.rejects(create(module, durableOwner(new MemoryStorage(), egressBinding(), SECOND_OBJECT_ID), {
       resume: {},
     }), /does not accept resume/);
@@ -760,11 +765,16 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
 
   const archive = await exportDurabilityState(sourceOwner);
   assert.deepEqual(await bindAgent(module).exportDurabilityHead(sourceOwner), { ...archive, records: [] });
+  // The runtime journals its (empty) task tree beside the root state.
+  const journalId = `${stateId}:subagents`;
+  const journal = store.load(journalId);
+  assert.notEqual(journal.revision, "0");
   assert.deepEqual(archive, {
     format: "nanocodex-durability-state-v2", records: [],
     stateId,
     revision: "1",
     payload,
+    subagents: { format: "nanocodex-durability-state-v2", records: [], stateId: journalId, ...journal },
   });
   const pages = [];
   let cursor;
@@ -797,13 +807,172 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
     /invalid shape/,
   );
   const destination = await create(module, destinationOwner);
-  assert.notEqual(destination.sessionId, sourceSessionId);
+  // The durable state is the session's source of truth, so the imported
+  // session keeps its identity inside the new Durable Object runtime.
+  assert.equal(destination.sessionId, sourceSessionId);
+  assert.equal(destination.session.info().sessionId, stateId);
   assert.equal(destinationStorage.stateId, stateId);
   assert.deepEqual(createCloudflareDurabilityStore(destinationStorage).load(stateId), {
     revision: "1",
     payload,
   });
+  assert.deepEqual(createCloudflareDurabilityStore(destinationStorage).load(journalId), journal);
   await destination.session.shutdown();
+});
+
+test("Cloudflare Agent export and import carry the durable task tree to a fresh Durable Object", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const sourceStorage = new MemoryStorage();
+  const binding = egressBinding();
+  const sourceOwner = durableOwner(sourceStorage, binding, FIRST_OBJECT_ID);
+  const source = await create(module, sourceOwner);
+  const child = await Subagents.spawn(source, {
+    role: "portable-child",
+    task: "Remain part of the exported task tree.",
+    outputSchema: { type: "object" },
+  });
+  await source.session.shutdown();
+  const stateId = sourceStorage.stateId;
+
+  const archive = await exportDurabilityState(sourceOwner);
+  assert.equal(archive.stateId, stateId);
+  assert.equal(archive.subagents?.stateId, stateId + ":subagents");
+  assert.equal(archive.subagents.format, "nanocodex-durability-state-v2");
+  assert.match(archive.subagents.payload, /portable-child/);
+  // The managed cutover head moves root records separately, never the tree.
+  const head = await bindAgent(module).exportDurabilityHead(sourceOwner);
+  assert.ok(archive.subagents.records.length > 0, "the child's checkpoint travels as content-addressed records");
+  assert.deepEqual(head, { ...archive, records: [], subagents: { ...archive.subagents, records: [] } });
+  // The journal is also exportable through the resumable page API.
+  const pages = [];
+  let cursor;
+  do {
+    const page = await exportDurabilityState(sourceOwner, {
+      subagents: true, from: "0", to: archive.subagents.revision, cursor, limit: 97,
+    });
+    assert.equal(page.stateId, archive.subagents.stateId);
+    pages.push(page);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  assert.equal(pages.map(page => page.payload).join(""), archive.subagents.payload);
+  await assert.rejects(exportDurabilityState(sourceOwner, { subagents: "yes", from: "0" }), /subagents must be true/);
+
+  const destinationStorage = new MemoryStorage();
+  const destinationOwner = durableOwner(destinationStorage, binding, SECOND_OBJECT_ID);
+  await assert.rejects(
+    importDurabilityState(destinationOwner, JSON.parse(JSON.stringify({
+      ...archive, subagents: { ...archive.subagents, stateId: "unrelated:subagents" },
+    }))),
+    /root's task-tree journal/,
+  );
+  assert.equal(destinationStorage.stateId, undefined, "a rejected import leaves the destination pristine");
+  const bound = bindAgent(module);
+  await bound.importDurabilityState(destinationOwner, JSON.parse(JSON.stringify(archive)));
+  await assert.doesNotReject(bound.importDurabilityState(destinationOwner, JSON.parse(JSON.stringify(archive))));
+  const { subagents: _journal, ...rootOnly } = archive;
+  await assert.rejects(importDurabilityState(destinationOwner, rootOnly), /pristine Durable Object/,
+    "a retry that would drop the imported task tree is not idempotent");
+
+  const destination = await create(module, destinationOwner);
+  try {
+    assert.equal(destination.session.info().sessionId, stateId);
+    const restored = (await Subagents.list(destination, { includeCompleted: true })).agents;
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].agent_id, child.agent_id);
+    assert.equal(restored[0].role, "portable-child");
+    assert.deepEqual(restored[0].status, { state: "interrupted" });
+  } finally { await destination.session.shutdown(); }
+
+  // Negative control: the root state alone restores an empty task tree.
+  const rootOnlyStorage = new MemoryStorage();
+  const rootOnlyOwner = durableOwner(rootOnlyStorage, binding, SECOND_OBJECT_ID);
+  await importDurabilityState(rootOnlyOwner, rootOnly);
+  const truncated = await create(module, rootOnlyOwner);
+  try {
+    assert.deepEqual((await Subagents.list(truncated, { includeCompleted: true })).agents, []);
+  } finally { await truncated.session.shutdown(); }
+});
+
+test("Cloudflare export and import move completed children with their checkpoint records and history", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const routes = new Map();
+  let modelCalls = 0;
+  let childTurn = 1;
+  const ai = { async run(model, input) {
+    modelCalls++;
+    assert.ok(modelCalls <= 4, "bounded portable child requests");
+    if (input.messages.at(-1)?.role === "tool") {
+      assert.match(input.messages.at(-1).content, /"accepted":true/);
+      return { choices: [{ finish_reason: "stop", message: { content: "PORTABLE_CHILD_DONE_" + childTurn } }] };
+    }
+    if (childTurn === 2) {
+      assert.ok(JSON.stringify(input.messages).includes("PORTABLE_CHILD_DONE_1"),
+        "the imported child continues from its exported conversation");
+    }
+    const submit = input.tools.find((tool) => tool.function.description.startsWith("exec\n"));
+    return { choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{
+      id: "portable-submit-" + modelCalls, type: "function", function: {
+        name: submit.function.name,
+        arguments: JSON.stringify({ input: "text(await tools.submit_result(" + JSON.stringify({ output: { turn: childTurn } }) + "));" }),
+      },
+    }] } }] };
+  } };
+  const profile = { model: "@cf/zai-org/glm-5.3", thinking: "high", workersAi: { ai, model: "@cf/zai-org/glm-5.3", thinking: "high" } };
+  const options = (storage) => ({
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: profile.model, thinking: profile.thinking, reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      workersAi: profile.workersAi, subagentsEnabled: true,
+      subagentRouting: {
+        async resolve() { return { model: profile.model, thinking: profile.thinking, routeId: "portable-route" }; },
+        bind({ sessionId }) { routes.set(sessionId, profile); },
+      },
+      subagentLifecycle(event) { if (event.type === "release") routes.delete(event.sessionId); },
+      inferenceForSession(id) { return id === storage.sessionId ? profile : routes.get(id); },
+    },
+  });
+  const outputSchema = { type: "object", properties: { turn: { type: "integer" } }, required: ["turn"], additionalProperties: false };
+  const sourceStorage = new MemoryStorage();
+  const binding = egressBinding();
+  const sourceOwner = durableOwner(sourceStorage, binding, FIRST_OBJECT_ID);
+  const source = await create(module, sourceOwner, options(sourceStorage));
+  const child = await Subagents.spawn(source, { role: "portable-worker", task: "Return an object with turn equal to 1.", outputSchema });
+  assert.deepEqual((await Subagents.wait(source, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
+    { state: "completed", output: { turn: 1 } });
+  await source.session.shutdown();
+
+  const archive = await exportDurabilityState(sourceOwner);
+  const journal = JSON.parse(archive.subagents.payload);
+  const reference = journal.agents[0].checkpoint_ref;
+  assert.equal(typeof reference, "string", "the child's checkpoint is a content-addressed record");
+  assert.ok(archive.subagents.records.length > 0, "the archive carries the child checkpoint records");
+  assert.ok(archive.subagents.records.some(({ key }) => key === reference || key.endsWith(reference)),
+    "the referenced checkpoint record is exported");
+  assert.ok(archive.subagents.records.map(({ value }) => value).join("").includes("PORTABLE_CHILD_DONE_1"),
+    "the exported records hold the child's committed history");
+  // A head-only export (the managed cutover) moves record sets separately.
+  const head = await bindAgent(module).exportDurabilityHead(sourceOwner);
+  assert.deepEqual(head, { ...archive, records: [], subagents: { ...archive.subagents, records: [] } });
+
+  const destinationStorage = new MemoryStorage();
+  const destinationOwner = durableOwner(destinationStorage, binding, SECOND_OBJECT_ID);
+  await importDurabilityState(destinationOwner, JSON.parse(JSON.stringify(archive)));
+  // Route pins are host-owned data (retained across teardown); this host
+  // carries them to the destination with the rest of its own state.
+  const destination = await create(module, destinationOwner, options(destinationStorage));
+  try {
+    const restored = (await Subagents.list(destination, { includeCompleted: true })).agents;
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].agent_id, child.agent_id);
+    assert.deepEqual(restored[0].status, { state: "completed", output: { turn: 1 } });
+    assert.equal(modelCalls, 2, "importing a completed child does not replay its effects");
+    childTurn = 2;
+    await Subagents.send(destination, { agentId: child.agent_id, message: "Return an object with turn equal to 2." });
+    assert.deepEqual((await Subagents.wait(destination, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
+      { state: "completed", output: { turn: 2 } });
+    assert.equal(modelCalls, 4);
+  } finally { await destination.session.shutdown(); }
 });
 
 test("Cloudflare Agent rejects corrupt canonical state before importing it", async () => {
@@ -1176,8 +1345,9 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
   try {
     assert.equal((await parent.turn.prompt({ input: "Say PARENT_DONE" }).result()).finalMessage, "PARENT_DONE");
     const copied = await checkpoint(parent);
-    assert.equal(copied.version, 1);
-    assert.ok(copied.history.some(item => JSON.stringify(item).includes("PARENT_DONE")));
+    assert.equal(parent.session.capabilities().checkpoint, true);
+    assert.ok((await parent.session.context()).history.some(item => JSON.stringify(item).includes("PARENT_DONE")));
+    assert.deepEqual(JSON.parse(JSON.stringify(copied)), copied, "checkpoints are JSON-safe");
     assert.deepEqual(await checkpoint(parent), copied);
     // A failed managed preparation must pin the seed *before* catalog/tools
     // discovery so a cold retry can use the same fork without re-admission.
@@ -1199,7 +1369,7 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
     await assert.rejects(create(module, childOwner, {
       ...options,
       [Symbol.for("nanocodex.cloudflare.internalForkResume")]: {
-        ...copied, prompt_cache_key: "forged-cache-lineage",
+        ...copied, turn_id: "forged-turn",
       },
     }), /pristine Durable Object|retained seed/);
     child = await create(module, childOwner, {
@@ -1207,14 +1377,12 @@ test("Cloudflare checkpoint copies committed history and seeds only a pristine d
       [Symbol.for("nanocodex.cloudflare.internalForkResume")]: copied,
     });
     assert.equal((await child.turn.prompt({ input: "Say CHILD_DONE" }).result()).finalMessage, "CHILD_DONE");
-    const childBoundary = await checkpoint(child);
-    assert.ok(childBoundary.history.some(item => JSON.stringify(item).includes("CHILD_DONE")));
+    const childInfo = child.session.info();
+    assert.ok((await child.session.context()).history.some(item => JSON.stringify(item).includes("CHILD_DONE")));
     await child.session.shutdown();
     child = await create(module, childOwner, options);
-    const recoveredChild = await checkpoint(child);
-    assert.equal(recoveredChild.lineage_id, childBoundary.lineage_id);
-    assert.equal(recoveredChild.prompt_cache_key, childBoundary.prompt_cache_key);
-    assert.ok(recoveredChild.history.some(item => JSON.stringify(item).includes("CHILD_DONE")),
+    assert.deepEqual(child.session.info(), childInfo, "cold recovery keeps the child's identity and lineage");
+    assert.ok((await child.session.context()).history.some(item => JSON.stringify(item).includes("CHILD_DONE")),
       "child cold recovery keeps its own committed model history");
     assert.deepEqual(await checkpoint(parent), copied, "fork does not mutate the parent history");
   } finally {

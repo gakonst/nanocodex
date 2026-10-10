@@ -2,7 +2,7 @@ import {
   awaitTurnAcceptance,
   cancel as cancelTurn,
   getTurnResult,
-  getTurnSnapshot,
+  getTurnCheckpoint,
   getTurnUsage,
   prompt as promptTurn,
   steer as steerTurn,
@@ -21,8 +21,8 @@ export function accepted(turn) {
   return awaitTurnAcceptance(turn);
 }
 
-export function getSnapshot(result) {
-  return getTurnSnapshot(result);
+export function getCheckpoint(result) {
+  return getTurnCheckpoint(result);
 }
 
 export function getUsage(result) {

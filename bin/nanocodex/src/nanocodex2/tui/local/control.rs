@@ -3,7 +3,7 @@
 //! stable byte cursors pinned to its committed boundary; prompt, steer, cancel
 //! and settings.set drive the local agent; models.list returns the local catalog.
 
-use nanocodex::{HarnessModel, Thinking};
+use nanocodex::{HarnessModel, ModelTransport, Thinking};
 use nanocodex_tui_control::{Bridge, Command, Conversation, accepted, rejected, unknown};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
@@ -17,10 +17,16 @@ use super::super::{
 fn models() -> Value {
     json!({"models": HarnessModel::for_family(nanocodex::HarnessFamily::Codex)
         .chain(HarnessModel::for_family(nanocodex::HarnessFamily::Claude))
-        .map(|model| json!({
-            "id": model.as_str(),
-            "efforts": Thinking::ALL.iter().filter(|effort| model.supports_thinking(**effort)).map(ToString::to_string).collect::<Vec<_>>(),
-        }))
+        .map(|model| {
+            let capabilities = model.capabilities(ModelTransport::Native);
+            json!({
+                "id": model.as_str(),
+                "efforts": capabilities.thinking().map(|effort| effort.as_str()).collect::<Vec<_>>(),
+                "fast_mode": capabilities.fast_mode(),
+                "service_tiers": capabilities.service_tiers().map(|tier| tier.as_str()).collect::<Vec<_>>(),
+                "reasoning_modes": capabilities.reasoning_modes().map(|mode| mode.as_str()).collect::<Vec<_>>(),
+            })
+        })
         .collect::<Vec<_>>()})
 }
 
@@ -32,8 +38,10 @@ pub(in crate::nanocodex2::tui) fn publish(bridge: &Bridge, runtime: &DriverRunti
     if runtime.agent_id.is_empty() {
         return;
     }
-    let rollout = agent.rollout();
-    if let Some(rollout) = rollout {
+    let rollout = agent
+        .persistence()
+        .and_then(|persistence| persistence.rollout);
+    if let Some(rollout) = &rollout {
         bridge.committed(&runtime.agent_id, rollout.committed_bytes());
     }
     bridge.conversation(Conversation {
@@ -70,7 +78,11 @@ pub(in crate::nanocodex2::tui) fn dispatch(
             command.reject("session_changed");
             return None;
         }
-        let Some(rollout) = runtime.agent.as_ref().and_then(|agent| agent.rollout()) else {
+        let Some(rollout) = runtime.agent.as_ref().and_then(|agent| {
+            agent
+                .persistence()
+                .and_then(|persistence| persistence.rollout)
+        }) else {
             command.reject("history_unavailable");
             return None;
         };

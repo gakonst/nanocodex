@@ -217,6 +217,7 @@ struct StoredOAuthConnect<'a> {
 pub(crate) async fn connect(
     server_name: &str,
     server: &McpServer,
+    session: Option<&crate::SessionEnvironment>,
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<OAuthMetadataCache>,
     parent: &Span,
@@ -257,6 +258,11 @@ pub(crate) async fn connect(
             }
             let mut command = tokio::process::Command::new(command);
             command.args(args).envs(env);
+            // Session identity always overrides configured or inherited values.
+            match session {
+                Some(session) => session.apply(command.as_std_mut()),
+                None => crate::SessionEnvironment::clear(command.as_std_mut()),
+            }
             if let Some(cwd) = cwd {
                 command.current_dir(cwd);
             }

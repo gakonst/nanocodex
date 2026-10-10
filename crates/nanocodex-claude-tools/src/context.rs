@@ -1,5 +1,6 @@
 //! Bounded project context from an explicitly authorized workspace.
-//! No home/ancestor-directory discovery or external imports are implicit.
+//! No home/ancestor-directory discovery or external imports are implicit;
+//! hosts supply user-level instructions resolved by `nanocodex-home`.
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -44,12 +45,22 @@ impl ProjectContext {
 #[derive(Clone, Debug)]
 pub struct ClaudeProjectContext {
     root: PathBuf,
+    global: Option<nanocodex_home::GlobalInstructions>,
 }
 impl ClaudeProjectContext {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, String> {
         Ok(Self {
             root: authorized_root(root.as_ref())?,
+            global: None,
         })
+    }
+    /// Prepends host-resolved user-level instructions (`~/.codex/AGENTS.md`
+    /// or its override, then `~/.claude/CLAUDE.md`, deduplicated) to every
+    /// load. They share the context byte budget and precede project files.
+    #[must_use]
+    pub fn with_global_instructions(mut self, global: nanocodex_home::GlobalInstructions) -> Self {
+        self.global = Some(global);
+        self
     }
     /// Load root context. Path-scoped rules require `load_for_path` instead.
     pub fn load(&self) -> ProjectContext {
@@ -113,11 +124,33 @@ impl ClaudeProjectContext {
         if target.components().count() > 32 {
             result.diagnostic("context hierarchy truncated at 32 levels".into());
         }
+        let mut remaining = TOTAL_BYTES;
+        if let Some(global) = &self.global {
+            for source in &global.sources {
+                if remaining == 0 || result.excerpts.len() >= MAX_FILES {
+                    result.diagnostic("user instructions exceed the context budget".into());
+                    break;
+                }
+                let mut end = source.text.len().min(FILE_BYTES).min(remaining);
+                while !source.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                remaining -= end;
+                result.excerpts.push(ContextExcerpt {
+                    path: source.path.to_string_lossy().into_owned(),
+                    text: source.text[..end].to_owned(),
+                    truncated: source.truncated || end < source.text.len(),
+                });
+            }
+            for diagnostic in &global.diagnostics {
+                result.diagnostic(diagnostic.to_string());
+            }
+        }
         let mut state = LoadState {
             root: &self.root,
             result: &mut result,
             seen: BTreeSet::new(),
-            remaining: TOTAL_BYTES,
+            remaining,
         };
         let mut scanned = 0;
         for dir in dirs {
@@ -411,6 +444,20 @@ pub(crate) fn read_local(
         }
         File::open(root.join(relative)).map_err(|e| e.to_string())?
     };
+    read_bounded(file, limit)
+}
+/// Reads a host-resolved user-level file. Unlike workspace content, user homes
+/// commonly link skills between `~/.codex` and `~/.claude`, so symlinks are followed.
+pub(crate) fn read_user_file(path: &Path, limit: usize) -> Result<(String, bool), String> {
+    if !path.is_absolute() {
+        return Err("user file path must be absolute".into());
+    }
+    read_bounded(
+        File::open(path).map_err(|e| format!("user file: {e}"))?,
+        limit,
+    )
+}
+fn read_bounded(file: File, limit: usize) -> Result<(String, bool), String> {
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("not a regular file".into());
     }

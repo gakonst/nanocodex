@@ -1,4 +1,5 @@
-//! Shared shell and Computer Use handlers and schemas used by Codex.
+//! The same shell, Computer Use and managed-memory handlers and schemas used
+//! by Codex, bridged into Claude's native tool catalog.
 use super::*;
 use nanocodex::tools::ToolDefinition as RuntimeDefinition;
 
@@ -44,6 +45,7 @@ pub(super) fn install(
         };
         if !name.starts_with("mcp__cua_repl__")
             && !matches!(name.as_ref(), "exec_command" | "write_stdin")
+            && !crate::managed_memory::is_memory_tool(&name)
         {
             continue;
         }

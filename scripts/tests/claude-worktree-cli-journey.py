@@ -172,7 +172,7 @@ def main():
         roots = {entry['workspace'] for turn in preview['checkpoints'] for entry in turn['files']}
         require(roots == {str(root), str(wt)}, f'checkpoint roots lost: {roots}')
         first_turn = preview['checkpoints'][0]['checkpoint']
-        restore = json.loads(run('restore', rewind + ['--checkpoint', first_turn, '--restore']).stdout)
+        restore = json.loads(run('restore', rewind + ['--before', first_turn, '--restore']).stdout)
         require(restore['restored'], 'multi-root restore not confirmed')
         require((root / 'same.txt').read_text() == (wt / 'same.txt').read_text() == 'base\n', 'multi-root same-path before-images not restored')
         # Retained shell sessions pin their worktree until write_stdin observes exit.

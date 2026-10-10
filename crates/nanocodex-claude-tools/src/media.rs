@@ -3,7 +3,7 @@
 //! PDF helpers are trusted host configuration, run without a shell or network
 //! arguments. The embedding must authorize and OS-isolate their filesystem and
 //! memory access, just as it isolates the workspace's other native operations.
-use crate::{ImageSource, ToolOutput, ToolResultBlock};
+use crate::{ImageSource, SessionEnvironment, ToolOutput, ToolResultBlock};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
@@ -41,6 +41,7 @@ pub(crate) fn read(
     path: &Path,
     input: &Value,
     options: &MediaReadOptions,
+    session: Option<&SessionEnvironment>,
 ) -> Result<Option<ToolOutput>, String> {
     let extension = path
         .extension()
@@ -72,7 +73,7 @@ pub(crate) fn read(
     }
     let bytes = read_bytes(path, if is_image { MAX_IMAGE } else { MAX_SOURCE })?;
     if pdf {
-        return read_pdf(&bytes, input, options).map(Some);
+        return read_pdf(&bytes, input, options, session).map(Some);
     }
     if is_image {
         let block = image_block(&bytes)?;
@@ -160,7 +161,12 @@ fn page_range(input: &Value, total: u32) -> Result<(u32, u32), String> {
     Ok((start, end))
 }
 
-fn read_pdf(bytes: &[u8], input: &Value, options: &MediaReadOptions) -> Result<ToolOutput, String> {
+fn read_pdf(
+    bytes: &[u8],
+    input: &Value,
+    options: &MediaReadOptions,
+    session: Option<&SessionEnvironment>,
+) -> Result<ToolOutput, String> {
     if !bytes.starts_with(b"%PDF-") {
         return Err("invalid PDF header".into());
     }
@@ -174,6 +180,7 @@ fn read_pdf(bytes: &[u8], input: &Value, options: &MediaReadOptions) -> Result<T
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut info = Command::new(&options.pdfinfo);
     info.arg(snapshot.path()).env("LC_ALL", "C");
+    SessionEnvironment::apply_or_clear(session, &mut info);
     let info = helper(&mut info, 16 * 1024, deadline)?;
     let info = String::from_utf8(info).map_err(|_| "pdfinfo returned invalid text")?;
     if info
@@ -208,6 +215,7 @@ fn read_pdf(bytes: &[u8], input: &Value, options: &MediaReadOptions) -> Result<T
             ])
             .arg(snapshot.path())
             .env("LC_ALL", "C");
+        SessionEnvironment::apply_or_clear(session, &mut render);
         let raster = helper(&mut render, MAX_IMAGE, deadline)?;
         size += raster.len();
         if size > MAX_MEDIA {

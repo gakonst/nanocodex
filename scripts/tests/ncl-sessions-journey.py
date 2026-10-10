@@ -216,17 +216,26 @@ finally:
         typ("/collapse"); keys("Enter"); time.sleep(0.5); s = screen()
         end = time.monotonic() + 40
         steered = []
+        def carries_side(request):
+            # A side conversation is a durable session: with a Codex mirror it is
+            # handed over by thread reference, otherwise inline.
+            text = json.dumps(request.get("input", []))
+            if "BUSY_SIDE" in text and "<btw_conversation>" in text:
+                return True
+            return any(f"local Codex thread {json.loads(path.read_text().splitlines()[0])['payload']['id']}" in text
+                       for path in rollouts() if "BUSY_SIDE" in path.read_text())
         while time.monotonic() < end and not steered:
-            steered = [r for r in requests[before:] if "BUSY_SIDE" in json.dumps(r.get("input", [])) and "<btw_conversation>" in json.dumps(r.get("input", []))]
+            steered = [r for r in requests[before:] if carries_side(r)]
             time.sleep(0.5)
         s = wait(lambda s: "ANSWER_SLOW_PROMPT" in s, "slow main turn finishes", 40)
         checks.append({"check": "/collapse while main runs steers the side exchange into that turn",
-                       "ok": bool(steered) and "SLOW_PROMPT" in json.dumps(steered[0].get("input", [])) and "not collapsed" not in s})
+                       "ok": bool(steered) and "SLOW_PROMPT" in json.dumps(steered[0].get("input", [])) and "not collapsed" not in s,
+                       "mode": "inline" if steered and "<btw_conversation>" in json.dumps(steered[0].get("input", [])) else "thread"})
     except Exception as error:
         checks.append({"check": "btw/split/close", "ok": False, "error": str(error)})
 
-    # Claude parity: legacy edited a Claude session's first prompt as a fresh session,
-    # refused later prompts, and switched back to the original conversation.
+    # Claude parity with Codex: editing any prompt branches the durable session before
+    # that turn, and the branch navigator switches back to the original conversation.
     claude_requests, claude_frames = [], []
     S2 = S + "-claude"
     claude_server = None
@@ -242,7 +251,7 @@ finally:
                         last = content if isinstance(content, str) else " ".join(
                             b.get("text", "") for b in content if isinstance(b, dict))
                         break
-                marker = next((m for m in ("CLAUDE_CLEARED", "CLAUDE_EDITED", "CLAUDE_SECOND", "CLAUDE_FIRST") if m in last), "UNKNOWN")
+                marker = next((m for m in ("CLAUDE_CLEARED", "CLAUDE_EDITED", "CLAUDE_LATER", "CLAUDE_SECOND", "CLAUDE_FIRST") if m in last), "UNKNOWN")
                 events = [
                     {"type": "message_start", "message": {"id": "msg_" + uuid4().hex, "type": "message", "role": "assistant",
                      "model": body.get("model", "claude"), "content": [], "usage": {"input_tokens": 10, "output_tokens": 0}}},
@@ -292,25 +301,58 @@ finally:
         cwait(composer_visible, "claude composer", 40)
         ctyp("CLAUDE_FIRST"); ckeys("Enter"); cwait(lambda s: "REPLY_CLAUDE_FIRST" in s, "claude first answer")
         ctyp("CLAUDE_SECOND"); ckeys("Enter"); cwait(lambda s: "REPLY_CLAUDE_SECOND" in s, "claude second answer")
+        def cselect(wanted, what):
+            # Move the navigator selection (the "›" row) onto the wanted row.
+            for _ in range(12):
+                rows = [line.strip(" │").lstrip("› ").strip() for line in cscreen().splitlines()]
+                marks = [i for i, line in enumerate(cscreen().splitlines()) if "│›" in line.replace(" ", "")]
+                targets = [i for i, row in enumerate(rows) if wanted(row)]
+                if marks and targets and marks[-1] == targets[0]:
+                    return
+                prompt_row = lambda i: rows[i][:1].isdigit() and ". " in rows[i]
+                if marks and targets and prompt_row(marks[-1]) != prompt_row(targets[0]):
+                    ckeys("Tab")  # Tab moves focus between the branch list and the prompts
+                else:
+                    ckeys("Down" if marks and targets and targets[0] > marks[-1] else "Up")
+                time.sleep(0.3)
+            raise AssertionError(f"navigator never selected {what}")
+        def requests_with(marker, since, timeout=40):
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
+                found = [r for r in claude_requests[since:] if marker in json.dumps(r["body"].get("messages", []))]
+                if found:
+                    return json.dumps(found[0]["body"].get("messages", []))
+                time.sleep(0.3)
+            return None
         ckeys("C-M-b")
         s = cwait(lambda s: "Prompts on this branch" in s, "claude navigator", 20)
         checks.append({"check": "Claude navigator lists the journal's prompts", "ok": "1. CLAUDE_FIRST" in s and "2. CLAUDE_SECOND" in s})
+        # Unified sessions: editing a later prompt branches after the kept turns, exactly like Codex.
+        cselect(lambda row: row.endswith(". CLAUDE_SECOND"), "prompt 2")
         ckeys("e"); time.sleep(0.5)
         for _ in range(len("CLAUDE_SECOND")): ckeys("BSpace")
-        ctyp("CLAUDE_LATER"); ckeys("Enter"); time.sleep(1); s = cscreen()
-        checks.append({"check": "Claude later-prompt edit is refused like legacy", "ok": "ncl rewind" in s})
-        ckeys("Up"); ckeys("e"); time.sleep(0.5)
+        before = len(claude_requests)
+        ctyp("CLAUDE_LATER"); ckeys("Enter")
+        history = requests_with("CLAUDE_LATER", before)
+        s = cwait(lambda s: "REPLY_CLAUDE_LATER" in s, "later-prompt branch answer", 40)
+        checks.append({"check": "Claude later-prompt edit branches after turn 1 like Codex",
+                       "ok": history is not None and "CLAUDE_FIRST" in history and "CLAUDE_SECOND" not in history})
+        # Editing the first prompt branches before every turn: only the edited prompt remains.
+        ckeys("C-M-b")
+        cwait(lambda s: "Prompts on this branch" in s and "CLAUDE_LATER" in s, "claude navigator on the branch", 20)
+        cselect(lambda row: row.endswith(". CLAUDE_FIRST"), "the first prompt")
+        ckeys("e"); time.sleep(0.5)
         for _ in range(len("CLAUDE_FIRST")): ckeys("BSpace")
         before = len(claude_requests)
         ctyp("CLAUDE_EDITED"); ckeys("Enter")
+        history = requests_with("CLAUDE_EDITED", before, 60) or ""
         s = cwait(lambda s: "REPLY_CLAUDE_EDITED" in s, "edited first prompt answer", 60)
-        edited = [r for r in claude_requests[before:] if "CLAUDE_EDITED" in json.dumps(r["body"].get("messages", []))]
-        history = json.dumps(edited[0]["body"].get("messages", [])) if edited else ""
-        checks.append({"check": "Claude first-prompt edit starts a fresh session with only the edited prompt",
-                       "ok": bool(edited) and "CLAUDE_FIRST" not in history and "CLAUDE_SECOND" not in history
+        checks.append({"check": "Claude first-prompt edit starts a branch with only the edited prompt",
+                       "ok": bool(history) and all(m not in history for m in ("CLAUDE_FIRST", "CLAUDE_SECOND", "CLAUDE_LATER"))
                        and "REPLY_CLAUDE_SECOND" not in s})
         ckeys("C-M-b"); s = cwait(lambda s: "Branches" in s and "(current)" in s, "claude branches", 20)
-        ckeys("Up"); ckeys("Enter")
+        cselect(lambda row: row.startswith("main "), "the original session")
+        ckeys("Enter")
         s = cwait(lambda s: "REPLY_CLAUDE_FIRST" in s and "REPLY_CLAUDE_SECOND" in s, "switch back to the original Claude session", 60)
         checks.append({"check": "switch back to the original Claude session replays it", "ok": "REPLY_CLAUDE_EDITED" not in s})
         # The reopened session keeps Claude's resolved launch: its footer shows the

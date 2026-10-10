@@ -130,6 +130,16 @@ impl EncodedPayload {
         })
     }
 
+    /// A stored payload addressed by its content key.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(crate) fn from_key(key: &str) -> Self {
+        Self {
+            key: key.into(),
+            content: None,
+            pending: Vec::new(),
+        }
+    }
+
     pub(crate) fn reference(&self) -> Self {
         Self {
             key: self.key.clone(),
@@ -560,6 +570,7 @@ pub struct DurableState {
     revision: u64,
     operations: BTreeMap<String, OperationState>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
+    session: Option<crate::catalog::SessionRecord>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -574,6 +585,9 @@ pub(crate) struct DurableCheckpoint {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RetainedCheckpoint {
     pub(crate) nanocodex_durable_state: DurableCheckpoint,
+    /// Family-neutral catalog metadata; absent in journals written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nanocodex_session: Option<crate::catalog::SessionRecord>,
 }
 
 #[derive(serde::Serialize)]
@@ -586,6 +600,8 @@ struct DurableCheckpointRef<'a> {
 #[derive(serde::Serialize)]
 struct RetainedCheckpointRef<'a> {
     nanocodex_durable_state: DurableCheckpointRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nanocodex_session: Option<&'a crate::catalog::SessionRecord>,
 }
 
 impl DurableState {
@@ -671,6 +687,25 @@ impl DurableState {
             .map(|(id, operation)| (id.as_str(), operation))
     }
 
+    /// Family-neutral catalog metadata recorded for this session, if any.
+    #[must_use]
+    pub const fn session(&self) -> Option<&crate::catalog::SessionRecord> {
+        self.session.as_ref()
+    }
+
+    pub(crate) fn set_session(&mut self, session: Option<crate::catalog::SessionRecord>) {
+        self.session = session;
+        if self.operations.is_empty()
+            && let Some((_, checkpoint)) = &self.latest_checkpoint
+        {
+            pin_start(self.session.as_mut(), checkpoint);
+        }
+    }
+
+    pub(crate) const fn session_mut(&mut self) -> Option<&mut crate::catalog::SessionRecord> {
+        self.session.as_mut()
+    }
+
     /// Returns the latest terminal checkpoint in operation order.
     #[must_use]
     pub fn latest_checkpoint(&self) -> Option<&EncodedPayload> {
@@ -686,6 +721,7 @@ impl DurableState {
                 operations: &self.operations,
                 latest_checkpoint: self.latest_checkpoint(),
             },
+            nanocodex_session: self.session.as_ref(),
         })
         .map_err(Error::InvalidPayload)
     }
@@ -694,6 +730,11 @@ impl DurableState {
         let before = self.operations.len();
         Self::retain_terminal_operations(&mut self.operations, limit);
         let mut changed = self.operations.len() != before;
+        if changed && let Some(session) = &mut self.session {
+            // Branching before the oldest retained turn can no longer prove
+            // that it was the conversation's first turn.
+            session.history_pruned = true;
+        }
         for operation in self
             .operations
             .values_mut()
@@ -838,6 +879,7 @@ impl DurableState {
             revision,
             operations: checkpoint.operations,
             latest_checkpoint,
+            session: None,
         };
         for (operation_id, operation) in &state.operations {
             if matches!(
@@ -872,6 +914,15 @@ impl DurableState {
         self.apply(revision, entry)?;
         self.revision = revision;
         Ok(())
+    }
+
+    /// An empty head published at `revision`, retracting an unused state's
+    /// catalog record and checkpoint.
+    pub(crate) fn retracted(revision: u64) -> Self {
+        Self {
+            revision,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn advance_revision(&mut self, revision: u64) -> Result<()> {
@@ -1287,6 +1338,9 @@ impl DurableState {
                 }
             }
             Transition::CheckpointCommitted { checkpoint } => {
+                if self.operations.is_empty() {
+                    pin_start(self.session.as_mut(), &checkpoint);
+                }
                 self.latest_checkpoint = Some((revision, checkpoint));
             }
         }
@@ -1859,5 +1913,19 @@ mod chunk_tests {
         // The identity table is part of the stored chunk format.
         assert_eq!(GEAR[0], gear_table()[0]);
         assert_ne!(GEAR[0], GEAR[1]);
+    }
+}
+
+/// Pins the checkpoint a fork or side conversation holds before its first
+/// turn, so a later edit of that turn continues its inherited history.
+fn pin_start(session: Option<&mut crate::catalog::SessionRecord>, checkpoint: &EncodedPayload) {
+    if let Some(record) = session
+        && record.branch.is_none()
+        && matches!(
+            record.lineage.origin,
+            nanocodex_agent::Origin::Fork | nanocodex_agent::Origin::SideConversation
+        )
+    {
+        record.start_checkpoint = Some(checkpoint.key.to_string());
     }
 }

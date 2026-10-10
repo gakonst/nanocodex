@@ -15,6 +15,7 @@ members = [
     "crates/nanocodex-claude",
     "crates/nanocodex-claude-tools",
     "crates/nanocodex-decisions",
+    "crates/nanocodex-home",
     "crates/nanocodex-managed",
     "crates/nanocodex-phone",
     "crates/nanocodex-hand",
@@ -107,6 +108,7 @@ nanocodex-agent = { version = "0.6.7", path = "crates/nanocodex-agent" }
 nanocodex-claude = { version = "0.6.7", path = "crates/nanocodex-claude" }
 nanocodex-claude-tools = { version = "0.6.7", path = "crates/nanocodex-claude-tools", default-features = false }
 nanocodex-decisions = { version = "0.6.7", path = "crates/nanocodex-decisions" }
+nanocodex-home = { version = "0.6.7", path = "crates/nanocodex-home" }
 nanocodex-managed = { version = "0.6.7", path = "crates/nanocodex-managed" }
 nanocodex-cli-auth = { version = "0.6.7", path = "bin/nanocodex/account-auth" }
 nanocodex-bin-shared = { version = "0.6.7", path = "bin/nanocodex/shared" }

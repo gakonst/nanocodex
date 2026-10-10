@@ -11,14 +11,15 @@ mod stdio;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use crate::{
-    DynamicToolProvider, Tool, ToolContext, ToolInput, ToolOutput, ToolOutputContent, ToolResult,
+    DynamicToolProvider, SessionEnvironment, Tool, ToolContext, ToolInput, ToolOutput,
+    ToolOutputContent, ToolResult,
 };
 use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
@@ -72,6 +73,8 @@ pub struct Mcp {
     search: Arc<McpSearch>,
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<oauth::OAuthMetadataCache>,
+    // Identity exported to stdio servers; the first bound session wins.
+    session: Arc<OnceLock<SessionEnvironment>>,
     started: AtomicBool,
     // Discovery belongs to the provider, not its shared catalog or control handles.
     // Dropping this JoinSet cancels unfinished handshakes instead of detaching them.
@@ -104,6 +107,7 @@ pub struct McpHandle {
     state: Arc<ProviderState>,
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<oauth::OAuthMetadataCache>,
+    session: Arc<OnceLock<SessionEnvironment>>,
 }
 
 /// An in-progress browser OAuth login.
@@ -196,6 +200,7 @@ impl Mcp {
             state: Arc::clone(&self.state),
             oauth_store: self.oauth_store.clone(),
             oauth_metadata: Arc::clone(&self.oauth_metadata),
+            session: Arc::clone(&self.session),
         }
     }
 
@@ -310,6 +315,7 @@ impl McpBuilder {
             search,
             oauth_store: self.oauth_store,
             oauth_metadata: Arc::new(oauth::OAuthMetadataCache::default()),
+            session: Arc::new(OnceLock::new()),
             started: AtomicBool::new(false),
             startup_tasks: Mutex::new(tokio::task::JoinSet::new()),
         })
@@ -369,6 +375,7 @@ impl McpHandle {
         let result = client::connect(
             server_name,
             &server.config,
+            self.session.get(),
             self.oauth_store.clone(),
             Arc::clone(&self.oauth_metadata),
             parent,
@@ -524,6 +531,13 @@ impl McpLogin {
 
 #[async_trait]
 impl DynamicToolProvider for Mcp {
+    /// Stdio servers are shared by every session using this provider, so the
+    /// first bound identity wins; each call still carries its caller's session
+    /// in MCP request metadata. Unbound servers get no inherited session variables.
+    fn bind_session(&self, session: &SessionEnvironment) {
+        let _ = self.session.set(session.clone());
+    }
+
     fn start(&self) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
@@ -539,6 +553,7 @@ impl DynamicToolProvider for Mcp {
             let state = Arc::clone(&self.state);
             let oauth_store = self.oauth_store.clone();
             let oauth_metadata = Arc::clone(&self.oauth_metadata);
+            let session = self.session.get().cloned();
             let span = info_span!(
                 target: "nanocodex_oai_tools",
                 parent: None,
@@ -550,21 +565,28 @@ impl DynamicToolProvider for Mcp {
                 tool.count = tracing::field::Empty,
             );
             startup_tasks.spawn(async move {
-                let result = client::connect(&name, &config, oauth_store, oauth_metadata, &span)
-                    .await
-                    .map(|connected| {
-                        let entries = ToolEntry::new_many(
-                            &name,
-                            &model_namespace,
-                            connected.tools,
-                            Arc::clone(&connected.client),
-                            &config,
-                        );
-                        ConnectedCatalog {
-                            client: connected.client,
-                            entries,
-                        }
-                    });
+                let result = client::connect(
+                    &name,
+                    &config,
+                    session.as_ref(),
+                    oauth_store,
+                    oauth_metadata,
+                    &span,
+                )
+                .await
+                .map(|connected| {
+                    let entries = ToolEntry::new_many(
+                        &name,
+                        &model_namespace,
+                        connected.tools,
+                        Arc::clone(&connected.client),
+                        &config,
+                    );
+                    ConnectedCatalog {
+                        client: connected.client,
+                        entries,
+                    }
+                });
                 span.record(
                     "status",
                     if result.is_ok() {

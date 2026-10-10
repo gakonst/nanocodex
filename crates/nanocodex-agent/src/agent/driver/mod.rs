@@ -27,7 +27,10 @@ pub(super) struct AgentDriver<S> {
     pub(super) spawner: BranchSpawner<S>,
     pub(super) initial_model: Option<PreparedCheckpoint>,
     pub(super) origin: AgentOrigin,
+    pub(super) checkpoints: Arc<CheckpointSource>,
     pub(super) execution: Execution,
+    /// Reports when a durable child's first checkpoint is persisted.
+    pub(super) initial_persisted: Option<oneshot::Sender<Result<()>>>,
 }
 
 impl<S> AgentDriver<S>
@@ -52,6 +55,8 @@ where
                 CommittedSession::new(
                     Arc::clone(&self.spawner.lineage_id),
                     thread_model,
+                    default_thinking,
+                    default_service_tier,
                     initial.checkpoint.clone(),
                 )
                 .with_retained_snapshot(self.spawner.restored_snapshot.take()),
@@ -101,6 +106,31 @@ where
         let mut developer_checkpoint_ready = true;
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
+        if let Some(persisted) = self.initial_persisted.take() {
+            // A durable child is listed and resumable from creation, before
+            // its first turn: a fork or restored child from the boundary it
+            // inherited, a fresh subagent from its recorded identity alone.
+            let child = match self.origin.start {
+                crate::session::SessionStart::New(origin) => !matches!(origin, crate::Origin::Root),
+                crate::session::SessionStart::Restore => true,
+                crate::session::SessionStart::Resume => false,
+            };
+            let outcome = if child && self.execution.has_policy() {
+                self.execution
+                    .commit_initial_checkpoint(
+                        latest_fork_checkpoint.as_deref(),
+                        crate::execution::InitialSettings {
+                            model: thread_model,
+                            thinking: default_thinking,
+                            service_tier: default_service_tier,
+                        },
+                    )
+                    .await
+            } else {
+                Ok(())
+            };
+            drop(persisted.send(outcome));
+        }
         loop {
             let command = loop {
                 if let Some((parent, result)) = pending_compact.take() {
@@ -267,7 +297,7 @@ where
                             &mut model,
                             &self.execution,
                             Arc::clone(&self.spawner.lineage_id),
-                            thread_model,
+                            (thread_model, default_thinking, default_service_tier),
                             text,
                             self.workspace.as_deref(),
                         )
@@ -321,6 +351,7 @@ where
                     let mut reopen = false;
                     let Some(command) = accept_execution_command(
                         &self.execution,
+                        &self.checkpoints,
                         &self.spawner.config,
                         default_thinking,
                         command,
@@ -367,6 +398,7 @@ where
                 let mut reopen = false;
                 let Some(command) = accept_idle_route(
                     &self.execution,
+                    &self.checkpoints,
                     &self.spawner.config,
                     default_thinking,
                     command,
@@ -463,6 +495,8 @@ where
                                 let checkpoint = Arc::new(CommittedSession::new(
                                     Arc::clone(&self.spawner.lineage_id),
                                     thread_model,
+                                    default_thinking,
+                                    default_service_tier,
                                     snapshot,
                                 ));
                                 match self.execution.commit_checkpoint(&checkpoint).await {
@@ -637,6 +671,7 @@ where
                                 let command = match command {
                                     Some(command) => accept_execution_command(
                                         &self.execution,
+                                        &self.checkpoints,
                                         &self.spawner.config,
                                         default_thinking,
                                         command,
@@ -698,6 +733,7 @@ where
                                             result,
                                         }) = accept_idle_route(
                                             &self.execution,
+                                            &self.checkpoints,
                                             &self.spawner.config,
                                             default_thinking,
                                             command,
@@ -809,7 +845,7 @@ where
                                     Some(Command::SteerWithId { result, .. } | Command::Steer { result, .. }) => {
                                         drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     }
-                                    Some(command @ (Command::Snapshot { .. } | Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                                    Some(command @ (Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                         handle_idle_command(
                                             command,
                                             latest_fork_checkpoint.as_ref(),
@@ -821,6 +857,7 @@ where
                                             },
                                             session_id.as_str(),
                                             self.workspace.clone(),
+                                            &self.execution,
                                         );
                                     }
                                     Some(Command::SetThinking { thinking, result }) => {
@@ -834,8 +871,11 @@ where
                                         drop(result.send(outcome));
                                     }
                                     Some(Command::SetServiceTier { service_tier, result }) => {
-                                        default_service_tier = service_tier;
-                                        drop(result.send(Ok(())));
+                                        let outcome = crate::HarnessModel::Codex(thread_model)
+                                            .capabilities(crate::ModelTransport::Native)
+                                            .check_service_tier(service_tier)
+                                            .map(|()| default_service_tier = service_tier);
+                                        drop(result.send(outcome));
                                     }
                                     Some(Command::SetModel { result, .. }) => {
                                         drop(result.send(Err(model_change_locked())));
@@ -883,6 +923,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let persisted = self
@@ -902,6 +944,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let execution_turn = execution_turn.interrupted();
@@ -933,6 +977,8 @@ where
                             let checkpoint = Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 checkpoint,
                             ));
                             let persisted = self
@@ -1034,6 +1080,7 @@ where
                     },
                     session_id.as_str(),
                     self.workspace.clone(),
+                    &self.execution,
                 );
                 continue;
             };
@@ -1224,6 +1271,8 @@ where
                             latest_fork_checkpoint = Some(Arc::new(CommittedSession::new(
                                 Arc::clone(&self.spawner.lineage_id),
                                 thread_model,
+                                default_thinking,
+                                default_service_tier,
                                 snapshot,
                             )));
                         }
@@ -1234,6 +1283,7 @@ where
                         let command = match command {
                             Some(command) => accept_execution_command(
                                 &self.execution,
+                                &self.checkpoints,
                                 &self.spawner.config,
                                 default_thinking,
                                 command,
@@ -1461,7 +1511,7 @@ where
                                 cancel_result = Some(cancellation);
                                 break execution.as_mut().await;
                             }
-                            Some(command @ (Command::Snapshot { .. } | Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                            Some(command @ (Command::ChildSnapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                 if let Some(snapshot) =
                                     fork_snapshot_rx.borrow_and_update().clone()
                                 {
@@ -1469,6 +1519,8 @@ where
                                         Some(Arc::new(CommittedSession::new(
                                             Arc::clone(&self.spawner.lineage_id),
                                             thread_model,
+                                            default_thinking,
+                                            default_service_tier,
                                             snapshot,
                                         )));
                                 }
@@ -1483,6 +1535,7 @@ where
                                     },
                                     session_id.as_str(),
                                     self.workspace.clone(),
+                                    &self.execution,
                                 );
                             }
                             Some(Command::SetThinking { thinking, result }) => {
@@ -1496,8 +1549,11 @@ where
                                 drop(result.send(outcome));
                             }
                             Some(Command::SetServiceTier { service_tier, result }) => {
-                                default_service_tier = service_tier;
-                                drop(result.send(Ok(())));
+                                let outcome = crate::HarnessModel::Codex(thread_model)
+                                    .capabilities(crate::ModelTransport::Native)
+                                    .check_service_tier(service_tier)
+                                    .map(|()| default_service_tier = service_tier);
+                                drop(result.send(outcome));
                             }
                             Some(Command::SetModel { result, .. }) => {
                                 drop(result.send(Err(model_change_locked())));
@@ -1513,6 +1569,8 @@ where
                                         Arc::new(CommittedSession::new(
                                             Arc::clone(&self.spawner.lineage_id),
                                             thread_model,
+                                            default_thinking,
+                                            default_service_tier,
                                             checkpoint,
                                         ))
                                     })
@@ -1571,6 +1629,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     let execution_turn =
@@ -1588,9 +1648,14 @@ where
                     (
                         persisted.map(|()| TurnResult {
                             request_id: execution_operation.clone(),
+                            turn_id: None,
                             final_message,
                             usage: Some(usage),
-                            checkpoint: TurnCheckpoint::Live(checkpoint),
+                            boundary: Some(self.checkpoints.live(
+                                checkpoint,
+                                thinking,
+                                service_tier,
+                            )),
                         }),
                         false,
                         None,
@@ -1600,6 +1665,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     let execution_turn = execution_turn.interrupted();
@@ -1630,6 +1697,8 @@ where
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
+                        default_thinking,
+                        default_service_tier,
                         checkpoint,
                     ));
                     match error.execution_policy_disposition() {
@@ -1876,7 +1945,7 @@ async fn commit_developer_message<S>(
     model: &mut ModelRun<S>,
     execution: &Execution,
     lineage_id: Arc<str>,
-    model_name: Model,
+    (model_name, thinking, service_tier): (Model, Thinking, ServiceTier),
     text: String,
     workspace: Option<&str>,
 ) -> Result<Option<Arc<CommittedSession>>>
@@ -1886,7 +1955,13 @@ where
     S::Future: AgentSend,
 {
     let snapshot = model.append_developer_message(text, workspace)?;
-    let checkpoint = Arc::new(CommittedSession::new(lineage_id, model_name, snapshot));
+    let checkpoint = Arc::new(CommittedSession::new(
+        lineage_id,
+        model_name,
+        thinking,
+        service_tier,
+        snapshot,
+    ));
     execution.commit_checkpoint(&checkpoint).await?;
     Ok(Some(checkpoint))
 }
@@ -1985,6 +2060,7 @@ fn settle_cancelled_queued_turn(
 
 async fn accept_execution_command(
     execution: &Execution,
+    checkpoints: &Arc<CheckpointSource>,
     config: &ModelConfig,
     default_thinking: Thinking,
     command: Command,
@@ -2106,9 +2182,15 @@ async fn accept_execution_command(
             }
             drop(result.send(Ok(TurnResult {
                 request_id: Some(operation_id),
+                turn_id: None,
                 final_message: output.final_message,
                 usage: Some(output.usage),
-                checkpoint: TurnCheckpoint::Replayed(snapshot),
+                boundary: Some(checkpoints.replayed(
+                    snapshot,
+                    config.model,
+                    replay_thinking,
+                    service_tier.unwrap_or(config.service_tier),
+                )),
             })));
             None
         }
@@ -2159,6 +2241,7 @@ async fn accept_execution_command(
 
 async fn accept_idle_route(
     execution: &Execution,
+    checkpoints: &Arc<CheckpointSource>,
     config: &ModelConfig,
     default_thinking: Thinking,
     command: Command,
@@ -2285,9 +2368,15 @@ async fn accept_idle_route(
             }
             drop(turn_result.send(Ok(TurnResult {
                 request_id: Some(operation_id),
+                turn_id: None,
                 final_message: output.final_message,
                 usage: Some(output.usage),
-                checkpoint: TurnCheckpoint::Replayed(snapshot),
+                boundary: Some(checkpoints.replayed(
+                    snapshot,
+                    config.model,
+                    default_thinking,
+                    config.service_tier,
+                )),
             })));
             None
         }

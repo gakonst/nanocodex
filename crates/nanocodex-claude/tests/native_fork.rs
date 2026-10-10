@@ -1,6 +1,9 @@
 //! Public native lifecycle + real loopback Messages/SSE. Only the provider is synthetic.
 use axum::{Json, Router, routing::post};
-use nanocodex_agent::Nanocodex;
+use nanocodex_agent::{
+    ForkRequest, HarnessFamily, Mutability, Nanocodex, NanocodexError, Origin, SessionCheckpoint,
+    Thinking,
+};
 use nanocodex_claude::{
     Claude, ClaudeClient, ClaudeToolReply, ClaudeTools, ToolDefinition, ToolResultContent,
 };
@@ -152,7 +155,10 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
                     let handle = handle.clone();
                     let slot = child_slot.clone();
                     async move {
-                        let (child, _) = handle.fork().await.map_err(|e| e.to_string())?;
+                        let (child, _) = handle
+                            .fork(ForkRequest::latest())
+                            .await
+                            .map_err(|e| e.to_string())?;
                         let answer = child
                             .prompt("inspect-child")
                             .await
@@ -170,7 +176,15 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         })
         .build()
         .unwrap();
-    parent
+    let capabilities = parent.capabilities();
+    assert!(capabilities.fork && capabilities.fork_at && capabilities.side_conversation);
+    assert_eq!(capabilities.thinking, Mutability::Anytime);
+    assert_eq!(capabilities.model, Mutability::BeforeFirstPrompt);
+    assert!(
+        parent.persistence().is_none(),
+        "no durable policy is attached"
+    );
+    let seeded = parent
         .prompt("seed-parent parent-only-marker-7d839")
         .await
         .unwrap()
@@ -178,12 +192,36 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         .await
         .unwrap();
     let before = trace.lock().unwrap().last().unwrap()["messages"].clone();
+    // Every completed turn retains its committed boundary as a portable,
+    // family-tagged checkpoint that survives a JSON round trip.
+    let seeded_checkpoint = SessionCheckpoint::from_json(
+        &seeded
+            .checkpoint()
+            .expect("completed Claude turn retains its boundary")
+            .to_json()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(seeded_checkpoint.family(), HarnessFamily::Claude);
+    assert_eq!(seeded_checkpoint.session_id(), parent.session_id());
+    assert!(seeded_checkpoint.has_conversation());
     workspaces.lock().unwrap().insert(
         parent.session_id().to_owned(),
         "/synthetic/moved".to_string(),
     );
-    let (idle_child, _) = parent.fork().await.unwrap();
+    let (idle_child, _) = parent
+        .fork(ForkRequest::latest().side_conversation())
+        .await
+        .unwrap();
     assert_ne!(idle_child.session_id(), parent.session_id());
+    let lineage = &idle_child.session().lineage;
+    assert_eq!(lineage.origin, Origin::SideConversation);
+    assert_eq!(
+        lineage.parent_session_id.as_deref(),
+        Some(parent.session_id())
+    );
+    assert_eq!(lineage.root_session_id, parent.session_id());
+    assert_eq!(lineage.depth, 1);
     assert_eq!(
         idle_child
             .prompt("inspect-child")
@@ -208,6 +246,19 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
     );
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     let (fresh, _) = parent.spawn().await.unwrap();
+    assert_eq!(fresh.session().lineage.origin, Origin::Subagent);
+    // A conversation without a completed turn has no boundary to fork, and a
+    // checkpoint of another conversation tree is not a valid fork point.
+    assert!(matches!(
+        fresh.fork(ForkRequest::latest()).await,
+        Err(NanocodexError::ForkBeforeCompletedTurn)
+    ));
+    let foreign = fresh.checkpoint().await.unwrap();
+    assert!(!foreign.has_conversation());
+    assert!(matches!(
+        parent.fork(ForkRequest::at(foreign)).await,
+        Err(NanocodexError::CheckpointLineageMismatch)
+    ));
     assert_eq!(
         fresh
             .prompt("inspect-child")
@@ -250,12 +301,66 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         "fork must exclude incomplete dispatch call"
     );
     assert_ne!(child.session_id(), idle_child.session_id());
+    assert_eq!(child.session().lineage.origin, Origin::Fork);
+    // Forking at an earlier turn (live boundary) or at its portable checkpoint
+    // reproduces exactly that turn's history, excluding later turns.
+    for request in [
+        ForkRequest::at_turn(&seeded),
+        ForkRequest::at(seeded_checkpoint.clone()),
+    ] {
+        let (at_seed, _) = parent.fork(request).await.unwrap();
+        at_seed
+            .prompt("inspect-child")
+            .await
+            .unwrap()
+            .result()
+            .await
+            .unwrap();
+        let messages = trace.lock().unwrap().last().unwrap()["messages"].clone();
+        assert_eq!(
+            &messages.as_array().unwrap()[..before.as_array().unwrap().len()],
+            before.as_array().unwrap()
+        );
+        assert!(!messages.to_string().contains("fork-in-handler"));
+        at_seed.shutdown().await.unwrap();
+    }
+    // The same checkpoint restores the parent's identity in a fresh runtime.
+    let (restored, _) = Nanocodex::builder(Claude::new(
+        ClaudeClient::new(
+            reqwest::Client::new(),
+            format!("http://{address}/v1/messages"),
+            "synthetic",
+        ),
+        "claude-sonnet-5-5",
+    ))
+    .keep_thinking()
+    .resume(seeded_checkpoint)
+    .unwrap()
+    .build()
+    .unwrap();
+    assert_eq!(restored.session_id(), parent.session_id());
+    restored
+        .prompt("inspect-child")
+        .await
+        .unwrap()
+        .result()
+        .await
+        .unwrap();
+    assert!(
+        trace.lock().unwrap().last().unwrap()["messages"]
+            .to_string()
+            .contains("signed-native-history")
+    );
+    restored.shutdown().await.unwrap();
     let turn = child.prompt("cancel-child").await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), arrived.notified())
         .await
         .unwrap();
     turn.cancel().await.unwrap();
     assert!(turn.result().await.is_err());
+    // Messages effort is per request: a change after the first prompt
+    // applies to the next accepted turn.
+    parent.set_thinking(Thinking::Low).await.unwrap();
     parent
         .prompt("parent-continues")
         .await
@@ -264,6 +369,7 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         .await
         .unwrap();
     let final_request = trace.lock().unwrap().last().unwrap().clone();
+    assert_eq!(final_request["output_config"]["effort"], "low");
     assert!(
         !final_request["messages"]
             .to_string()
@@ -282,7 +388,7 @@ async fn native_fork_preserves_history_without_replay_or_parent_mutation() {
         serde_json::to_vec_pretty(&*trace.lock().unwrap()).unwrap(),
     )
     .unwrap();
-    std::fs::write(evidence.join("outcome.json"), serde_json::to_vec_pretty(&json!({"success":true,"effect_count":effects.load(Ordering::SeqCst),"parent":parent.session_id(),"idle_fork":idle_child.session_id(),"callback_fork":child.session_id(),"clean":fresh.session_id(),"signed_thinking_preserved":true,"callback_deadlock":false,"parent_context_unchanged":true,"child_cancelled":true})).unwrap()).unwrap();
+    std::fs::write(evidence.join("outcome.json"), serde_json::to_vec_pretty(&json!({"success":true,"effect_count":effects.load(Ordering::SeqCst),"parent":parent.session_id(),"idle_fork":idle_child.session_id(),"callback_fork":child.session_id(),"clean":fresh.session_id(),"signed_thinking_preserved":true,"callback_deadlock":false,"parent_context_unchanged":true,"child_cancelled":true,"side_conversation_lineage":true,"fork_before_completed_turn":true,"checkpoint_lineage_mismatch":true,"fork_at_turn":true,"fork_at_checkpoint":true,"restored_identity":true,"effort_changed_after_first_prompt":"low"})).unwrap()).unwrap();
     parent.shutdown().await.unwrap();
     idle_child.shutdown().await.unwrap();
     child.shutdown().await.unwrap();

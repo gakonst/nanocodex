@@ -91,7 +91,7 @@ else: print('{}')
         require(len(requests)==count,f'continued before consent: {len(requests)} != {count}')
     def run(label, extra, steps, resume=None, children=None):
         set_phase(label,steps,children)
-        journal=[] if resume is None else ['--rollouts','false','--local-durability',str(codex_home/'claude/sessions.sqlite'),'--local-durability-state-id',resume]
+        journal=[] if resume is None else ['--rollouts','false','--local-durability',str(helper.durable_store(codex_home)),'--local-durability-state-id',resume]
         options=common.copy()
         if children is not None: options[options.index('--subagents')+1]='true'
         cmd=[str(binary),'run']+options+extra+journal+[label+' permission check']; commands.append(cmd)
@@ -117,7 +117,7 @@ else: print('{}')
         for name in ['denied.txt','ask-deny.txt','ask-cancel.txt','rewrite.txt']: require(not(workspace/name).exists(),f'denied effect exists {name}')
         require('denied.txt' not in (workspace/'hook-calls.log').read_text(),'denied original input ran hook')
         checks += ['TUI pending waits; empty input does not approve','deny > ask > allow','literal approve grants only exact call','cancel denies','hook rewrite cannot bypass deny']
-        manifests=list((codex_home/'claude/sessions').glob('*.json')); require(len(manifests)==1,'TUI session missing'); session=json.loads(manifests[0].read_text())['id']
+        sessions=helper.durable_sessions(codex_home);require(len(sessions)==1,'TUI session missing'); session=sessions[0]
         run('restart',[],[write('denied.txt',True,'permission denied by rule'),write('ask-restart.txt',True,'interactive terminal unavailable'),write('after-restart-allowed.txt')],session)
         require(not(workspace/'ask-restart.txt').exists(),'headless ask executed'); checks.append('policy persists across real process restart without flags; headless ask denies')
         # A separate rules file tests simple compound allow and scoped shell deny;
@@ -202,7 +202,7 @@ else: print('{}')
             state_dir=codex_home/'claude/plan-mode';state_dir.mkdir(parents=True,exist_ok=True)
             (state_dir/(saved_session.encode().hex()+'.json')).write_text(json.dumps({'planning':False,'policy':{'defaultMode':'bypassPermissions','deny':[rule]}}))
             count=len(requests)
-            command=[str(binary),'run']+common+['--rollouts','false','--local-durability',str(codex_home/'claude/sessions.sqlite'),'--local-durability-state-id',saved_session,'Saved removed rules must fail.'];commands.append(command)
+            command=[str(binary),'run']+common+['--rollouts','false','--local-durability',str(helper.durable_store(codex_home)),'--local-durability-state-id',saved_session,'Saved removed rules must fail.'];commands.append(command)
             r=subprocess.run(command,cwd=workspace,env=env,capture_output=True,timeout=20);(artifact/f'legacy-saved-{index}.stderr').write_bytes(r.stderr)
             require(r.returncode!=0,'saved legacy policy accepted');require(b'removed Claude agent permission rule' in r.stderr,'saved policy failed for unrelated reason');require(len(requests)==count,'saved legacy policy reached model')
         checks.append('invalid syntax, removed agent rules and saved removed rules fail before provider')

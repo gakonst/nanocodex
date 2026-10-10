@@ -7,6 +7,7 @@
 //! only a second line of defense; it cannot bound an executor's own memory use.
 //! No subprocess, current directory, or host shell is created by this module.
 
+use crate::SessionEnvironment;
 use serde_json::{Value, json};
 
 /// Maximum command size, measured in UTF-8 bytes.
@@ -33,6 +34,20 @@ pub struct BashRequest {
     pub max_stdout_bytes: usize,
     /// Maximum stderr bytes to capture before truncation.
     pub max_stderr_bytes: usize,
+    /// Launching session identity. Executors must export it to the command
+    /// with [`Self::apply_session`], which overrides caller-supplied values
+    /// and clears inherited ones when no session is bound.
+    pub session: Option<SessionEnvironment>,
+}
+
+impl BashRequest {
+    /// Exports this request's session identity (`CODEX_THREAD_ID` and
+    /// `NANOCODEX_ROOT_SESSION_ID`) to `command`. Call it after any other
+    /// environment configuration so a spoofed value cannot survive.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn apply_session(&self, command: &mut std::process::Command) {
+        SessionEnvironment::apply_or_clear(self.session.as_ref(), command);
+    }
 }
 
 /// Bounded command result supplied by a sandbox executor.
@@ -52,7 +67,8 @@ pub struct BashResult {
 ///
 /// This trait does not grant shell access by itself. Implementors must isolate
 /// the command, cap capture before allocating unbounded output, and kill the
-/// command (including descendants) on timeout or cancellation. An executor
+/// command (including descendants) on timeout or cancellation, and export the
+/// request's session identity with [`BashRequest::apply_session`]. An executor
 /// failure, including a timeout, is returned as an error.
 pub trait SandboxBashExecutor: Send + Sync {
     /// Execute a foreground command in the host-authorized sandbox.
@@ -101,6 +117,19 @@ impl<E: SandboxBashExecutor> ClaudeBash<E> {
     /// control-character-heavy output. A command's nonzero exit is reported in
     /// the result instead of being turned into an adapter error.
     pub async fn execute(&self, name: &str, input: Value) -> Result<String, String> {
+        self.execute_in_session(name, input, None).await
+    }
+
+    /// Like [`Self::execute`], launching the command on behalf of `session`.
+    ///
+    /// The executor receives the identity in [`BashRequest::session`] and
+    /// exports it as `CODEX_THREAD_ID` and `NANOCODEX_ROOT_SESSION_ID`.
+    pub async fn execute_in_session(
+        &self,
+        name: &str,
+        input: Value,
+        session: Option<SessionEnvironment>,
+    ) -> Result<String, String> {
         if name != "Bash" {
             return Err(format!("unknown Claude Bash tool: {name}"));
         }
@@ -162,6 +191,7 @@ impl<E: SandboxBashExecutor> ClaudeBash<E> {
             timeout_ms,
             max_stdout_bytes: MAX_STREAM_BYTES,
             max_stderr_bytes: MAX_STREAM_BYTES,
+            session,
         };
         let result = self.executor.execute(request).await.map_err(|e| {
             let (bounded, _) = cap_utf8(&e, MAX_STREAM_BYTES);
@@ -243,6 +273,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_stdout_bytes: MAX_STREAM_BYTES,
                 max_stderr_bytes: MAX_STREAM_BYTES,
+                session: None,
             }
         );
     }

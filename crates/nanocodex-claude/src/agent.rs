@@ -6,12 +6,13 @@ use crate::{
 };
 use futures_util::{FutureExt as _, StreamExt};
 use nanocodex_agent::{
-    AgentEvents, AgentHandle, AgentSessionContext, ChildSnapshot, CostStatus, HarnessFamily,
-    HarnessModel, Model, Nanocodex, NanocodexError, ReportedTurnUsage, Result, SpawnOptions,
-    Thinking, TurnResult, TurnUsage,
+    AgentEvents, AgentHandle, AgentSessionContext, Capabilities, CostStatus, ForkPoint,
+    ForkRequest, HarnessFamily, HarnessModel, Lineage, ModelTransport, Mutability, Nanocodex,
+    NanocodexError, Origin, Persistence, ReportedTurnUsage, Result, SessionCheckpoint,
+    SpawnOptions, Thinking, TurnResult, TurnUsage,
     backend::{
         AgentFactory, BackendFuture, BackendPrompt, BackendPromptRoute, BackendRuntime,
-        BackendTurn, BackendTurnKey, BuilderBackend, LifecycleBackend,
+        BackendTurn, BackendTurnKey, BuilderBackend, LifecycleBackend, TurnBoundary,
     },
     events::{AgentEvent, AgentEventKind, AgentEventPublisher},
     input::Prompt,
@@ -20,9 +21,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod durable;
 mod images;
+#[cfg(not(target_family = "wasm"))]
+mod rollout;
 mod shared;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
-pub use durable::rewind_checkpoint;
+pub use durable::{
+    ClaudeCheckpointView, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
+    session_checkpoint,
+};
 use durable::{Cursor, Effect, Snapshot};
 use std::{
     collections::{HashMap, HashSet},
@@ -132,6 +138,9 @@ type ToolCleanup = Arc<dyn Fn() -> BackendFuture<()> + Send + Sync>;
 pub struct ClaudeToolInvocation {
     pub model: String,
     pub session_id: String,
+    /// Root of this session's conversation tree; equal to `session_id` for a
+    /// root. Tool subprocesses receive it as `NANOCODEX_ROOT_SESSION_ID`.
+    pub root_session_id: String,
     pub turn_id: String,
     pub call_id: String,
     /// Immutable revision captured for the originating model response.
@@ -170,6 +179,15 @@ impl ClaudeToolProgress {
 impl std::fmt::Debug for ClaudeToolProgress {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ClaudeToolProgress")
+    }
+}
+#[cfg(all(feature = "tools", not(target_family = "wasm")))]
+impl ClaudeToolInvocation {
+    /// Identity exported to processes this invocation launches as
+    /// `CODEX_THREAD_ID` and `NANOCODEX_ROOT_SESSION_ID`.
+    #[must_use]
+    pub fn session_environment(&self) -> nanocodex_claude_tools::SessionEnvironment {
+        nanocodex_claude_tools::SessionEnvironment::new(&self.session_id, &self.root_session_id)
     }
 }
 /// Native Claude tool result, including the host's success status.
@@ -284,7 +302,7 @@ impl ClaudeTools {
     }
     /// Enable an embedding-supplied ToolSearch handler returning native
     /// tool_reference blocks. The collection must register ToolSearch itself.
-    pub fn custom_tool_search(mut self) -> Self {
+    pub const fn custom_tool_search(mut self) -> Self {
         self.custom_tool_search = true;
         self
     }
@@ -434,6 +452,15 @@ fn model_max_tokens(model: &str) -> Option<u32> {
     }
 }
 
+/// Documented context window of a model; conservative for unknown models.
+fn default_context_window_tokens(model: &str) -> u64 {
+    match model {
+        "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+        | "claude-sonnet-5" => 1_000_000,
+        _ => 200_000, // Conservative fallback; override for other models.
+    }
+}
+
 type WorkspaceResolver = Arc<dyn Fn(&str) -> String + Send + Sync>;
 type SubagentTypeResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 type ChildWorkspaceInit = Arc<dyn Fn(&str, &str) -> Result<()> + Send + Sync>;
@@ -476,16 +503,16 @@ pub struct ClaudeBuilder {
     code_only: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     restored: Option<Snapshot>,
+    lineage: Option<Lineage>,
+    conversation_id: Option<String>,
+    #[cfg(not(target_family = "wasm"))]
+    rollout: Option<nanocodex_agent::rollout::RolloutConfig>,
     #[cfg(all(feature = "tools", not(target_family = "wasm")))]
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
 }
 impl ClaudeBuilder {
     fn new(claude: Claude) -> Self {
-        let context_window_tokens = match claude.model.as_str() {
-            "claude-opus-5-5" | "claude-fable-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
-            | "claude-sonnet-5" => 1_000_000,
-            _ => 200_000, // Conservative fallback; override for other models.
-        };
+        let context_window_tokens = default_context_window_tokens(&claude.model);
         Self {
             subagent_type: None,
             subagent_type_resolver: None,
@@ -522,6 +549,10 @@ impl ClaudeBuilder {
             code_only: false,
             policy: None,
             restored: None,
+            lineage: None,
+            conversation_id: None,
+            #[cfg(not(target_family = "wasm"))]
+            rollout: None,
             #[cfg(all(feature = "tools", not(target_family = "wasm")))]
             task_board: None,
         }
@@ -543,14 +574,37 @@ impl ClaudeBuilder {
         self.code_only = enabled;
         self
     }
-    /// Attaches a host policy and restores its provider-native checkpoint.
+    /// Attaches a host policy and restores its provider-native checkpoint,
+    /// including the thinking and fast-mode policy it recorded.
     /// Usually installed by `nanocodex_durability::DurableAgentExt`.
     pub fn execution_policy(
         mut self,
         policy: Arc<dyn ClaudeExecutionPolicy>,
         checkpoint: Option<Value>,
     ) -> Result<Self> {
-        self.restored = checkpoint.map(Snapshot::decode).transpose()?;
+        let restored = checkpoint.map(Snapshot::decode).transpose()?;
+        // A durable boundary records the session's thinking and fast-mode
+        // policy, which applies like [`Self::resume`]: settings configured
+        // later override it. Boundaries recorded before these settings existed
+        // carry neither and keep the builder's.
+        if let Some(snapshot) = &restored
+            && (snapshot.effort.is_some() || snapshot.fast_mode)
+        {
+            // Recorded settings must still be valid for this builder's model;
+            // models outside the shared catalog are not checked.
+            if let Ok(model) = self.claude.model.parse::<HarnessModel>()
+                && (!model.supports_thinking(effort_thinking(snapshot.effort))
+                    || (snapshot.fast_mode && !model.supports_fast_mode()))
+            {
+                return Err(NanocodexError::InvalidCheckpoint(format!(
+                    "recorded Claude thinking or fast mode is unsupported by {model}"
+                )));
+            }
+            self.effort = snapshot.effort;
+            self.adaptive_thinking = snapshot.effort.is_some();
+            self.fast_mode = snapshot.fast_mode;
+        }
+        self.restored = restored;
         self.policy = Some(policy);
         Ok(self)
     }
@@ -594,11 +648,12 @@ impl ClaudeBuilder {
     /// Applies the shared catalog's validated effort to native Claude policy.
     pub fn thinking(mut self, thinking: Thinking) -> Result<Self> {
         let model: HarnessModel = self.claude.model.parse().map_err(unsupported)?;
-        if model.family() != HarnessFamily::Claude || !model.supports_thinking(thinking) {
-            return Err(unsupported(
-                "Claude model does not support selected thinking",
-            ));
+        if model.family() != HarnessFamily::Claude {
+            return Err(unsupported("Claude builder requires a Claude model"));
         }
+        model
+            .capabilities(ModelTransport::Native)
+            .check_thinking(thinking)?;
         self.adaptive_thinking = thinking != Thinking::None;
         self.effort = match thinking {
             Thinking::None => None,
@@ -610,34 +665,59 @@ impl ClaudeBuilder {
         };
         Ok(self)
     }
-    /// Restores a native residency checkpoint using newly approved host capabilities.
-    pub fn restore_runtime(mut self, snapshot: ChildSnapshot) -> Result<Self> {
-        let ChildSnapshot::Native {
-            model,
-            session_id,
-            thinking,
-            payload,
-            ..
-        } = snapshot
-        else {
-            return Err(unsupported(
-                "Claude builder requires a native Claude checkpoint",
-            ));
-        };
-        if model.family() != HarnessFamily::Claude || session_id.trim().is_empty() {
-            return Err(unsupported(
-                "invalid Claude child checkpoint identity/family",
-            ));
-        }
-        let stored: NativeChildState = serde_json::from_str(&payload).map_err(provider_error)?;
+    /// Resumes a checkpointed session in a fresh runtime built from this
+    /// recipe.
+    ///
+    /// The resumed session *is* the checkpointed session: it keeps the
+    /// checkpoint's session identity, lineage, conversation tree, transcript,
+    /// model, thinking and processing policy. This recipe supplies the
+    /// credentials, instructions, tools and handlers for later turns; prompt
+    /// caching it enables stays enabled. Settings called after `resume`
+    /// override the checkpoint's. A checkpoint taken before the first
+    /// completed turn reopens the session with its settings and no history.
+    /// Use [`Nanocodex::fork`] to continue a conversation under a new
+    /// identity.
+    ///
+    /// ```no_run
+    /// # use nanocodex_agent::{Nanocodex, SessionCheckpoint};
+    /// # use nanocodex_claude::Claude;
+    /// # fn example(claude: Claude, saved: &str) -> nanocodex_agent::Result<()> {
+    /// let checkpoint = SessionCheckpoint::from_json(saved)?;
+    /// let session_id = checkpoint.session_id().to_owned();
+    /// let (agent, _events) = Nanocodex::builder(claude).resume(checkpoint)?.build()?;
+    /// assert_eq!(agent.session_id().to_string(), session_id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Claude
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
+    /// invalid one.
+    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+        checkpoint.validate()?;
+        checkpoint.require_family(HarnessFamily::Claude)?;
+        let model = checkpoint.model();
+        let thinking = checkpoint.thinking();
+        let session_id = checkpoint.session_id().to_owned();
+        let lineage = checkpoint.lineage().clone();
+        let conversation_id = checkpoint.conversation_id().to_owned();
+        let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         if stored.version != 1
             || stored.model.parse::<HarnessModel>().ok() != Some(model)
             || !model.supports_thinking(thinking)
+            || (stored.fast_mode && !model.supports_fast_mode())
             || stored.max_tokens == Some(0)
             || stored.context_window_tokens == 0
         {
-            return Err(unsupported("invalid Claude native checkpoint policy"));
+            return Err(NanocodexError::InvalidCheckpoint(
+                "invalid Claude native checkpoint policy".into(),
+            ));
         }
+        self.lineage = Some(lineage);
+        self.conversation_id = Some(conversation_id);
         self.claude.model = stored.model;
         self.session_id = Some(session_id);
         self.max_tokens = stored.max_tokens;
@@ -653,16 +733,49 @@ impl ClaudeBuilder {
         self.message_diagnostics = stored.message_diagnostics;
         self.context_window_tokens = stored.context_window_tokens;
         self.auto_compact_window_tokens = stored.auto_compact_window_tokens;
-        self.restored = Some(Snapshot::decode(
-            serde_json::to_value(stored.snapshot).map_err(provider_error)?,
-        )?);
+        self.restored = Some(stored.snapshot.validated()?);
         Ok(self)
+    }
+
+    /// Mirrors this session, and every fork, side conversation and subagent
+    /// it creates, as Codex-compatible JSONL rollouts beneath
+    /// `<codex_home>/sessions`, so Codex-compatible tooling can list, read
+    /// and resume them. Durable state, when attached, stays the source of
+    /// truth. Session identities should be UUIDs for rollout lookup.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn rollout(mut self, config: nanocodex_agent::rollout::RolloutConfig) -> Self {
+        self.rollout = Some(config);
+        self
     }
 
     /// Sets an embedding-owned stable session identity. For durable sessions it
     /// must equal the policy state ID; reopened tool identities cannot drift.
+    ///
+    /// Replacing the identity of a [`resume`](Self::resume)d session starts
+    /// a new root that continues the checkpoint's conversation tree, which is
+    /// how a host seeds a separately stored copy of a conversation.
     pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
+        let session_id = session_id.into();
+        if self
+            .session_id
+            .as_ref()
+            .is_some_and(|current| *current != session_id)
+        {
+            self.lineage = None;
+            if let Some(restored) = &mut self.restored {
+                restored.lineage = None;
+            }
+        }
+        self.session_id = Some(session_id);
+        self
+    }
+    /// Records the provenance of a reopened stored session, such as a durable
+    /// branch, instead of the lineage retained by its checkpoint. Durability
+    /// adapters call this; telemetry, checkpoints and rollout mirrors report it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lineage(mut self, lineage: Lineage) -> Self {
+        self.lineage = Some(lineage);
         self
     }
     /// Sets the Messages output-token limit.
@@ -698,10 +811,12 @@ impl ClaudeBuilder {
         self.keep_thinking = true;
         self
     }
-    /// Requests fast mode on models that offer it; other models run at
-    /// standard speed. Fast mode is a research preview billed at premium
-    /// rates, and switching speeds misses the prompt cache. A later
-    /// `Nanocodex::set_fast_mode` call affects subsequently accepted turns.
+    /// Requests fast mode, offered by models whose shared capabilities report
+    /// it ([`HarnessModel::capabilities`]); building a known model that does
+    /// not offer it fails before any request. Fast mode is a research preview
+    /// billed at premium rates, and switching speeds misses the prompt cache.
+    /// A later `Nanocodex::set_fast_mode` call affects subsequently accepted
+    /// turns.
     pub const fn fast_mode(mut self, enabled: bool) -> Self {
         self.fast_mode = enabled;
         self
@@ -899,10 +1014,17 @@ impl ClaudeBuilder {
                 .expect("built-in Claude file tool schema must remain valid");
             let name = definition.name.clone();
             let files = files.clone();
-            self = self.tool_with_context(definition, move |input, _invocation| {
+            self = self.tool_with_context(definition, move |input, invocation| {
                 let files = files.clone();
                 let name = name.clone();
-                async move { host_reply(files.execute_output(&name, input).await?) }
+                async move {
+                    let session = invocation.session_environment();
+                    host_reply(
+                        files
+                            .execute_output_in_session(&name, input, true, Some(session))
+                            .await?,
+                    )
+                }
             });
         }
         self
@@ -960,10 +1082,14 @@ impl ClaudeBuilder {
                 .expect("built-in Claude Bash schema must remain valid");
             let name = definition.name.clone();
             let bash = bash.clone();
-            self = self.tool(definition, move |input| {
+            self = self.tool_with_context(definition, move |input, invocation| {
                 let bash = bash.clone();
                 let name = name.clone();
-                async move { bash.execute(&name, input).await }
+                async move {
+                    let session = invocation.session_environment();
+                    let text = bash.execute_in_session(&name, input, Some(session)).await?;
+                    Ok(ClaudeToolReply::success(ToolResultContent::Text(text)))
+                }
             });
         }
         self
@@ -1061,15 +1187,32 @@ impl ClaudeBuilder {
     }
     /// Builds the common lifecycle handle and independent session event stream.
     pub fn build(mut self) -> Result<(Nanocodex, AgentEvents)> {
+        // Models outside the shared catalog are provider-native identifiers
+        // whose capabilities the provider alone decides.
+        if let Ok(model) = self.claude.model.parse::<HarnessModel>() {
+            model
+                .capabilities(ModelTransport::Native)
+                .check_fast_mode(self.fast_mode)?;
+        }
         let session_id = self
             .policy
             .as_ref()
             .map(|policy| policy.state_id().to_owned())
             .or_else(|| self.session_id.clone())
-            .unwrap_or_else(|| format!("claude-{}", uuid::Uuid::new_v4()));
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let mut recipe = self.clone();
         recipe.session_id = None;
         recipe.restored = None;
+        recipe.lineage = None;
+        recipe.conversation_id = None;
+        // Children record their own rollouts beneath the same Codex home.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            recipe.rollout = self
+                .rollout
+                .as_ref()
+                .map(|config| nanocodex_agent::rollout::RolloutConfig::new(config.codex_home()));
+        }
         recipe.policy = None;
         recipe.child_journal = None;
         recipe.subagent_type = Some("general-purpose".into());
@@ -1086,6 +1229,13 @@ impl ClaudeBuilder {
             Arc::<str>::from(session_id.as_str()),
             selected_model,
             native_factory.clone(),
+        )
+        .with_root_session_id(
+            self.lineage
+                .as_ref()
+                .map_or(session_id.as_str(), |lineage| {
+                    lineage.root_session_id.as_str()
+                }),
         )
         .with_native_model_id(self.claude.model.as_str())
         .with_child_journal(self.child_journal.clone());
@@ -1342,8 +1492,57 @@ impl ClaudeBuilder {
                 "Claude task restoration requires a native target with tools and a task board",
             ));
         }
-        *discovered.try_lock().expect("new discovery lock") = restored.discovered;
+        // An explicit builder identity wins over one retained by a durable
+        // checkpoint; a session without either is a fresh root.
+        let lineage = self
+            .lineage
+            .or_else(|| restored.lineage.clone())
+            .unwrap_or_else(|| Lineage::root(session_id.as_str()));
+        let conversation_id = self
+            .conversation_id
+            .or_else(|| restored.conversation_id.clone())
+            .unwrap_or_else(|| session_id.clone());
+        *discovered.try_lock().expect("new discovery lock") = restored.discovered.clone();
+        let mut round_boundary = restored.clone();
+        round_boundary.lineage = Some(lineage.clone());
+        round_boundary.conversation_id = Some(conversation_id.clone());
+        let round_boundary = Arc::new(round_boundary);
+        #[cfg(not(target_family = "wasm"))]
+        let rollout = match &self.rollout {
+            None => None,
+            Some(config) => {
+                let session = nanocodex_agent::rollout::RolloutSession {
+                    session_id: session_id.clone(),
+                    lineage: lineage.clone(),
+                    cwd: self
+                        .workspace_resolver
+                        .as_ref()
+                        .map_or_else(|| self.workspace.clone(), |resolve| resolve(&session_id))
+                        .into(),
+                    instructions: self.system_blocks.as_ref().map_or_else(
+                        || self.system.clone(),
+                        |blocks| {
+                            blocks
+                                .iter()
+                                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        },
+                    ),
+                    prompt_cache_key: Some(conversation_id.clone()),
+                };
+                Some(
+                    rollout::Mirror::open(config, &session, &restored.conversation).map_err(
+                        |source| NanocodexError::InitializeRollout {
+                            codex_home: config.codex_home().to_owned(),
+                            source,
+                        },
+                    )?,
+                )
+            }
+        };
         let (runtime, events) = BackendRuntime::new(session_id.clone());
+        let runtime = runtime.with_lineage(lineage.clone());
         let state = Arc::new(State {
             subagent_type: self.subagent_type,
             subagent_type_resolver: self.subagent_type_resolver,
@@ -1361,6 +1560,8 @@ impl ClaudeBuilder {
             context_window_tokens: self.context_window_tokens,
             auto_compact_window_tokens: self.auto_compact_window_tokens,
             session_id,
+            lineage,
+            conversation_id,
             workspace: self.workspace,
             workspace_resolver: self.workspace_resolver,
             child_workspace_init: self.child_workspace_init,
@@ -1380,9 +1581,10 @@ impl ClaudeBuilder {
             parallel_tools: self.parallel_tools,
             parallel_safe_tools: self.parallel_safe_tools,
             conversation: Mutex::new(restored.conversation),
-            dispatch_fork: std::sync::RwLock::new(None),
-            round_boundary: std::sync::RwLock::new(None),
+            round_boundary: std::sync::RwLock::new(round_boundary),
             boundary_stale: AtomicBool::new(false),
+            #[cfg(not(target_family = "wasm"))]
+            rollout,
             policy: self.policy,
             admission: Mutex::new(()),
             idle: Notify::new(),
@@ -1394,6 +1596,7 @@ impl ClaudeBuilder {
             task_board: self.task_board,
             cancellations: Mutex::new(HashMap::new()),
             stopped: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             sequence: std::sync::Mutex::new(1),
             accepted_turns: AtomicU64::new(accepted_turns),
             steering: Mutex::new(HashMap::new()),
@@ -2299,7 +2502,9 @@ const fn thinking_effort(thinking: Thinking) -> Option<crate::Effort> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+/// Decoded payload of a Claude [`SessionCheckpoint`]; encoded from
+/// [`NativePolicy`] plus the transcript snapshot.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeChildState {
     version: u32,
@@ -2354,25 +2559,25 @@ impl ClaudeNativeFactory {
     }
 }
 impl AgentFactory for ClaudeNativeFactory {
-    fn fork(&self, _parent: AgentHandle) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
+    fn fork(
+        &self,
+        _parent: AgentHandle,
+        request: ForkRequest,
+    ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let state = self.owner();
         let mut recipe = self.recipe();
         Box::pin(async move {
             let state = state?;
-            let dispatch = state
-                .dispatch_fork
-                .read()
-                .map_err(|_| unsupported("Claude fork boundary lock poisoned"))?
-                .clone();
-            let mut snapshot = if let Some(snapshot) = dispatch {
-                Arc::unwrap_or_clone(snapshot)
-            } else {
-                let conversation = state.conversation.lock().await;
-                if state.stopped.load(Ordering::SeqCst) {
-                    return Err(NanocodexError::AgentStopped);
-                }
-                state.snapshot(&conversation).await?
-            };
+            let (point, origin) = request.into_parts();
+            if !matches!(origin, Origin::Fork | Origin::SideConversation) {
+                return Err(NanocodexError::InvalidRequest(
+                    "a fork must be a fork or a side conversation".into(),
+                ));
+            }
+            let mut snapshot = state.fork_point(point).await?;
+            if !snapshot.has_conversation() {
+                return Err(NanocodexError::ForkBeforeCompletedTurn);
+            }
             // Copy native transcript data, never an execution cursor, policy,
             // task board or remote continuation identity from the parent.
             snapshot.tasks = None;
@@ -2384,9 +2589,42 @@ impl AgentFactory for ClaudeNativeFactory {
             recipe.effort = state.effort();
             recipe.adaptive_thinking = state.adaptive_thinking.load(Ordering::SeqCst);
             recipe.fast_mode = state.fast_mode.load(Ordering::SeqCst);
+            let child_id = uuid::Uuid::now_v7().to_string();
+            let lineage = Lineage::child_of(&state.lineage, state.session_id.as_str(), origin);
+            snapshot.lineage = Some(lineage.clone());
+            snapshot.conversation_id = Some(state.conversation_id.clone());
+            // A durable parent may give the child its own durable state, with
+            // the inherited transcript as its first checkpoint, so the fork is
+            // listable and resumable independently of the parent.
+            if let Some(parent) = &state.policy {
+                let child = nanocodex_agent::SessionInfo::new(
+                    child_id.clone(),
+                    HarnessFamily::Claude,
+                    lineage.clone(),
+                );
+                // As for Codex, a durable session cannot silently create an
+                // ephemeral fork: its children must be durable too.
+                let policy = parent.branch(&child)?.ok_or(
+                    NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" },
+                )?;
+                {
+                    if policy.state_id() != child_id {
+                        return Err(NanocodexError::InvalidRequest(
+                            "durable branch state ID must equal the child session ID".into(),
+                        ));
+                    }
+                    policy
+                        .checkpoint(serde_json::to_value(&snapshot).map_err(provider_error)?)
+                        .await?;
+                    recipe.policy = Some(policy);
+                }
+            }
+            recipe.session_id = Some(child_id);
             recipe.restored = Some(snapshot);
+            recipe.lineage = Some(lineage);
+            recipe.conversation_id = Some(state.conversation_id.clone());
             state.initialize_child_workspace(&mut recipe)?;
-            recipe.build()
+            Nanocodex::persist_created(recipe.build()).await
         })
     }
     fn ensure_available(&self, _parent: AgentHandle) -> BackendFuture<Result<()>> {
@@ -2408,16 +2646,24 @@ impl AgentFactory for ClaudeNativeFactory {
     }
     fn spawn(
         &self,
-        _parent: AgentHandle,
+        parent: AgentHandle,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let state = self.owner();
         let recipe = self.recipe();
+        let journal_backed = parent.child_journal().is_some();
         Box::pin(async move {
             let state = state?;
             let native_model = state.model();
             let host_context = host_context.or_else(|| state.host_context.clone());
+            let mut recipe = recipe;
+            let lineage =
+                Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
+            let child_id = uuid::Uuid::now_v7().to_string();
+            state.durable_child(&mut recipe, &child_id, &lineage, "spawn", journal_backed)?;
+            recipe.session_id = Some(child_id);
+            recipe.lineage = Some(lineage);
             if options.selected_harness_model().is_none()
                 && options
                     .selected_harness()
@@ -2432,7 +2678,7 @@ impl AgentFactory for ClaudeNativeFactory {
                     recipe = recipe.thinking(thinking)?;
                 }
                 state.initialize_child_workspace(&mut recipe)?;
-                return recipe.host_context(host_context).build();
+                return Nanocodex::persist_created(recipe.host_context(host_context).build()).await;
             }
             let model: HarnessModel = state.model().parse().map_err(unsupported)?;
             let thinking = if state.effort().is_none() {
@@ -2443,44 +2689,46 @@ impl AgentFactory for ClaudeNativeFactory {
             let options = options.resolve(model, thinking)?;
             let selected = options.selected_harness_model().expect("resolved model");
             if selected.family() != HarnessFamily::Claude {
-                return Err(unsupported(
-                    "Codex harness requires a configured child factory",
-                ));
+                return Err(NanocodexError::UnsupportedCapability {
+                    capability: "cross_family_spawn",
+                });
             }
             let mut recipe = recipe;
             recipe.claude.model = selected.as_str().into();
-            recipe.fast_mode = state.fast_mode.load(Ordering::SeqCst);
+            // An inherited fast mode follows the parent only onto a model that
+            // offers it; a child on another model runs at standard speed.
+            recipe.fast_mode =
+                state.fast_mode.load(Ordering::SeqCst) && selected.supports_fast_mode();
             state.initialize_child_workspace(&mut recipe)?;
-            recipe
+            let child = recipe
                 .thinking(options.selected_thinking().expect("resolved thinking"))?
                 .host_context(host_context)
-                .build()
+                .build();
+            Nanocodex::persist_created(child).await
         })
     }
     fn restore(
         &self,
-        _parent: AgentHandle,
-        snapshot: ChildSnapshot,
+        parent: AgentHandle,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let available = self.owner();
         let recipe = self.recipe();
+        let journal_backed = parent.child_journal().is_some();
         Box::pin(async move {
             let state = available?;
-            let mut recipe = recipe.restore_runtime(snapshot)?;
+            let mut recipe = recipe.resume(checkpoint)?;
+            // An evicted subagent reopens the durable state it recorded under
+            // its own session ID, exactly like a resumed fork.
+            if let (Some(child_id), Some(lineage)) =
+                (recipe.session_id.clone(), recipe.lineage.clone())
+            {
+                state.durable_child(&mut recipe, &child_id, &lineage, "restore", journal_backed)?;
+            }
             state.initialize_child_workspace(&mut recipe)?;
-            recipe.host_context(host_context).build()
+            Nanocodex::persist_created(recipe.host_context(host_context).build()).await
         })
-    }
-}
-
-// The parent keeps its conversation lock throughout dispatch. Publishing a
-// separate immutable pre-batch boundary allows native callback forks without
-// admitting the still-running batch or inventing tool-result receipts.
-struct DispatchForkBoundary<'a>(&'a std::sync::RwLock<Option<Arc<Snapshot>>>);
-impl Drop for DispatchForkBoundary<'_> {
-    fn drop(&mut self) {
-        *self.0.write().expect("fork boundary lock") = None;
     }
 }
 
@@ -2548,6 +2796,11 @@ struct State {
     subagent_type: Option<String>,
     subagent_type_resolver: Option<SubagentTypeResolver>,
     session_id: String,
+    // Provenance recorded on the public session handle and every checkpoint.
+    lineage: Lineage,
+    // Conversation-tree identity shared by a session and its forks; turn and
+    // checkpoint fork points from another tree are rejected.
+    conversation_id: String,
     client: ClaudeClient,
     model: std::sync::RwLock<String>,
     max_tokens: Option<u32>,
@@ -2580,17 +2833,20 @@ struct State {
     // so this set need not be frozen with an admitted cursor.
     parallel_safe_tools: HashSet<String>,
     conversation: Mutex<Conversation>,
-    // Native context before the active tool batch; callbacks must not lock conversation.
-    dispatch_fork: std::sync::RwLock<Option<Arc<Snapshot>>>,
-    // Latest committed boundary of the running turn: its start, then each tool
-    // batch. Residency/durability checkpoints read it while the turn holds
-    // `conversation`, so a child can resume without replaying finished rounds.
-    /// Shares one allocation with [`Self::dispatch_fork`] while tools run.
-    round_boundary: std::sync::RwLock<Option<Arc<Snapshot>>>,
+    // Latest committed boundary: the restored state, then each turn's start,
+    // each tool batch (before dispatch and after its results commit), each
+    // turn's end and each compaction. Checkpoints and forks read it while a
+    // turn holds `conversation`, so they never wait for the active turn and
+    // never observe partial output or unmatched tool calls.
+    round_boundary: std::sync::RwLock<Arc<Snapshot>>,
     /// Publishing the latest committed boundary failed, so the retained one
-    /// predates committed history. Checkpoints fail instead of exposing it
-    /// (observers treat a provider-call completion as covering prior rounds).
+    /// predates committed history. Checkpoints and forks that would read it
+    /// fail instead of exposing it (observers treat a provider-call
+    /// completion as covering prior rounds); a successful publish clears it.
     boundary_stale: AtomicBool,
+    // Codex-compatible mirror of every settled turn, when configured.
+    #[cfg(not(target_family = "wasm"))]
+    rollout: Option<rollout::Mirror>,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     admission: Mutex<()>,
     idle: Notify,
@@ -2606,6 +2862,9 @@ struct State {
     task_board: Option<Arc<nanocodex_claude_tools::tasks::ClaudeTasks>>,
     cancellations: Mutex<HashMap<BackendTurnKey, Arc<Cancellation>>>,
     stopped: AtomicBool,
+    // Local persistence handles (rollout writer, durable owner) are closed once,
+    // by shutdown or by the background release after disconnect.
+    released: AtomicBool,
     /// The sequence number of the next published event.
     sequence: std::sync::Mutex<u64>,
     accepted_turns: AtomicU64,
@@ -3077,6 +3336,219 @@ fn unsupported(message: &str) -> NanocodexError {
 fn provider_error(error: impl std::fmt::Display) -> NanocodexError {
     unsupported(&format!("Claude Messages: {error}"))
 }
+
+/// Lifecycle operations supported by the native Claude driver.
+const CLAUDE_CAPABILITIES: Capabilities = {
+    let mut capabilities = Capabilities::NONE;
+    capabilities.checkpoint = true;
+    capabilities.resume = true;
+    capabilities.fork = true;
+    capabilities.fork_at = true;
+    capabilities.side_conversation = true;
+    capabilities.spawn = true;
+    capabilities.steering = true;
+    capabilities.identified_steering = true;
+    capabilities.compaction = true;
+    capabilities.model = Mutability::BeforeFirstPrompt;
+    capabilities.thinking = Mutability::Anytime;
+    capabilities.service_tier = Mutability::Anytime;
+    capabilities
+};
+
+/// Model policy retained beside a Claude transcript in a portable checkpoint.
+/// Field names match [`NativeChildState`], which decodes the same payload.
+#[derive(Clone, Serialize)]
+struct NativePolicy {
+    model: String,
+    max_tokens: Option<u32>,
+    effort: Option<crate::Effort>,
+    adaptive_thinking: bool,
+    automatic_cache: bool,
+    cache_one_hour: bool,
+    keep_thinking: bool,
+    fast_mode: bool,
+    message_diagnostics: bool,
+    context_window_tokens: u64,
+    auto_compact_window_tokens: Option<u64>,
+}
+
+/// One committed Claude boundary: retained live by a completed turn and
+/// materialized as a portable checkpoint only on request.
+struct ClaudeBoundary {
+    snapshot: Arc<Snapshot>,
+    policy: NativePolicy,
+    session_id: String,
+    lineage: Lineage,
+    conversation_id: String,
+}
+impl ClaudeBoundary {
+    fn checkpoint(&self) -> Result<SessionCheckpoint> {
+        let invalid_checkpoint =
+            |error: &dyn std::fmt::Display| NanocodexError::InvalidCheckpoint(error.to_string());
+        let model: HarnessModel = self
+            .policy
+            .model
+            .parse()
+            .map_err(|error: &str| invalid_checkpoint(&error))?;
+        let thinking = if self.policy.effort.is_none() {
+            model.default_thinking()
+        } else {
+            effort_thinking(self.policy.effort)
+        };
+        let mut payload =
+            serde_json::to_value(&self.policy).map_err(|error| invalid_checkpoint(&error))?;
+        let fields = payload
+            .as_object_mut()
+            .expect("Claude checkpoint policy is an object");
+        fields.insert("version".into(), json!(1));
+        fields.insert(
+            "snapshot".into(),
+            serde_json::to_value(&*self.snapshot).map_err(|error| invalid_checkpoint(&error))?,
+        );
+        Ok(SessionCheckpoint::native(
+            self.session_id.clone(),
+            model,
+            thinking,
+            self.lineage.clone(),
+            self.conversation_id.clone(),
+            None,
+            self.snapshot.has_conversation(),
+            payload,
+        ))
+    }
+}
+
+const fn effort_thinking(effort: Option<crate::Effort>) -> Thinking {
+    match effort {
+        None => Thinking::None,
+        Some(crate::Effort::Low) => Thinking::Low,
+        Some(crate::Effort::Medium) => Thinking::Medium,
+        Some(crate::Effort::High) => Thinking::High,
+        Some(crate::Effort::Xhigh) => Thinking::Xhigh,
+        Some(crate::Effort::Max) => Thinking::Max,
+    }
+}
+
+impl State {
+    fn native_policy(&self) -> NativePolicy {
+        NativePolicy {
+            model: self.model(),
+            max_tokens: self.max_tokens,
+            effort: self.effort(),
+            adaptive_thinking: self.adaptive_thinking.load(Ordering::SeqCst),
+            automatic_cache: self.automatic_cache,
+            cache_one_hour: self.cache_one_hour,
+            keep_thinking: self.keep_thinking,
+            fast_mode: self.fast_mode.load(Ordering::SeqCst),
+            message_diagnostics: self.message_diagnostics,
+            context_window_tokens: self.context_window_tokens,
+            auto_compact_window_tokens: self.auto_compact_window_tokens,
+        }
+    }
+    fn boundary(&self, snapshot: Arc<Snapshot>) -> ClaudeBoundary {
+        ClaudeBoundary {
+            snapshot,
+            policy: self.native_policy(),
+            session_id: self.session_id.clone(),
+            lineage: self.lineage.clone(),
+            conversation_id: self.conversation_id.clone(),
+        }
+    }
+    /// Records the latest committed boundary for non-blocking checkpoints and
+    /// forks, clearing any stale mark left by a failed publish.
+    fn publish_boundary(&self, snapshot: Snapshot) -> Arc<Snapshot> {
+        let snapshot = Arc::new(snapshot);
+        *self.round_boundary.write().expect("round boundary lock") = Arc::clone(&snapshot);
+        self.boundary_stale.store(false, Ordering::SeqCst);
+        snapshot
+    }
+    /// Attaches the boundary a completed turn committed to its result.
+    fn retain_boundary(&self, completed: TurnResult, snapshot: Arc<Snapshot>) -> TurnResult {
+        let boundary = TurnBoundary::live(
+            Arc::new(self.boundary(snapshot)),
+            ClaudeBoundary::checkpoint,
+        );
+        let request_id = completed.request_id().map(str::to_owned);
+        let usage = completed.usage().cloned();
+        TurnResult::from_backend(
+            request_id,
+            completed.into_final_message(),
+            usage,
+            Some(boundary),
+        )
+    }
+    /// The latest committed safe boundary. Never waits for an active turn: an
+    /// idle session exposes its complete conversation, and a running turn its
+    /// latest committed round, without partial output or unmatched tool calls.
+    async fn latest_boundary(&self) -> Result<Snapshot> {
+        if let Ok(conversation) = self.conversation.try_lock() {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Err(NanocodexError::AgentStopped);
+            }
+            return self.snapshot(&conversation).await;
+        }
+        if self.boundary_stale.load(Ordering::SeqCst) {
+            return Err(unsupported(
+                "Claude committed boundary is stale after a failed snapshot",
+            ));
+        }
+        let boundary: Arc<Snapshot> = Arc::clone(
+            &*self
+                .round_boundary
+                .read()
+                .map_err(|_| unsupported("Claude boundary lock poisoned"))?,
+        );
+        let mut snapshot = Snapshot::clone(&boundary);
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(NanocodexError::AgentStopped);
+        }
+        // The boundary ends at completed history; a child receives a fresh
+        // prompt, never a dangling continuation of a server-side request.
+        snapshot.conversation.pending_continuation = false;
+        snapshot.conversation.previous_message_id = None;
+        snapshot.conversation.container = None;
+        Ok(snapshot)
+    }
+    /// Resolves a public fork point against this conversation tree.
+    async fn fork_point(&self, point: ForkPoint) -> Result<Snapshot> {
+        match point {
+            ForkPoint::Latest => self.latest_boundary().await,
+            ForkPoint::Turn(completed) => {
+                let boundary = completed
+                    .boundary()
+                    .ok_or(NanocodexError::ReplayedCheckpointUnavailable)?;
+                if let Some(native) = boundary.downcast::<ClaudeBoundary>() {
+                    if native.conversation_id != self.conversation_id {
+                        return Err(NanocodexError::CheckpointLineageMismatch);
+                    }
+                    return Ok(Snapshot::clone(&native.snapshot));
+                }
+                self.checkpoint_snapshot(boundary.checkpoint()?)
+            }
+            ForkPoint::Checkpoint(checkpoint) => self.checkpoint_snapshot(checkpoint),
+            _ => Err(NanocodexError::UnsupportedCapability {
+                capability: "fork_point",
+            }),
+        }
+    }
+    fn checkpoint_snapshot(&self, checkpoint: SessionCheckpoint) -> Result<Snapshot> {
+        checkpoint.validate()?;
+        checkpoint.require_family(HarnessFamily::Claude)?;
+        if checkpoint.conversation_id() != self.conversation_id {
+            return Err(NanocodexError::CheckpointLineageMismatch);
+        }
+        let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
+        stored.snapshot.validated()
+    }
+    /// Rebinds a durable replayed result to the checkpoint its operation settled.
+    fn replayed_boundary(&self, completed: TurnResult, checkpoint: Value) -> TurnResult {
+        match Snapshot::decode(checkpoint) {
+            Ok(snapshot) => self.retain_boundary(completed, Arc::new(snapshot)),
+            Err(_) => completed,
+        }
+    }
+}
 #[derive(Clone, Copy)]
 enum CompactionMode {
     Automatic,
@@ -3164,11 +3636,45 @@ impl State {
             |resolve| resolve(&self.session_id),
         )
     }
+    /// Gives a subagent of a durable session its own durable state under its
+    /// session ID, exactly as for a fork, so it is listed and resumable on its
+    /// own. Restoring reopens the state recorded under the same ID.
+    fn durable_child(
+        &self,
+        recipe: &mut ClaudeBuilder,
+        child_id: &str,
+        lineage: &Lineage,
+        operation: &'static str,
+        journal_backed: bool,
+    ) -> Result<()> {
+        let Some(parent) = &self.policy else {
+            return Ok(());
+        };
+        let child =
+            nanocodex_agent::SessionInfo::new(child_id, HarnessFamily::Claude, lineage.clone());
+        // A durable parent never silently creates an unsaved child. A durable
+        // root without a session catalog still saves its subagents in its
+        // task-tree journal, exactly as for Codex.
+        let Some(policy) = parent.branch(&child)? else {
+            return if journal_backed {
+                Ok(())
+            } else {
+                Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation })
+            };
+        };
+        if policy.state_id() != child_id {
+            return Err(NanocodexError::InvalidRequest(
+                "durable branch state ID must equal the child session ID".into(),
+            ));
+        }
+        recipe.policy = Some(policy);
+        Ok(())
+    }
     fn initialize_child_workspace(&self, recipe: &mut ClaudeBuilder) -> Result<()> {
         if let Some(initialize) = &self.child_workspace_init {
             let child = recipe
                 .session_id
-                .get_or_insert_with(|| format!("claude-{}", uuid::Uuid::new_v4()));
+                .get_or_insert_with(|| uuid::Uuid::now_v7().to_string());
             initialize(&self.session_id, child)?;
             if let Some(resolve) = &self.workspace_resolver {
                 recipe.workspace = resolve(child);
@@ -3185,14 +3691,14 @@ impl State {
     }
     /// Publishes the committed boundary checkpoints read while a turn holds
     /// the conversation. A failed snapshot marks the retained boundary stale.
-    async fn publish_round_boundary(&self, conversation: &Conversation) {
+    /// Returns the published boundary, or `None` after marking it stale.
+    async fn publish_round_boundary(&self, conversation: &Conversation) -> Option<Arc<Snapshot>> {
         match self.snapshot(conversation).await {
-            Ok(boundary) => {
-                *self.round_boundary.write().expect("round boundary lock") =
-                    Some(Arc::new(boundary));
-                self.boundary_stale.store(false, Ordering::SeqCst);
+            Ok(boundary) => Some(self.publish_boundary(boundary)),
+            Err(_) => {
+                self.boundary_stale.store(true, Ordering::SeqCst);
+                None
             }
-            Err(_) => self.boundary_stale.store(true, Ordering::SeqCst),
         }
     }
 
@@ -3359,14 +3865,7 @@ impl State {
         self.emit(events,kind,json!({"status":status,"model":self.model(),"reasoning_mode":reasoning_mode,"effort":effort,"transport":"messages_sse","orchestration":"claude","duration_ms":ns/1_000_000,"duration_ns":ns,"estimated_cost":null,"cost_usd":null,"cost_status":"other"}));
     }
     fn thinking(&self) -> Thinking {
-        match self.effort() {
-            None => Thinking::None,
-            Some(crate::Effort::Low) => Thinking::Low,
-            Some(crate::Effort::Medium) => Thinking::Medium,
-            Some(crate::Effort::High) => Thinking::High,
-            Some(crate::Effort::Xhigh) => Thinking::Xhigh,
-            Some(crate::Effort::Max) => Thinking::Max,
-        }
+        effort_thinking(self.effort())
     }
     fn request_template(&self, speed: Option<crate::Speed>) -> MessagesRequest {
         MessagesRequest {
@@ -3770,6 +4269,14 @@ impl State {
             self.conversation.lock().await
         };
         let events = &request.events;
+        #[cfg(not(target_family = "wasm"))]
+        let rollout_turn = self.rollout.as_ref().map(|_| {
+            nanocodex_agent::rollout::RolloutTurnRecord::started(
+                events.turn_id().unwrap_or(events.request_id()),
+                &request.prompt,
+                self.thinking(),
+            )
+        });
         let (reasoning_mode, effort) = self.emit_run_started(&request);
         let notices_before = conversation.recovery_notices.len();
         // Publish the pre-turn boundary before mutating; a checkpoint taken
@@ -3788,10 +4295,6 @@ impl State {
         for cleanup in &self.adapter_cleanup {
             cleanup().await;
         }
-        self.round_boundary
-            .write()
-            .expect("round boundary lock")
-            .take();
         if result
             .as_ref()
             .err()
@@ -3810,6 +4313,7 @@ impl State {
         {
             let invocation = crate::ClaudeLifecycleInvocation {
                 session_id: self.session_id.clone(),
+                root_session_id: self.lineage.root_session_id.clone(),
                 turn_id: request
                     .request_id
                     .clone()
@@ -3860,6 +4364,29 @@ impl State {
                 }
                 _ => error,
             });
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let (Some(mirror), Some(turn)) = (&self.rollout, rollout_turn) {
+            let turn = match &result {
+                Ok(completed) => turn.completed(completed.final_message()),
+                Err(NanocodexError::TurnCancelled) => turn.interrupted(),
+                Err(_) => turn.failed(),
+            };
+            if let Ok(model) = self.model().parse::<HarnessModel>()
+                && let Err(error) = mirror.commit(turn, model, &conversation).await
+            {
+                // The mirror retries on the next commit; flush() reports it.
+                self.emit(
+                    events,
+                    AgentEventKind::RunError,
+                    json!({"error":format!("rollout mirror: {error}"),"source":"rollout","observational":true}),
+                );
+            }
+        }
+        // The settled conversation is the next committed boundary. A completed
+        // turn retains it so callers can checkpoint or fork at exactly this turn.
+        if let Some(snapshot) = self.publish_round_boundary(&conversation).await {
+            result = result.map(|completed| self.retain_boundary(completed, snapshot));
         }
         let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
         self.emit_run_finished(events, &result, reasoning_mode, &effort, ns);
@@ -4341,6 +4868,7 @@ impl State {
         let invocation = ClaudeToolInvocation {
             model: cursor.template.model.clone(),
             session_id: self.session_id.clone(),
+            root_session_id: self.lineage.root_session_id.clone(),
             turn_id: cursor
                 .operation
                 .clone()
@@ -4488,6 +5016,7 @@ impl State {
     ) -> Result<crate::ClaudeLifecycleOutcome> {
         let invocation = crate::ClaudeLifecycleInvocation {
             session_id: self.session_id.clone(),
+            root_session_id: self.lineage.root_session_id.clone(),
             turn_id: cursor
                 .operation
                 .clone()
@@ -5016,7 +5545,6 @@ impl State {
             let mut fork_snapshot = fork_snapshot?;
             fork_snapshot.conversation.messages = pending.clone();
             fork_snapshot.conversation.summary.clear();
-            let fork_snapshot = Arc::new(fork_snapshot);
             // Reserve identities before invoking any handler. Compaction may
             // discard their transcript, but must not make an old effect callable
             // again. This protection is session-local, not crash-durable.
@@ -5027,11 +5555,10 @@ impl State {
             // cancelled. Keep *every* assistant tool_use paired with a result:
             // completed results are retained, while interrupted handlers get an
             // explicit unknown-outcome error. Never silently replay their calls.
-            *self.round_boundary.write().expect("round boundary lock") =
-                Some(fork_snapshot.clone());
-            *self.dispatch_fork.write().expect("fork boundary lock") = Some(fork_snapshot);
-            self.boundary_stale.store(false, Ordering::SeqCst);
-            let fork_boundary = DispatchForkBoundary(&self.dispatch_fork);
+            // Callbacks in this batch (for example a native fork tool) and
+            // concurrent checkpoints read this pre-batch boundary; they must
+            // not lock `conversation` and never see this unfinished batch.
+            self.publish_boundary(fork_snapshot);
             let mut results = vec![None; tool_calls.len()];
             let mut interrupted = false;
             // Ordered batches: one batch when the embedding declared every tool
@@ -5138,7 +5665,6 @@ impl State {
                     }
                 }
             }
-            drop(fork_boundary);
             let has_tool_calls = !tool_calls.is_empty();
             let code_call_ids = tool_calls
                 .iter()
@@ -5451,6 +5977,8 @@ impl State {
                     estimated_cost: None,
                     cost_status: CostStatus::Other,
                 })),
+                // run() attaches the settled boundary once the turn commits.
+                None,
             ));
         }
         Err(provider_error("Claude model-call ordinal exhausted"))
@@ -5531,93 +6059,63 @@ impl LifecycleBackend for Driver {
     fn harness_family(&self) -> HarnessFamily {
         HarnessFamily::Claude
     }
-    fn runtime_snapshot(&self) -> BackendFuture<Result<ChildSnapshot>> {
+    fn capabilities(&self) -> Capabilities {
+        let mut capabilities = CLAUDE_CAPABILITIES;
+        // The processing tier is selectable only on models the shared
+        // capability source reports fast mode for; uncataloged provider
+        // identifiers keep the family default.
+        if let Ok(model) = self.state.model().parse::<HarnessModel>()
+            && !model.capabilities(ModelTransport::Native).fast_mode()
+        {
+            capabilities.service_tier = Mutability::Fixed;
+        }
+        capabilities
+    }
+    fn persistence(&self) -> Option<Persistence> {
+        let durable = self
+            .state
+            .policy
+            .as_ref()
+            .map(|policy| Persistence::durable(policy.state_id()));
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(mirror) = &self.state.rollout {
+            return Some(durable.unwrap_or_default().with_rollout(mirror.info()));
+        }
+        durable
+    }
+    fn checkpoint(&self) -> BackendFuture<Result<SessionCheckpoint>> {
         let state = self.state.clone();
         Box::pin(async move {
-            // An idle child exposes its complete conversation. A running turn
-            // holds the conversation lock until it settles, so expose its
-            // latest committed round instead of blocking the caller (and the
-            // child's harness loop) for the remainder of the turn.
-            let (snapshot, has_conversation) = match state.conversation.try_lock() {
-                Ok(conversation) => {
-                    if state.stopped.load(Ordering::SeqCst) {
-                        return Err(NanocodexError::AgentStopped);
-                    }
-                    let has_conversation =
-                        !conversation.messages.is_empty() || !conversation.summary.is_empty();
-                    (state.snapshot(&conversation).await?, has_conversation)
-                }
-                Err(_) => {
-                    if state.boundary_stale.load(Ordering::SeqCst) {
-                        return Err(unsupported(
-                            "Claude committed boundary is stale after a failed snapshot",
-                        ));
-                    }
-                    let boundary = state
-                        .dispatch_fork
-                        .read()
-                        .map_err(|_| unsupported("Claude fork boundary lock poisoned"))?
-                        .clone()
-                        .or_else(|| {
-                            state
-                                .round_boundary
-                                .read()
-                                .ok()
-                                .and_then(|boundary| boundary.clone())
-                        });
-                    if let Some(snapshot) = boundary {
-                        let mut snapshot = Arc::unwrap_or_clone(snapshot);
-                        if state.stopped.load(Ordering::SeqCst) {
-                            return Err(NanocodexError::AgentStopped);
-                        }
-                        // The boundary ends at completed history; the restored
-                        // child receives a fresh prompt, never a dangling
-                        // continuation of a server-side request.
-                        snapshot.conversation.pending_continuation = false;
-                        snapshot.conversation.previous_message_id = None;
-                        snapshot.conversation.container = None;
-                        let has_conversation = !snapshot.conversation.messages.is_empty()
-                            || !snapshot.conversation.summary.is_empty();
-                        (snapshot, has_conversation)
-                    } else {
-                        let conversation = state.conversation.lock().await;
-                        if state.stopped.load(Ordering::SeqCst) {
-                            return Err(NanocodexError::AgentStopped);
-                        }
-                        let has_conversation =
-                            !conversation.messages.is_empty() || !conversation.summary.is_empty();
-                        (state.snapshot(&conversation).await?, has_conversation)
-                    }
-                }
+            let snapshot = state.latest_boundary().await?;
+            state.boundary(Arc::new(snapshot)).checkpoint()
+        })
+    }
+    fn persist_initial(&self) -> BackendFuture<Result<()>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            // A durable child is listed and resumable from creation: a fresh
+            // subagent from its empty conversation, a fork or restored child
+            // from the transcript it starts with.
+            let Some(policy) = state.policy.clone() else {
+                return Ok(());
             };
-            let model = state.model().parse().map_err(unsupported)?;
-            let thinking = if state.effort().is_none() {
-                HarnessModel::default_thinking(model)
-            } else {
-                state.thinking()
-            };
-            Ok(ChildSnapshot::Native {
-                model,
-                session_id: state.session_id.clone(),
-                thinking,
-                payload: serde_json::to_string(&NativeChildState {
-                    version: 1,
-                    model: state.model(),
-                    max_tokens: state.max_tokens,
-                    effort: state.effort(),
-                    adaptive_thinking: state.adaptive_thinking.load(Ordering::SeqCst),
-                    automatic_cache: state.automatic_cache,
-                    cache_one_hour: state.cache_one_hour,
-                    keep_thinking: state.keep_thinking,
-                    fast_mode: state.fast_mode.load(Ordering::SeqCst),
-                    message_diagnostics: state.message_diagnostics,
-                    context_window_tokens: state.context_window_tokens,
-                    auto_compact_window_tokens: state.auto_compact_window_tokens,
-                    snapshot,
-                })
-                .map_err(provider_error)?,
-                has_conversation,
-            })
+            let snapshot = state.latest_boundary().await?;
+            let model: HarnessModel = state.model().parse().map_err(unsupported)?;
+            policy
+                .initial_checkpoint(
+                    serde_json::to_value(&snapshot).map_err(provider_error)?,
+                    model,
+                )
+                .await
+        })
+    }
+    fn discard_initial(&self) -> BackendFuture<Result<()>> {
+        let policy = self.state.policy.clone();
+        Box::pin(async move {
+            match policy {
+                Some(policy) => policy.discard_initial().await,
+                None => Ok(()),
+            }
         })
     }
     fn set_harness_model(&self, model: HarnessModel) -> BackendFuture<Result<()>> {
@@ -5628,10 +6126,14 @@ impl LifecycleBackend for Driver {
                 return Err(NanocodexError::AgentStopped);
             }
             if model.family() != HarnessFamily::Claude {
-                return Err(unsupported("model belongs to another harness"));
+                return Err(unsupported("model belongs to another harness family"));
             }
+            // Signed thinking and server-tool history are model-bound, so the
+            // model is pinned once a conversation exists (as for Codex).
             if state.accepted_turns.load(Ordering::SeqCst) != 0 {
-                return Err(unsupported("Claude model is fixed after the first prompt"));
+                return Err(unsupported(
+                    "the model can only be changed before the first turn is accepted",
+                ));
             }
             *state
                 .model
@@ -5688,9 +6190,10 @@ impl LifecycleBackend for Driver {
                     request.request_id = Some(id.clone());
                     request.events = request.events.with_turn_id(id.clone());
                     let mut terminal = match admission {
-                        Admission::Completed { output, .. } => {
-                            Some(durable::replay(id.clone(), output))
-                        }
+                        Admission::Completed { output, checkpoint } => Some(
+                            durable::replay(id.clone(), output)
+                                .map(|completed| state.replayed_boundary(completed, checkpoint)),
+                        ),
                         Admission::Failed { error, .. } => {
                             Some(Err(NanocodexError::ReplayedExecutionFailed(error)))
                         }
@@ -5868,7 +6371,7 @@ impl LifecycleBackend for Driver {
                 let cancels = state.cancellations.lock().await;
                 cancels
                     .get(&key)
-                    .ok_or_else(|| unsupported("Claude turn is not active"))?
+                    .ok_or(NanocodexError::TurnNotCancellable)?
                     .cancel();
             }
             if state.policy.is_some() {
@@ -5888,13 +6391,6 @@ impl LifecycleBackend for Driver {
             Ok(())
         })
     }
-    fn set_model(&self, _model: Model) -> BackendFuture<Result<()>> {
-        Box::pin(async {
-            Err(unsupported(
-                "Claude model cannot be selected with OpenAI Model enum",
-            ))
-        })
-    }
     fn set_thinking(&self, thinking: Thinking) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {
@@ -5902,15 +6398,13 @@ impl LifecycleBackend for Driver {
             if state.stopped.load(Ordering::SeqCst) {
                 return Err(NanocodexError::AgentStopped);
             }
-            if state.accepted_turns.load(Ordering::SeqCst) != 0 {
-                return Err(unsupported("Claude effort is fixed after the first prompt"));
-            }
+            // Messages carries effort and adaptive thinking per request, and
+            // each admitted turn freezes its own request template, so a change
+            // applies to every subsequently accepted turn.
             let model: HarnessModel = state.model().parse().map_err(unsupported)?;
-            if !model.supports_thinking(thinking) {
-                return Err(unsupported(
-                    "Claude model does not support selected thinking",
-                ));
-            }
+            model
+                .capabilities(ModelTransport::Native)
+                .check_thinking(thinking)?;
             *state
                 .effort
                 .write()
@@ -5928,6 +6422,11 @@ impl LifecycleBackend for Driver {
             let _admission = state.admission.lock().await;
             if state.stopped.load(Ordering::SeqCst) {
                 return Err(NanocodexError::AgentStopped);
+            }
+            if let Ok(model) = state.model().parse::<HarnessModel>() {
+                model
+                    .capabilities(ModelTransport::Native)
+                    .check_fast_mode(enabled)?;
             }
             state.fast_mode.store(enabled, Ordering::SeqCst);
             Ok(())
@@ -5987,6 +6486,7 @@ impl LifecycleBackend for Driver {
                             "manual-compact",
                         )
                         .await;
+                    state.publish_round_boundary(&context).await;
                     if let (Some(policy), Some(id)) = (&state.policy, operation) {
                         if result
                             .as_ref()
@@ -6056,60 +6556,79 @@ impl LifecycleBackend for Driver {
         _text: String,
     ) -> BackendFuture<Result<AgentSessionContext>> {
         Box::pin(async {
-            Err(unsupported(
-                "Claude dynamic developer context is unsupported",
-            ))
+            Err(NanocodexError::UnsupportedCapability {
+                capability: "developer_messages",
+            })
         })
     }
     fn context(&self) -> BackendFuture<Result<AgentSessionContext>> {
-        let state = self.state.clone();
-        Box::pin(async move {
-            let history = state.conversation.lock().await;
-            if !history.messages.is_empty() || !history.summary.is_empty() {
-                return Err(unsupported(
-                    "Claude context cannot be represented by OpenAI ResponseItem",
-                ));
-            }
-            Ok(AgentSessionContext::from_backend(
-                state.workspace.clone(),
-                vec![],
-            ))
+        Box::pin(async {
+            Err(NanocodexError::UnsupportedCapability {
+                capability: "context",
+            })
         })
     }
     fn spawn(&self, options: SpawnOptions) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let handle = self.handle.clone();
         Box::pin(async move { handle.spawn_with(options).await })
     }
-    fn fork(
-        &self,
-        completed: Option<TurnResult>,
-    ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
-        if completed.is_some() {
-            return Box::pin(async {
-                Err(unsupported(
-                    "Claude fork_from cannot reconstruct a native transcript from TurnResult; use fork",
-                ))
-            });
-        }
+    fn fork(&self, request: ForkRequest) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
         let handle = self.handle.clone();
-        Box::pin(async move { handle.fork().await })
+        Box::pin(async move { handle.fork(request).await })
     }
     fn flush(&self) -> BackendFuture<Result<()>> {
+        // Durable state is committed at every receipt and settlement before a
+        // result is published, so flushing never waits for an active turn.
         let state = self.state.clone();
         Box::pin(async move {
-            let _boundary = state.conversation.lock().await;
             if state.stopped.load(Ordering::SeqCst) {
                 return Err(NanocodexError::AgentStopped);
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(mirror) = &state.rollout {
+                mirror
+                    .flush()
+                    .await
+                    .map_err(|source| NanocodexError::PersistRollout {
+                        path: mirror.info().path().to_owned(),
+                        source,
+                    })?;
             }
             Ok(())
         })
     }
+    /// A durable session detaches without cancelling accepted turns: new
+    /// admissions are refused through every clone, accepted turns run to
+    /// their committed settlement, and the rollout mirror and durable owner
+    /// are then closed in the background so another process can reopen the
+    /// session. Sessions without durable state shut down.
     fn disconnect(&self) -> BackendFuture<Result<()>> {
-        if self.state.policy.is_some() {
-            Box::pin(async { Ok(()) })
-        } else {
-            self.shutdown()
+        if self.state.policy.is_none() {
+            return self.shutdown();
         }
+        let state = self.state.clone();
+        Box::pin(async move {
+            {
+                // Admission is held for a whole manual compaction, so no
+                // compaction is running once it is acquired.
+                let _admission = state.admission.lock().await;
+                if state.stopped.swap(true, Ordering::SeqCst) {
+                    return Ok(());
+                }
+            }
+            let release = async move {
+                state.wait_idle().await;
+                // Nothing observes this future. Settled turns already reported
+                // their own rollout errors; a later shutdown() reports an owner
+                // release failure.
+                let _ = state.release_local().await;
+            };
+            #[cfg(not(target_family = "wasm"))]
+            tokio::spawn(release);
+            #[cfg(target_family = "wasm")]
+            wasm_bindgen_futures::spawn_local(release);
+            Ok(())
+        })
     }
     fn shutdown(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
@@ -6166,6 +6685,7 @@ impl LifecycleBackend for Driver {
                     if deliver {
                         let invocation = crate::ClaudeLifecycleInvocation {
                             session_id: state.session_id.clone(),
+                            root_session_id: state.lineage.root_session_id.clone(),
                             turn_id: operation
                                 .clone()
                                 .unwrap_or_else(|| durable::candidate_id("session-end")),
@@ -6196,11 +6716,45 @@ impl LifecycleBackend for Driver {
                     }
                 }
             }
-            if let Some(policy) = &state.policy {
-                policy.shutdown().await?;
-            }
-            Ok(())
+            state.release_local().await
         })
+    }
+}
+
+impl State {
+    /// Waits until every accepted turn has settled, without cancelling any.
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.cancellations.lock().await.is_empty() {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    /// Closes the rollout mirror once and releases the durable owner. Owner
+    /// release is idempotent and joins a release already in progress.
+    async fn release_local(&self) -> Result<()> {
+        let first = !self.released.swap(true, Ordering::SeqCst);
+        #[cfg(not(target_family = "wasm"))]
+        if first && let Some(mirror) = &self.rollout {
+            mirror
+                .shutdown()
+                .await
+                .map_err(|source| NanocodexError::PersistRollout {
+                    path: mirror.info().path().to_owned(),
+                    source,
+                })?;
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = first;
+        if let Some(policy) = &self.policy {
+            policy.shutdown().await?;
+        }
+        Ok(())
     }
 }
 

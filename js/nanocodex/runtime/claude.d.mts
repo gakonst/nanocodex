@@ -1,4 +1,4 @@
-import type { Agent as BaseAgent, EventWatcher, TurnUsage, WatchEventsOptions, DurabilityStore, ToolContext } from '../types.mjs';
+import type { DefaultAgent, DurabilityStore, SessionCheckpoint, ToolContext } from '../types.mjs';
 
 /** Explicit, caller-approved credentials. The callback is resolved independently for each request. */
 export type Auth = Readonly<
@@ -58,7 +58,8 @@ export type Options = Readonly<{
   /** Explicit alternate-family capability; no credentials are inferred. */
   harnesses?: Readonly<{ codex?: CodexHarnessOptions }>;
   auth: Auth;
-  model: string;
+  /** A cataloged Claude model, or another id served by a compatible `endpoint`. */
+  model: import("../types.mjs").ClaudeModel | (string & {});
   endpoint?: string;
   /** Explicit host Messages fetch; never serialized into model/session state. */
   fetch?: typeof globalThis.fetch;
@@ -76,6 +77,8 @@ export type Options = Readonly<{
   thinking?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   adaptiveThinking?: boolean;
   keepThinking?: boolean;
+  /** Fast mode where the model offers it (`capabilities().serviceTier`); an unsupported model rejects before any request. Same as Codex `fastMode`. */
+  fastMode?: boolean;
   cache?: 'off' | '5m' | '1h';
   parallelTools?: boolean;
   contextWindowTokens?: number;
@@ -83,29 +86,13 @@ export type Options = Readonly<{
   /** Disabling automatic compaction is not supported. */
   autoCompact?: true;
   terminalReceiptRetention?: number;
+  /** Resumes this Claude checkpoint's session, keeping its session ID and committed conversation. */
+  resume?: SessionCheckpoint;
   /** Compiled browser WASM module for this exact package. */
   module?: unknown;
 }> & (
   | { durability?: never; durabilityId?: never }
   | { durability: DurabilityStore; durabilityId: string }
 );
-/** Shared output/event contract, with canonical subagents available through Subagents when enabled. */
-export type Agent = BaseAgent<{
-  events: { watch(options?: WatchEventsOptions): EventWatcher };
-  session: { compact(): Promise<void>; cancel(): Promise<void>; shutdown(): Promise<void> };
-  turn: { prompt(options: { input: string; id?: string }): Turn };
-}>;
-export type Turn = Readonly<{
-  readonly agent: Agent;
-  accepted(): Promise<string | undefined>;
-  result(): Promise<Result>;
-  cancel(): Promise<void>;
-  dispose(): void;
-}>;
-export type Result = Readonly<{
-  finalMessage: string;
-  /** Unsupported for Claude: native checkpoints are owned by durability. Always rejects. */
-  snapshot(): Promise<never>;
-  usage(): Promise<TurnUsage>;
-  dispose(): void;
-}>;
+/** The one harness-neutral Agent; canonical subagents are available through Subagents when enabled. */
+export type Agent = DefaultAgent;

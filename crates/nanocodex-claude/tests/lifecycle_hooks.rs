@@ -161,7 +161,10 @@ async fn public_compaction_gates_observation_and_fork_lifecycle() {
         .result()
         .await
         .unwrap();
-    let (child, _) = agent.fork().await.unwrap();
+    let (child, _) = agent
+        .fork(nanocodex_agent::ForkRequest::latest())
+        .await
+        .unwrap();
     child
         .prompt("child prompt")
         .await

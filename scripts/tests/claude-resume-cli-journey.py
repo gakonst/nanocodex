@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import subprocess
 import threading
 import time
@@ -324,10 +325,17 @@ def main():
         require(not errors, "; ".join(errors))
         require(b"initial-resume-complete" in result.stdout, "initial final answer missing")
         require((workspace / "counter.txt").read_text() == "x", "initial shell counter incorrect")
-        manifests = list((home / "codex/claude/sessions").glob("*.json"))
-        require(len(manifests) == 1, "normal run must register exactly one native session")
-        manifest = json.loads(manifests[0].read_text())
+        # The shared durable store is the session authority for every harness.
+        store = sqlite3.connect(f"file:{home / 'codex/sessions.sqlite'}?mode=ro", uri=True)
+        try:
+            heads = store.execute("SELECT state_id, payload FROM nanocodex_durable_states").fetchall()
+        finally:
+            store.close()
+        require(len(heads) == 1, "normal run must record exactly one durable session")
+        record_head = json.loads(heads[0][1])["nanocodex_session"]
+        manifest = {"id": record_head["session_id"], "workspace": record_head.get("workspace"), "model": record_head["model"]}
         session_id = manifest["id"]
+        require(session_id == heads[0][0], "session record identity differs from its state")
         (artifact / "session-manifest.json").write_text(json.dumps(manifest, indent=2))
         require(manifest["workspace"] == str(workspace), "saved workspace mismatch")
         require(manifest["model"] == "claude-sonnet-5-5", "saved model mismatch")
@@ -448,8 +456,8 @@ def main():
         for name, extra, expected in (
             ("missing-session", ["absent-session-id"], "unknown session"),
             ("workspace-mismatch", [session_id, "--cwd", str(launch)], "--cwd requested"),
-            ("persistence-disabled", [session_id, "--rollouts", "false"], "requires native persistence"),
-            ("deleted-workspace", [session_id], "failed to resolve the resumed Claude workspace"),
+            ("persistence-disabled", [session_id, "--rollouts", "false"], "requires session persistence"),
+            ("deleted-workspace", [session_id], "failed to resolve the resumed workspace"),
         ):
             moved = artifact / "workspace-temporarily-moved"
             if name == "deleted-workspace":

@@ -27,7 +27,6 @@ type WorkerToolExposureOptions = {
 };
 
 /** Creates a Rust/WASM Agent in a package-owned browser module Worker. */
-export function create(options: import('../runtime/claude.mjs').Options & { harness: 'claude' }): Promise<import('../runtime/claude.mjs').Agent>;
 export function create(options: create.ManagedOptions): Promise<AgentLifecycle>;
 export function create(options?: create.Options): Promise<create.ReturnType>;
 export declare namespace create {
@@ -35,7 +34,8 @@ export declare namespace create {
     transport: ManagedTransport;
     tools?: Tools | undefined;
   }>;
-  type Options = Omit<AgentOptions, "beforeCompaction" | "harness"> & WorkerToolExposureOptions & {
+  /** Codex (OpenAI Responses) harness options. */
+  type CodexOptions = Omit<AgentOptions, "beforeCompaction" | "harness"> & WorkerToolExposureOptions & {
     /** Precompiled browser module; WebAssembly modules are structured-clone-safe. */
     module?: WebAssembly.Module | undefined;
     /** Fixed browser workspace facts, including its AGENTS.md snapshot. */
@@ -51,5 +51,9 @@ export declare namespace create {
     /** Set false to omit the default OPFS, shell, web, image, plan, and artifact tools. */
     harness?: false | 'codex' | undefined;
   };
+  /** Claude (Messages) harness options; see docs/CLAUDE_JAVASCRIPT.md. */
+  type ClaudeOptions = import('../runtime/claude.mjs').Options & { harness: 'claude' };
+  /** Options of either harness family, discriminated by `harness`; both return the same Agent. */
+  type Options = CodexOptions | ClaudeOptions;
   type ReturnType = Agent;
 }

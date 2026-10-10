@@ -14,6 +14,9 @@ use std::collections::HashSet;
 pub(crate) enum Reader<'a> {
     Owner(&'a DurableOwner),
     Session(&'a crate::DurableSession),
+    /// Non-fencing reads of one state's immutable records (native catalog).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    Store(&'a crate::shared_store::SharedStore, &'a str),
 }
 impl<'a> From<&'a DurableOwner> for Reader<'a> {
     fn from(value: &'a DurableOwner) -> Self {
@@ -30,6 +33,9 @@ impl Reader<'_> {
         match self {
             Self::Owner(owner) => owner.load_payloads(payloads).await,
             Self::Session(session) => session.resolve_many(payloads).await,
+            Self::Store(store, state_id) => {
+                EncodedPayload::load_many(&payloads, &mut store.clone(), state_id).await
+            }
         }
     }
 
@@ -37,6 +43,7 @@ impl Reader<'_> {
         match self {
             Self::Owner(owner) => owner.load_payload(payload).await,
             Self::Session(session) => session.resolve(&payload).await,
+            Self::Store(store, state_id) => payload.load(&mut store.clone(), state_id).await,
         }
     }
 }

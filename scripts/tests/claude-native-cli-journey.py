@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 import shlex
+import sqlite3
 import struct
 import zlib
 import subprocess
@@ -29,6 +30,23 @@ def text_of(receipt):
         block.get("text", "") for block in content if block.get("type") == "text"
     )
 
+
+def durable_store(codex_home):
+    """The shared durable session catalog recorded by every harness."""
+    return Path(codex_home) / "sessions.sqlite"
+
+
+def durable_sessions(codex_home):
+    """Session IDs recorded in the shared durable catalog, oldest first."""
+    path = durable_store(codex_home)
+    if not path.is_file():
+        return []
+    store = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = store.execute("SELECT state_id FROM nanocodex_durable_states ORDER BY rowid").fetchall()
+    finally:
+        store.close()
+    return [row[0] for row in rows]
 
 def sse(block, model):
     is_tool = block["type"] == "tool_use"

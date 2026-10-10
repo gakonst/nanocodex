@@ -168,7 +168,7 @@ def main():
   require(not fired('deleted-must-not-fire'),'deleted schedule fired');checks.append('ID-derived recurring half-interval/hourly cap jitter and :30 early/non-boundary exact one-shot receipts persisted');checks.append('real 60-second wakeup and cron fire only after composer cleared; deletion suppresses fire')
   phase('prepare-reopen',[('ScheduleWakeup',{'delaySeconds':60,'prompt':'discard-on-reopen','reason':'restart policy','noop':False},False,None)])
   os.write(fd,b'Prepare restart\r');wait(lambda:visible('initial','prepare-reopen-complete'),drain,'restart setup missing');wait(lambda:settled('initial','prepare-reopen-complete'),drain,'restart turn never reached its terminal record');finish(proc,fd,drain)
-  manifests=list((codex_home/'claude/sessions').glob('*.json'));require(len(manifests)==1,'session manifest missing');session=json.loads(manifests[0].read_text())['id']
+  sessions=h.durable_sessions(codex_home);require(len(sessions)==1,'session manifest missing');session=sessions[0]
   # Simulate an offline gap through persisted records, never a production clock
   # override. The actual reopen must discard expired/elapsed work and skip backlog.
   journals=list((codex_home/'claude/schedules').glob('*.json'));require(len(journals)==1,'scheduler journal missing');jp=journals[0];journal=json.loads(jp.read_text());past=int(time.time())-120

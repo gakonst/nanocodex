@@ -14,10 +14,11 @@ use tokio::{
 };
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
+use crate::conversation;
 use nanocodex_agent::{
-    AgentHandle, ChildRuntimeSnapshot, ChildSnapshot, ExecutionEnvironment, Model, Nanocodex,
-    NanocodexError, OpenAi, PromptRoute, ReasoningMode, ResponseError, ServiceTier, SpawnOptions,
-    Thinking, Tools, TurnResult,
+    AgentHandle, ExecutionEnvironment, ForkRequest, HarnessModel, Model, Nanocodex, NanocodexError,
+    OpenAi, PromptRoute, ReasoningMode, ResponseError, ServiceTier, SessionCheckpoint,
+    SpawnOptions, Thinking, Tools, TurnResult,
     events::{AgentEvent, AgentEventData, RunEvent},
     input::Prompt,
     rollout::RolloutConfig,

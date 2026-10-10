@@ -182,6 +182,52 @@ impl StateStore for PostgresStore {
             Ok(revision)
         })
     }
+
+    fn peek<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        Box::pin(async move {
+            self.client
+                .query_opt(
+                    "SELECT revision::text, payload
+                     FROM nanocodex_durable_states WHERE state_id = $1",
+                    &[&state_id],
+                )
+                .await
+                .map_err(backend)?
+                .map(|row| {
+                    Ok(StoredState {
+                        revision: parse_u64(&row.get::<_, String>(0), "Postgres state revision")?,
+                        payload: Some(row.get(1)),
+                    })
+                })
+                .transpose()
+                .map(Option::unwrap_or_default)
+        })
+    }
+
+    /// Postgres states carry no creation order; identities are returned in
+    /// descending order, which is newest first for time-ordered (UUIDv7) IDs.
+    fn list_states<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
+        Box::pin(async move {
+            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            Ok(self
+                .client
+                .query(
+                    "SELECT state_id FROM nanocodex_durable_states ORDER BY state_id DESC LIMIT $1",
+                    &[&limit],
+                )
+                .await
+                .map_err(backend)?
+                .into_iter()
+                .map(|row| row.get(0))
+                .collect())
+        })
+    }
 }
 
 async fn validate_schema(transaction: &tokio_postgres::Transaction<'_>) -> Result<(), StoreError> {

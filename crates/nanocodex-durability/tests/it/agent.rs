@@ -11,8 +11,8 @@ use std::{
 
 use eyre::{Result, eyre};
 use nanocodex_agent::{
-    ExecutionPolicyDisposition, Model, Nanocodex, NanocodexError, OpenAi, PromptRequest,
-    PromptRoute, ResponseError, ServiceTier, Tools,
+    ExecutionPolicyDisposition, ForkRequest, Model, Nanocodex, NanocodexError, OpenAi,
+    PromptRequest, PromptRoute, ResponseError, ServiceTier, Tools,
     events::{AgentEventKind, AgentEvents, RunStatus, RunTerminal},
     execution::{
         ExecutionAdmission, ExecutionFuture, ExecutionOutput, ExecutionPolicy,
@@ -282,8 +282,12 @@ async fn six_hundred_turns_cross_retention_and_twenty_four_owner_changes() -> Re
                     .result()
                     .await?;
                 assert_eq!(
-                    serde_json::to_value(replay.snapshot())?,
-                    serde_json::to_value(result.snapshot())?
+                    codex_snapshot(&replay)
+                        .map(serde_json::to_value)
+                        .transpose()?,
+                    codex_snapshot(&result)
+                        .map(serde_json::to_value)
+                        .transpose()?
                 );
                 assert_eq!(state.state().await?.revision(), retained.revision());
             }
@@ -2331,7 +2335,7 @@ async fn durable_terminal_replays_emit_one_terminal_without_model_execution() ->
         .await?
         .result()
         .await?;
-    assert!(completed.snapshot().is_some());
+    assert!(completed.checkpoint().is_some());
     let snapshot = state
         .latest_checkpoint()
         .await?
@@ -3572,8 +3576,8 @@ async fn abandoned_terminal_replay_acceptance_emits_no_terminal_event() -> Resul
         .prompt("seed replay snapshot")
         .await?
         .result()
-        .await?
-        .snapshot()
+        .await
+        .map(|result| codex_snapshot(&result))?
         .expect("local turns always retain a snapshot");
     seed.shutdown().await?;
     drop((seed, seed_events));
@@ -3642,8 +3646,8 @@ async fn abandoned_routed_terminal_replay_emits_no_terminal_event() -> Result<()
         .prompt("seed routed replay snapshot")
         .await?
         .result()
-        .await?
-        .snapshot()
+        .await
+        .map(|result| codex_snapshot(&result))?
         .expect("local turns always retain a snapshot");
     seed.shutdown().await?;
     drop((seed, seed_events));
@@ -4191,7 +4195,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             // history but declare the current runtime's exec/wait surface
             // (eda4a21e3), exactly as a fresh request on that runtime does.
             let mut current_tools =
-                serde_json::to_value(result.snapshot().unwrap())?["request_prefix"]
+                serde_json::to_value(codex_snapshot(&result).unwrap())?["request_prefix"]
                     .as_array()
                     .unwrap()
                     .iter()
@@ -4211,7 +4215,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             );
         }
         let next = next_request.to_string();
-        let checkpoint = serde_json::to_value(result.snapshot().unwrap())?;
+        let checkpoint = serde_json::to_value(codex_snapshot(&result).unwrap())?;
         assert!(
             checkpoint["request_prefix"]
                 .to_string()
@@ -4228,7 +4232,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
 }
 
 #[tokio::test]
-async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<()> {
+async fn durable_parent_without_catalog_journals_subagents_and_rejects_forks() -> Result<()> {
     let store = MemoryStore::new()?;
     let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let state = DurableSession::open(
@@ -4256,7 +4260,17 @@ async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<(
         .durability(state.clone())
         .await?
         .build()?;
-    assert!(parent.rollout().is_some());
+    let persistence = parent
+        .persistence()
+        .expect("durable rollout-recording parent");
+    assert!(
+        persistence.rollout.is_some(),
+        "durability and the rollout mirror coexist"
+    );
+    assert_eq!(
+        persistence.durable_state_id.as_deref(),
+        Some("ephemeral-parent")
+    );
     for _ in 0..2 {
         parent
             .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
@@ -4269,73 +4283,42 @@ async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<(
         1,
         "parent receipts must still replay"
     );
+    // Without a session catalog the root saves the subagents it spawns in its
+    // task-tree journal (restored by its host), so a spawn succeeds without a
+    // catalog session of its own. A fork has no such home and is rejected.
     let (child, child_events) = parent.spawn().await?;
-    let (grandchild, grandchild_events) = child.spawn().await?;
-    for agent in [&child, &grandchild] {
-        assert!(
-            agent.rollout().is_none(),
-            "children must not create resumable rollout files"
-        );
-        assert!(matches!(
-            agent
-                .prompt(PromptRequest::new("identified").request_id("child-turn"))
-                .await,
-            Err(NanocodexError::ExecutionPolicyNotConfigured)
-        ));
-        for _ in 0..2 {
-            assert_eq!(
-                agent
-                    .prompt("child work")
-                    .await?
-                    .result()
-                    .await?
-                    .final_message(),
-                "durably replayed"
-            );
-        }
-    }
+    assert_ne!(child.session_id(), parent.session_id());
+    let persistence = child
+        .persistence()
+        .expect("every subagent mirrors a rollout");
+    assert!(
+        persistence.durable_state_id.is_none(),
+        "a journal-backed subagent has no catalog session of its own"
+    );
+    assert!(persistence.rollout.is_some());
+    assert!(matches!(
+        parent.fork(ForkRequest::latest()).await,
+        Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" })
+    ));
+    child.shutdown().await?;
+    drop((child, child_events));
+    parent
+        .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
+        .await?
+        .result()
+        .await?;
     assert_eq!(
         generations.load(Ordering::SeqCst),
-        5,
-        "each ephemeral prompt must execute normally"
+        1,
+        "the parent stays usable"
     );
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-parent", "ephemeral-parent"],
-        "descendants must never acquire a durable owner"
-    );
-    assert!(state.agent_snapshot().await?.is_some());
-    assert!(matches!(
-        state
-            .state()
-            .await?
-            .operation("parent-turn")
-            .unwrap()
-            .status,
-        OperationStatus::Completed { .. }
-    ));
-    for agent in [&grandchild, &child] {
-        agent.shutdown().await?;
-    }
     parent.shutdown().await?;
     assert_eq!(
         rollout.list_sessions()?.len(),
         1,
         "only the parent has a disk session"
     );
-    for id in [child.session_id(), grandchild.session_id()] {
-        let empty = DurableSession::open(store.clone(), id).await?;
-        assert!(empty.agent_snapshot().await?.is_none());
-        assert!(empty.state().await?.operations().is_empty());
-    }
-    drop((
-        grandchild,
-        grandchild_events,
-        child,
-        child_events,
-        parent,
-        parent_events,
-    ));
+    drop((parent, parent_events));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -4664,54 +4647,6 @@ async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Re
     assert_exhausted_compaction_cold_reopen(true, true).await
 }
 
-#[tokio::test]
-async fn in_memory_child_rehydration_does_not_reattach_parent_durability() -> Result<()> {
-    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = DurableSession::open(
-        CountingAcquires {
-            inner: MemoryStore::new()?,
-            acquisitions: Arc::clone(&acquisitions),
-        },
-        "ephemeral-rehydrate-parent",
-    )
-    .await?;
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = OpenAi::builder("test-key")
-        .service({
-            let generations = Arc::clone(&generations);
-            move || DurableReplayService {
-                generations: Arc::clone(&generations),
-            }
-        })
-        .build()?;
-    let workspace = temporary_workspace("ephemeral-rehydrate")?;
-    let (parent, _events) = Nanocodex::builder(openai)
-        .workspace(&workspace)
-        .durability(state)
-        .await?
-        .build()?;
-    let (child, _events) = parent.spawn().await?;
-    child.prompt("retained in memory").await?.result().await?;
-    let snapshot = child.child_snapshot().await?;
-    let expected = serde_json::to_value(&snapshot)?;
-    child.shutdown().await?;
-    let (restored, _events) = parent.restore_child(snapshot, None).await?;
-    assert_eq!(
-        serde_json::to_value(restored.child_snapshot().await?)?,
-        expected
-    );
-    restored.prompt("continue").await?.result().await?;
-    assert_eq!(generations.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-rehydrate-parent", "ephemeral-rehydrate-parent"]
-    );
-    restored.shutdown().await?;
-    parent.shutdown().await?;
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
 #[derive(Clone)]
 struct HostedStreamFailureService {
     calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -4814,4 +4749,10 @@ async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() ->
 #[tokio::test]
 async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
     assert_hosted_stream_failure_recovery(false).await
+}
+
+/// Codex-native boundary retained by a completed local turn.
+fn codex_snapshot(result: &nanocodex_agent::TurnResult) -> Option<SessionSnapshot> {
+    let checkpoint = result.checkpoint()?;
+    serde_json::from_value(checkpoint.payload()["conversation"].clone()).ok()
 }

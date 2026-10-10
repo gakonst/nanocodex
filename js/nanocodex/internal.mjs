@@ -99,15 +99,26 @@ export function prompt(agent, options) {
   return createTurn(raw, agent);
 }
 
-/** Internal live-input seam: atomically steers the active turn or starts one. */
+/**
+ * Internal host seam: atomically steers the active turn or starts one, for
+ * live frontends (realtime voice) that cannot race steer() against prompt().
+ * A started turn passes through the runtime's turn owner, if registered.
+ */
 export async function routePrompt(agent, options) {
   const state = agentState(agent);
   const input = actionInput(options);
-  if (typeof input !== "string") {
-    throw new TypeError("live routed input must be text");
+  if (typeof input !== "string" || !input.trim()) {
+    throw new TypeError("live routed input must be non-empty text");
   }
   const raw = await state.raw.routePrompt(input);
-  return raw === undefined ? undefined : createTurn(raw, agent);
+  if (raw === undefined) return undefined;
+  const turn = createTurn(raw, agent);
+  return state.ownRoutedTurn ? state.ownRoutedTurn(turn) : turn;
+}
+
+/** Internal runtime seam: lets a harness runtime own turns started by routePrompt. */
+export function ownRoutedTurns(agent, own) {
+  agentState(agent).ownRoutedTurn = own;
 }
 
 /** Internal host lifecycle identity; accepted() retains its public durable-only contract. */
@@ -144,8 +155,8 @@ export function awaitTurnAcceptance(turn) {
   return state.acceptance;
 }
 
-export function getTurnSnapshot(result) {
-  return resultState(result).snapshot();
+export function getTurnCheckpoint(result) {
+  return resultState(result).checkpoint();
 }
 
 export function getTurnUsage(result) {
@@ -153,8 +164,13 @@ export function getTurnUsage(result) {
 }
 
 /** Internal Worker seam: preserves the Rust-owned encoding until it reaches its consumer. */
-export function getEncodedTurnSnapshot(result) {
-  return encodedTurnResultValue(resultState(result), "snapshot");
+export function getEncodedTurnCheckpoint(result) {
+  return encodedTurnResultValue(resultState(result), "checkpoint");
+}
+
+/** Whether a value is a completed turn result issued by this package. */
+export function isTurnResult(value) {
+  return resultStates.has(value);
 }
 
 /** Internal Worker seam: preserves the Rust-owned encoding until it reaches its consumer. */
@@ -182,10 +198,61 @@ export function cancel(turn) {
 export async function fork(agent, options) {
   const state = agentState(agent);
   const at = options?.at;
-  const raw = at === undefined
-    ? await state.raw.fork()
-    : await state.raw.forkFrom(resultState(at).raw);
+  const origin = forkOrigin(options?.origin);
+  let raw;
+  if (at === undefined) raw = await state.raw.fork(origin);
+  else if (resultStates.has(at)) raw = await state.raw.forkAtTurn(resultState(at).raw, origin);
+  else raw = await state.raw.forkAtCheckpoint(encodeCheckpoint(at), origin);
   return createAgent(raw, state.runtime);
+}
+
+function forkOrigin(origin) {
+  if (origin === undefined || origin === "fork" || origin === "side_conversation") return origin;
+  throw new TypeError('fork origin must be "fork" or "side_conversation"');
+}
+
+/**
+ * Internal host default: the workspace a resumed Codex conversation committed,
+ * so host-owned tools start where the model believes it is. Rust remains the
+ * only decoder of the checkpoint itself.
+ */
+export function checkpointWorkspace(checkpoint) {
+  const workspace = checkpoint?.payload?.conversation?.workspace;
+  return typeof workspace === "string" ? workspace : undefined;
+}
+
+/**
+ * Encodes a caller-held checkpoint for the Rust runtime, which alone validates
+ * and decodes it. Only its versioned format tag is checked here so a forged or
+ * disposed result handle fails before crossing into the runtime.
+ */
+export function encodeCheckpoint(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)
+    || typeof checkpoint.format !== "string") {
+    throw new TypeError("expected a SessionCheckpoint or a completed Nanocodex turn result");
+  }
+  return JSON.stringify(checkpoint);
+}
+
+/** Returns this session's identity, harness family, and lineage. */
+export function sessionInfo(agent) {
+  return freezeJson(JSON.parse(agentState(agent).raw.session()));
+}
+
+/** Returns the lifecycle operations this session's backend supports. */
+export function capabilities(agent) {
+  return freezeJson(JSON.parse(agentState(agent).raw.capabilities()));
+}
+
+/** Returns where this session is persisted, or null when it lives only in memory. */
+export function persistence(agent) {
+  const encoded = agentState(agent).raw.persistence();
+  return encoded === undefined || encoded === null ? null : freezeJson(JSON.parse(encoded));
+}
+
+/** Cancels every nonterminal turn issued through this Agent. */
+export function cancelAll(agent) {
+  return agentState(agent).raw.cancel();
 }
 
 export async function spawn(agent) {
@@ -233,13 +300,17 @@ export function setFastMode(agent, enabled) {
   return agentState(agent).raw.setFastMode(enabled);
 }
 
+export function setServiceTier(agent, serviceTier) {
+  return agentState(agent).raw.setServiceTier(serviceTier);
+}
+
 export function compact(agent) {
   return agentState(agent).raw.compact();
 }
 
-/** Copies the live agent's latest committed, resumable model boundary. */
+/** Copies the live agent's latest committed, portable session checkpoint. */
 export async function checkpoint(agent) {
-  return JSON.parse(await agentState(agent).raw.checkpoint());
+  return freezeJson(JSON.parse(await agentState(agent).raw.checkpoint()));
 }
 
 export async function context(agent) {
@@ -1132,7 +1203,7 @@ function createTurnResult(raw) {
   if (
     !raw
     || typeof raw.finalMessage !== "string"
-    || typeof raw.snapshot !== "function"
+    || typeof raw.checkpoint !== "function"
     || typeof raw.usage !== "function"
     || typeof raw.free !== "function"
   ) {
@@ -1142,12 +1213,12 @@ function createTurnResult(raw) {
   const state = {
     disposed: false,
     raw,
-    snapshotPromise: undefined,
+    checkpointPromise: undefined,
     usagePromise: undefined,
-    snapshot() {
+    checkpoint() {
       if (state.disposed) return Promise.reject(new Error("the Nanocodex turn result has been disposed"));
-      state.snapshotPromise ||= materializeTurnResultValue(state, "snapshot");
-      return state.snapshotPromise;
+      state.checkpointPromise ||= materializeTurnResultValue(state, "checkpoint");
+      return state.checkpointPromise;
     },
     usage() {
       if (state.disposed) return Promise.reject(new Error("the Nanocodex turn result has been disposed"));
@@ -1157,7 +1228,7 @@ function createTurnResult(raw) {
   };
   const result = {
     finalMessage: raw.finalMessage,
-    snapshot: () => state.snapshot(),
+    checkpoint: () => state.checkpoint(),
     usage: () => state.usage(),
     dispose() {
       if (state.disposed) return;

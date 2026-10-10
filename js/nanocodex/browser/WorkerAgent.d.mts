@@ -1,7 +1,7 @@
 import type { DefaultAgent } from "../types.mjs";
 import type { create as createBrowserAgent } from "./Agent.mjs";
 
-type WorkerAgentResourceOptions = Readonly<createBrowserAgent.Options & {
+type WorkerAgentResourceOptions = Readonly<createBrowserAgent.CodexOptions & {
   /** Origin retained in the private browser harness resource identity. */
   origin?: string | undefined;
 }>;

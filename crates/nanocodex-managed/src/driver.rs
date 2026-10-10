@@ -8,7 +8,8 @@ use std::{
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocodex_agent::{
-    AgentSessionContext, Model, NanocodexError, Thinking, TurnResult, TurnUsage,
+    AgentSessionContext, Capabilities, ForkRequest, HarnessFamily, HarnessModel, Mutability,
+    NanocodexError, Persistence, SessionCheckpoint, Thinking, TurnResult, TurnUsage,
     backend::{
         BackendFuture, BackendPrompt, BackendPromptRoute, BackendTurn, BackendTurnKey,
         LifecycleBackend,
@@ -57,7 +58,7 @@ pub(crate) enum Command {
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
     ),
     SetModel(
-        Model,
+        ManagedModel,
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
     ),
     SetThinking(
@@ -120,7 +121,28 @@ impl Shutdown {
 pub struct ManagedAgent {
     commands: mpsc::Sender<Command>,
     shutdown: Shutdown,
+    /// Server-side session that owns this conversation.
+    server_session_id: String,
+    /// Family of the model the session was created with.
+    family: HarnessFamily,
 }
+
+/// Lifecycle operations of an account-managed session.
+///
+/// The managed control plane owns conversation state, so local checkpoints,
+/// forks, and spawned children are not available through this lifecycle; the
+/// session is durable on the server ([`Persistence::server_session_id`]).
+/// The control plane accepts only a priority switch, so Ultrafast is refused.
+const MANAGED_CAPABILITIES: Capabilities = {
+    let mut capabilities = Capabilities::NONE;
+    capabilities.steering = true;
+    capabilities.identified_steering = true;
+    capabilities.compaction = true;
+    capabilities.model = Mutability::BeforeFirstPrompt;
+    capabilities.thinking = Mutability::Anytime;
+    capabilities.service_tier = Mutability::Anytime;
+    capabilities
+};
 
 impl std::fmt::Debug for ManagedAgent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -131,13 +153,18 @@ impl std::fmt::Debug for ManagedAgent {
 }
 
 impl ManagedAgent {
-    pub(crate) fn new() -> (Self, mpsc::Receiver<Command>, Shutdown) {
+    pub(crate) fn new(
+        model: ManagedModel,
+        server_session_id: String,
+    ) -> (Self, mpsc::Receiver<Command>, Shutdown) {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let shutdown = Shutdown::new();
         (
             Self {
                 commands,
                 shutdown: shutdown.clone(),
+                server_session_id,
+                family: model.family(),
             },
             receiver,
             shutdown,
@@ -158,6 +185,18 @@ impl ManagedAgent {
 }
 
 impl LifecycleBackend for ManagedAgent {
+    fn harness_family(&self) -> HarnessFamily {
+        self.family
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        MANAGED_CAPABILITIES
+    }
+
+    fn persistence(&self) -> Option<Persistence> {
+        Some(Persistence::server(self.server_session_id.clone()))
+    }
+
     fn submit(&self, prompt: BackendPrompt) -> BackendFuture<nanocodex_agent::Result<BackendTurn>> {
         let commands = self.commands.clone();
         Box::pin(async move {
@@ -248,11 +287,21 @@ impl LifecycleBackend for ManagedAgent {
         })
     }
 
-    fn set_model(&self, model: Model) -> BackendFuture<nanocodex_agent::Result<()>> {
+    fn set_harness_model(&self, model: HarnessModel) -> BackendFuture<nanocodex_agent::Result<()>> {
         let commands = self.commands.clone();
-        Box::pin(
-            async move { Self::request(commands, |result| Command::SetModel(model, result)).await },
-        )
+        let family = self.family;
+        Box::pin(async move {
+            if model.family() != family {
+                return Err(NanocodexError::InvalidRequest(format!(
+                    "{family} session cannot switch to {} model {model}",
+                    model.family()
+                )));
+            }
+            let model = ManagedModel::from_harness(model).ok_or_else(|| {
+                NanocodexError::InvalidRequest(format!("managed service does not host {model}"))
+            })?;
+            Self::request(commands, |result| Command::SetModel(model, result)).await
+        })
     }
 
     fn set_fast_mode(&self, enabled: bool) -> BackendFuture<nanocodex_agent::Result<()>> {
@@ -271,7 +320,7 @@ impl LifecycleBackend for ManagedAgent {
         &self,
         _text: String,
     ) -> BackendFuture<nanocodex_agent::Result<AgentSessionContext>> {
-        unsupported("append_developer_message")
+        unsupported("developer_messages")
     }
 
     fn context(&self) -> BackendFuture<nanocodex_agent::Result<AgentSessionContext>> {
@@ -287,9 +336,13 @@ impl LifecycleBackend for ManagedAgent {
         unsupported("spawn")
     }
 
+    fn checkpoint(&self) -> BackendFuture<nanocodex_agent::Result<SessionCheckpoint>> {
+        unsupported("checkpoint")
+    }
+
     fn fork(
         &self,
-        _completed: Option<TurnResult>,
+        _request: ForkRequest,
     ) -> BackendFuture<
         nanocodex_agent::Result<(nanocodex_agent::Nanocodex, nanocodex_agent::AgentEvents)>,
     > {
@@ -797,14 +850,18 @@ where
         }
     }
 
-    async fn set_model(&mut self, model: Model) -> nanocodex_agent::Result<()> {
-        match self
-            .call_with_events(ManagedRequest::SetModel {
+    async fn set_model(&mut self, model: ManagedModel) -> nanocodex_agent::Result<()> {
+        let request = match model.oai() {
+            Some(model) => ManagedRequest::SetModel {
                 agent_id: self.agent_id.clone(),
                 model,
-            })
-            .await?
-        {
+            },
+            None => ManagedRequest::SetManagedModel {
+                agent_id: self.agent_id.clone(),
+                model,
+            },
+        };
+        match self.call_with_events(request).await? {
             ManagedResponse::Settings(settings) if !settings.is_valid() => {
                 Err(NanocodexError::BackendContract {
                     detail: "managed model update acknowledged incompatible settings",
@@ -941,6 +998,7 @@ where
                         Some(pending.request_id.clone()),
                         final_message,
                         usage,
+                        None,
                     ))
                 });
             }
@@ -1096,6 +1154,7 @@ fn retained_result(
                 Some(request_id.to_owned()),
                 final_message,
                 usage,
+                None,
             ))
         }
         ManagedEventData::TurnCancelled { .. } => Err(NanocodexError::TurnCancelled),
@@ -1145,7 +1204,7 @@ mod image_file_driver_tests {
             file_id: "file-driver_123".into(),
             detail: Some(nanocodex_oai_api::ImageDetail::Original),
         }]);
-        let output = managed_prompt(prompt, Model::Luna.into()).unwrap();
+        let output = managed_prompt(prompt, nanocodex_agent::Model::Luna.into()).unwrap();
         assert_eq!(
             serde_json::to_value(output).unwrap(),
             serde_json::json!([{"type":"image","file_id":"file-driver_123","detail":"original"}])

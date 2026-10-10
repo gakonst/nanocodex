@@ -8,7 +8,7 @@ use std::{
 
 use eyre::{Result, WrapErr};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAi, Thinking, Tool, Tools,
+    AgentEvents, ForkRequest, Nanocodex, OpenAi, Thinking, Tool, Tools,
     agent::{AgentHandle, events::AgentEventKind},
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, contract::async_trait,
@@ -204,7 +204,7 @@ impl Tool for ChildAgent {
             .ok_or_else(|| std::io::Error::other("child-agent registry stopped"))?;
         let (child, events) = match self.kind {
             ChildKind::Spawn => self.agent.spawn().await,
-            ChildKind::Fork => self.agent.fork().await,
+            ChildKind::Fork => self.agent.fork(ForkRequest::latest()).await,
         }?;
         let agent_id = agents.next_id();
 

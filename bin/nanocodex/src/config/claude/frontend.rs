@@ -4,7 +4,7 @@ use super::{
     WorkspaceRegistry, interaction::Interaction, loop_frontend, permissions::Decision,
     scheduler::SessionScheduler,
 };
-use nanocodex::claude_tools::{ClaudeSkills, SkillInvocation};
+use nanocodex::claude_tools::SkillInvocation;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -41,6 +41,15 @@ pub(super) fn register(
         },
     );
     Ok(())
+}
+/// Whether `session` has the interactive /loop frontend (its scheduler is
+/// open). Consumers gate on this capability, never on the harness family.
+pub(crate) fn is_available(session: &str) -> bool {
+    bindings().lock().is_ok_and(|entries| {
+        entries
+            .get(session)
+            .is_some_and(|entry| entry.scheduler.strong_count() > 0)
+    })
 }
 struct Context {
     scheduler: Arc<SessionScheduler>,
@@ -155,7 +164,7 @@ fn resolve(context: &Context, session: &str, prompt: &str) -> Result<String, Str
     ) {
         return Ok(prompt.into());
     }
-    let skills = ClaudeSkills::new(&workspace)?;
+    let skills = crate::homes::skills(&workspace)?;
     if !skills
         .catalog(SkillInvocation::Model)
         .skills

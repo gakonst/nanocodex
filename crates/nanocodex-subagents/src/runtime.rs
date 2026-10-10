@@ -20,7 +20,7 @@ use super::{
 use futures_util::future::join_all;
 use jsonschema::Validator;
 use nanocodex_agent::{
-    AgentEvents, AgentHandle, ChildSnapshot, Nanocodex, NanocodexError, Result as AgentResult,
+    AgentEvents, AgentHandle, Nanocodex, NanocodexError, Result as AgentResult, SessionCheckpoint,
     TurnResult, events::AgentEventKind,
 };
 use serde::Serialize;
@@ -48,7 +48,7 @@ pub(super) struct ChildSession {
     pub(super) active: bool,
     pub(super) output_validator: Validator,
     pub(super) output_schema: Value,
-    pub(super) stored_runtime: Option<ChildSnapshot>,
+    pub(super) stored_runtime: Option<SessionCheckpoint>,
     /// The latest boundary is a durable journal record, loaded on rehydration
     /// instead of being held in memory while the child is idle.
     pub(super) journaled_runtime: bool,
@@ -125,6 +125,10 @@ pub struct Registry {
     journals: std::sync::RwLock<HashMap<String, Arc<dyn SubagentStore>>>,
     /// Per-root restoration outcome. Pending and failed roots must never be saved.
     restored: std::sync::Mutex<HashMap<String, RestorationOutcome>>,
+    /// Per-root FIFO spawn admission for adopted journals. The restoration
+    /// gate is a watch, which wakes concurrent waiters in no defined order;
+    /// spawns queue here instead, so agent IDs follow call order.
+    spawn_admission: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     journal_writer: std::sync::atomic::AtomicBool,
     /// Orders background snapshots and the final pre-teardown journal flush.
     journal_write_lock: tokio::sync::Mutex<()>,
@@ -1108,6 +1112,7 @@ impl Registry {
             store: std::sync::RwLock::new(None),
             journals: std::sync::RwLock::new(HashMap::new()),
             restored: std::sync::Mutex::new(HashMap::new()),
+            spawn_admission: std::sync::Mutex::new(HashMap::new()),
             journal_writer: std::sync::atomic::AtomicBool::new(false),
             journal_write_lock: tokio::sync::Mutex::new(()),
             checkpoints: std::sync::Mutex::new(HashMap::new()),
@@ -1153,6 +1158,10 @@ impl Registry {
             }
             restored.insert(root.clone(), gate);
         }
+        self.spawn_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root.clone(), Arc::new(tokio::sync::Mutex::new(())));
         self.journals
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1188,6 +1197,37 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// Admits a spawn under `session_id`'s root: waits for its restoration in
+    /// call order. Hold the guard until the spawn's agent IDs are reserved.
+    ///
+    /// Concurrent spawns waiting on [`Self::await_restored`] alone would resume
+    /// (and reserve IDs) in the restoration watch's wake order, not their own.
+    /// Each queues on its root's FIFO admission lock first, in the same poll
+    /// that obtained the root under the FIFO state lock, so arrival order holds.
+    pub(crate) async fn admit_spawn(
+        &self,
+        session_id: &str,
+    ) -> std::io::Result<Option<tokio::sync::OwnedMutexGuard<()>>> {
+        let root = self
+            .state
+            .lock()
+            .await
+            .root_session_id(session_id)
+            .to_owned();
+        let admission = self
+            .spawn_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&root)
+            .cloned();
+        let guard = match admission {
+            Some(admission) => Some(admission.lock_owned().await),
+            None => None,
+        };
+        self.await_restored(session_id).await?;
+        Ok(guard)
     }
 
     /// Waits until an adopted root's journaled tree is restored.
@@ -1249,6 +1289,8 @@ impl Registry {
         let mut revision = self.revision.subscribe();
         drop(platform::spawn(async move {
             let mut saved = HashMap::<String, String>::new();
+            // Child session ID -> checkpoint record key last recorded as its own session.
+            let mut recorded = HashMap::<String, Arc<str>>::new();
             loop {
                 let Some(live) = registry.upgrade() else {
                     return;
@@ -1276,6 +1318,25 @@ impl Registry {
                     {
                         Ok(()) => {
                             live.acknowledge(&root_session_id, &records);
+                            // Only boundaries already in a saved journal become
+                            // sessions, so a recorded child is always restorable.
+                            for (key, checkpoint) in live.child_checkpoints(&root_session_id).await
+                            {
+                                let session_id = checkpoint.session_id().to_owned();
+                                if recorded.get(&session_id) == Some(&key) {
+                                    continue;
+                                }
+                                match store.record_session(&root_session_id, checkpoint).await {
+                                    Ok(()) => {
+                                        live.release_recorded(&root_session_id, &key);
+                                        recorded.insert(session_id, key);
+                                    }
+                                    Err(error) => tracing::warn!(
+                                        %error, %root_session_id, %session_id,
+                                        "could not record subagent session"
+                                    ),
+                                }
+                            }
                             saved.insert(root_session_id, payload);
                         }
                         Err(error) => {
@@ -1290,6 +1351,34 @@ impl Registry {
                 }
             }
         }));
+    }
+
+    /// Latest committed checkpoint (record key, boundary) of every child
+    /// journaled under a root.
+    async fn child_checkpoints(&self, root_session_id: &str) -> Vec<(Arc<str>, SessionCheckpoint)> {
+        let state = self.state.lock().await;
+        let checkpoints = self
+            .checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(scope) = state.scopes.get(root_session_id) else {
+            return Vec::new();
+        };
+        let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| {
+                // Boundaries already recorded were released from memory.
+                let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
+                    Some(checkpoint) => checkpoint.clone(),
+                    None => durable::JournalCheckpoint::encode(
+                        scope.sessions.get(&id)?.stored_runtime.as_ref()?,
+                    )
+                    .ok()?,
+                };
+                Some((checkpoint.key, checkpoint.checkpoint?))
+            })
+            .collect()
     }
 
     async fn journal_payloads(&self) -> Vec<(String, JournalWrite)> {
@@ -1317,7 +1406,7 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
-        snapshot: ChildSnapshot,
+        snapshot: SessionCheckpoint,
     ) -> bool {
         // Encode once, outside the lock; journal writes only reference it.
         match durable::JournalCheckpoint::encode(&snapshot) {
@@ -1337,7 +1426,7 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
-    ) -> std::io::Result<ChildSnapshot> {
+    ) -> std::io::Result<SessionCheckpoint> {
         let (key, pending) = self
             .checkpoints
             .lock()
@@ -1369,6 +1458,20 @@ impl Registry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((root_session_id.to_owned(), id), checkpoint);
+    }
+
+    /// Drops in-memory boundaries once they are recorded as child sessions; the
+    /// journal record still holds them for rehydration.
+    fn release_recorded(&self, root_session_id: &str, key: &Arc<str>) {
+        let mut checkpoints = self
+            .checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for ((root, _), checkpoint) in checkpoints.iter_mut() {
+            if root == root_session_id && checkpoint.key == *key && checkpoint.pending.is_none() {
+                checkpoint.checkpoint = None;
+            }
+        }
     }
 
     /// Releases encoded checkpoints once a saved journal references their records.
@@ -1747,9 +1850,7 @@ impl Registry {
             .map_err(|error| std::io::Error::other(format!("invalid subagent journal: {error}")))?;
         // Embedded (version 1) journals carry whole child conversations.
         drop(payload);
-        if journal.version != durable::JOURNAL_VERSION
-            && journal.version != durable::EMBEDDED_JOURNAL_VERSION
-        {
+        if !(durable::MIN_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&journal.version) {
             return Err(std::io::Error::other(format!(
                 "unsupported subagent journal version {}",
                 journal.version
@@ -1757,14 +1858,21 @@ impl Registry {
         }
         let mut agents = journal.agents;
         agents.sort_by_key(|agent| agent.descriptor.id);
-        // Referenced conversations stay in the store until a child runs.
+        // Current records stay in the store until a child runs. Older
+        // journals are loaded now so their per-family checkpoints can be
+        // upgraded with the child's lineage and re-recorded.
+        let lazy = journal.version == durable::JOURNAL_VERSION;
         let mut stored = HashMap::new();
-        for agent in &agents {
-            if let Some(key) = &agent.checkpoint_ref {
-                stored.insert(
-                    agent.descriptor.id,
-                    durable::JournalCheckpoint::stored(key.clone()),
-                );
+        for agent in &mut agents {
+            if lazy {
+                if let Some(key) = &agent.checkpoint_ref {
+                    stored.insert(
+                        agent.descriptor.id,
+                        durable::JournalCheckpoint::stored(key.clone(), None),
+                    );
+                }
+            } else if let Some(checkpoint) = agent.hydrate(store.as_ref(), root_session_id).await? {
+                stored.insert(agent.descriptor.id, checkpoint);
             }
         }
         let mut report = RestoreReport::default();
@@ -1778,12 +1886,17 @@ impl Registry {
                 "subagent scope already has live children and cannot be restored",
             ));
         }
-        for agent in agents {
+        let lineages = agents
+            .iter()
+            .map(|agent| durable::journaled_lineage(root_session_id, &agents, agent.descriptor.id))
+            .collect::<Vec<_>>();
+        for (agent, lineage) in agents.into_iter().zip(lineages) {
             let id = agent.descriptor.id;
-            let (session, resume, lost) = durable::restored_session(agent)?;
+            let checkpoint = agent.snapshot(&lineage)?;
+            let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
             match (stored.remove(&id), &session.stored_runtime) {
                 (Some(checkpoint), _) => self.insert_checkpoint(root_session_id, id, checkpoint),
-                // An embedded checkpoint becomes a record on the next save.
+                // Embedded and per-family checkpoints become records on the next save.
                 (None, Some(snapshot)) => {
                     self.insert_checkpoint(
                         root_session_id,
@@ -2084,7 +2197,7 @@ impl Registry {
         // snapshots may wait for an active turn's conversation lock; spawning a
         // background capture here can journal a child with no recovery state.
         let checkpoint = if self.store_for(&root_session_id).is_some() {
-            match agent.runtime_snapshot().await {
+            match agent.checkpoint().await {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
                     event_task.abort();
@@ -3274,7 +3387,7 @@ impl ChildSession {
         status: AgentStatus,
         contract: OutputContract,
         output_schema: Value,
-        stored_runtime: Option<ChildSnapshot>,
+        stored_runtime: Option<SessionCheckpoint>,
         next_instruction_revision: u64,
         last_output: Option<Value>,
     ) -> Self {
@@ -3452,8 +3565,8 @@ pub fn channel(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentDescriptor, AgentId, AgentStatus, ChildSession, ChildSnapshot, OutputContract,
-        Registry, RegistryState, complete_session, forward_events,
+        AgentDescriptor, AgentId, AgentStatus, ChildSession, JournalWrite, OutputContract,
+        Registry, RegistryState, SessionCheckpoint, complete_session, forward_events,
     };
     use crate::platform;
     use crate::{
@@ -4170,8 +4283,195 @@ mod tests {
         assert!(!has_checkpoint());
     }
 
+    /// Embeds each referenced checkpoint record, as version-1 journals did.
+    fn inline_records(write: &JournalWrite) -> String {
+        let mut journal: serde_json::Value = serde_json::from_str(&write.payload).unwrap();
+        for agent in journal["agents"].as_array_mut().unwrap() {
+            let Some(key) = agent.as_object_mut().unwrap().remove("checkpoint_ref") else {
+                continue;
+            };
+            let (_, json) = write
+                .records
+                .iter()
+                .find(|(record, _)| **record == *key.as_str().unwrap())
+                .unwrap();
+            agent["checkpoint"] = serde_json::from_str(json).unwrap();
+        }
+        journal.to_string()
+    }
+
+    /// Rewrites a current journal as the version-1 layout, which stored a
+    /// Codex child's boundary as an untagged `ChildRuntimeSnapshot`.
+    fn legacy_codex_journal(payload: &str) -> String {
+        let mut journal: serde_json::Value = serde_json::from_str(payload).unwrap();
+        journal["version"] = json!(1);
+        for agent in journal["agents"].as_array_mut().unwrap() {
+            let checkpoint: SessionCheckpoint =
+                serde_json::from_value(agent["checkpoint"].take()).unwrap();
+            let nanocodex_agent::HarnessModel::Codex(model) = checkpoint.model() else {
+                panic!("expected a Codex checkpoint");
+            };
+            let mut legacy = checkpoint.payload().as_object().unwrap().clone();
+            legacy.insert("session_id".into(), json!(checkpoint.session_id()));
+            legacy.insert("model".into(), serde_json::to_value(model).unwrap());
+            legacy.insert(
+                "thinking".into(),
+                serde_json::to_value(checkpoint.thinking()).unwrap(),
+            );
+            agent["checkpoint"] = serde_json::Value::Object(legacy);
+        }
+        journal.to_string()
+    }
+
+    fn restore_journaled(agent: crate::durable::PersistedAgent) -> (ChildSession, bool, bool) {
+        let lineage = nanocodex_agent::Lineage::root("root");
+        let checkpoint = agent.snapshot(&lineage).unwrap();
+        crate::durable::restored_session(agent, checkpoint).unwrap()
+    }
+
+    /// Root journal whose load stays pending until released, holding the
+    /// adopted root's restoration gate open.
+    struct GatedJournal {
+        opened: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl nanocodex_agent::backend::ChildJournalStore for GatedJournal {
+        fn load(&self) -> nanocodex_agent::backend::BackendFuture<std::io::Result<Option<String>>> {
+            let opened = Arc::clone(&self.opened);
+            Box::pin(async move {
+                let _permit = opened.acquire().await;
+                Ok(None)
+            })
+        }
+
+        fn save(
+            &self,
+            _payload: String,
+            _records: Vec<Arc<str>>,
+        ) -> nanocodex_agent::backend::BackendFuture<std::io::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn load_record(
+            &self,
+            key: String,
+        ) -> nanocodex_agent::backend::BackendFuture<std::io::Result<String>> {
+            Box::pin(async move { Err(std::io::Error::other(format!("no record {key}"))) })
+        }
+    }
+
+    /// Spawns admitted while a durable root's journal is still being restored
+    /// queue behind its restoration gate, whose watch wakes waiters by shard
+    /// rather than arrival. Agent IDs must still follow call order.
+    #[tokio::test]
+    async fn spawns_behind_journal_restoration_reserve_ids_in_call_order() {
+        const SPAWNS: u64 = 8;
+        let (registry, _, _updates) = super::channel(usize::try_from(SPAWNS).unwrap());
+        let opened = Arc::new(tokio::sync::Semaphore::new(0));
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let capture = Arc::clone(&captured);
+        let factory_registry = registry.clone();
+        let openai = OpenAi::builder("test-key")
+            .service(|| PendingService {
+                called: Arc::new(Notify::new()),
+            })
+            .build()
+            .unwrap();
+        let (root, _events) = Nanocodex::builder(openai)
+            .child_journal(nanocodex_agent::backend::ChildJournal::new(Arc::new(
+                GatedJournal {
+                    opened: Arc::clone(&opened),
+                },
+            )))
+            .tools_factory(move |handle| {
+                capture
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(|| handle.clone());
+                // Adopting the journal starts its (gated) restoration.
+                factory_registry.register_handle(handle);
+                nanocodex_oai_tools::Tools::builder()
+                    .without_defaults()
+                    .build()
+            })
+            .build()
+            .unwrap();
+        let root_id = root.session_id().to_owned();
+        let parent = captured.lock().unwrap().clone().unwrap();
+        // Each spawn is its own task, as separate host calls are: tasks resume
+        // in wake order, unlike one future polling its children by index.
+        let spawns = (0..SPAWNS)
+            .map(|index| {
+                let (parent, registry, root_id) =
+                    (parent.clone(), Arc::clone(&registry), root_id.clone());
+                tokio::spawn(async move {
+                    crate::start_agent(
+                        &parent,
+                        &registry,
+                        &root_id,
+                        crate::AgentTask {
+                            role: format!("child-{index}"),
+                            task: format!("ordered task {index}"),
+                            output_schema: json!({"type": "object"}),
+                        },
+                    )
+                    .await
+                })
+            })
+            .collect::<Vec<_>>();
+        let spawns = futures_util::future::join_all(spawns);
+        let release = async {
+            // Every spawn is admitted and waiting before restoration completes.
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                registry
+                    .restored
+                    .lock()
+                    .unwrap()
+                    .get(&root_id)
+                    .is_some_and(|gate| gate.borrow().is_none()),
+                "restoration must still be pending while the spawns wait"
+            );
+            opened.add_permits(1);
+        };
+        let (reports, ()) = timeout(Duration::from_secs(10), async {
+            tokio::join!(spawns, release)
+        })
+        .await
+        .expect("spawns must finish once restoration completes");
+        let assigned = reports
+            .into_iter()
+            .map(|report| {
+                let report = report.unwrap().unwrap();
+                (report.role, report.agent_id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            assigned,
+            (0..SPAWNS)
+                .map(|index| (format!("child-{index}"), AgentId::new(index + 1)))
+                .collect::<Vec<_>>()
+        );
+        for (_, id) in assigned {
+            registry.close(&root_id, id).await.unwrap();
+        }
+        root.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn reconstructed_child_announces_host_binding_once_before_execution() {
+        reconstructed_child_announces_host_binding_once(false).await;
+    }
+
+    /// Version-1 Codex journal entries upgrade to restorable checkpoints.
+    #[tokio::test]
+    async fn legacy_codex_journal_child_reconstructs_and_binds_once() {
+        reconstructed_child_announces_host_binding_once(true).await;
+    }
+
+    async fn reconstructed_child_announces_host_binding_once(legacy: bool) {
         let (registry, _, mut updates) = super::channel(4);
         let factory_registry = registry.clone();
         let constructions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -4214,6 +4514,16 @@ mod tests {
                 .status = AgentStatus::Running;
         }
         let write = source.journal_payloads().await.pop().unwrap().1;
+        let write = if legacy {
+            let payload = legacy_codex_journal(&inline_records(&write));
+            assert!(payload.contains("\"version\":1") && !payload.contains("\"format\""));
+            JournalWrite {
+                payload,
+                records: Vec::new(),
+            }
+        } else {
+            write
+        };
         let store = crate::MemorySubagentStore::new();
         let records = write
             .records
@@ -4342,13 +4652,12 @@ mod tests {
         )
         .unwrap();
         let decoded = serde_json::from_str(&encoded).unwrap();
-        let (restored, _, _) = crate::durable::restored_session(decoded).unwrap();
+        let (restored, _, _) = restore_journaled(decoded);
         assert_eq!(restored.descriptor.task, "delegated replacement");
         assert_eq!(restored.binding_task, original);
         let mut legacy: serde_json::Value = serde_json::from_str(&encoded).unwrap();
         legacy.as_object_mut().unwrap().remove("binding_task");
-        let (legacy, _, _) =
-            crate::durable::restored_session(serde_json::from_value(legacy).unwrap()).unwrap();
+        let (legacy, _, _) = restore_journaled(serde_json::from_value(legacy).unwrap());
         assert_eq!(legacy.binding_task, legacy.descriptor.task);
     }
 
@@ -4390,13 +4699,12 @@ mod tests {
                 )
                 .unwrap()
             };
-            let (restored, _, _) =
-                crate::durable::restored_session(serde_json::from_str(&encoded).unwrap()).unwrap();
+            let (restored, _, _) = restore_journaled(serde_json::from_str(&encoded).unwrap());
             assert_eq!(restored.descriptor.task, task);
             assert_eq!(restored.binding_task, original);
             // A second checkpoint after restoration must retain both identities.
             let next = crate::durable::persist_agent(&restored, None, &mut Vec::new()).unwrap();
-            let (again, _, _) = crate::durable::restored_session(next).unwrap();
+            let (again, _, _) = restore_journaled(next);
             assert_eq!(again.descriptor.task, task);
             assert_eq!(again.binding_task, original);
             registry.interrupt("main", child).await.unwrap();
@@ -5874,7 +6182,12 @@ mod tests {
         let reservation = registry.reserve(root_id).await.unwrap();
         let (parent, events) = root.spawn().await.unwrap();
         let (child, child_events) = parent.spawn().await.unwrap();
-        child.set_model(nanocodex_agent::Model::Sol).await.unwrap();
+        child
+            .set_harness_model(nanocodex_agent::HarnessModel::Codex(
+                nanocodex_agent::Model::Sol,
+            ))
+            .await
+            .unwrap();
         child
             .set_thinking(nanocodex_agent::Thinking::High)
             .await
@@ -5969,11 +6282,13 @@ mod tests {
             .harness
             .clone()
             .unwrap();
-        let ChildSnapshot::Codex(snapshot) = harness.snapshot().await.unwrap() else {
-            panic!("expected native Codex checkpoint");
-        };
-        assert_eq!(snapshot.model, nanocodex_agent::Model::Sol);
-        assert_eq!(snapshot.thinking, nanocodex_agent::Thinking::High);
+        let snapshot = harness.snapshot().await.unwrap();
+        assert_eq!(snapshot.family(), nanocodex_agent::HarnessFamily::Codex);
+        assert_eq!(
+            snapshot.model(),
+            nanocodex_agent::HarnessModel::Codex(nanocodex_agent::Model::Sol)
+        );
+        assert_eq!(snapshot.thinking(), nanocodex_agent::Thinking::High);
         assert_eq!(
             registry
                 .host_context(root_id, child_reservation.id)
@@ -6010,11 +6325,7 @@ mod tests {
                 decoded_json_text: false
             }
         );
-        assert!(
-            serde_json::to_string(&snapshot.conversation)
-                .unwrap()
-                .contains("retain amber history")
-        );
+        assert!(snapshot.to_json().unwrap().contains("retain amber history"));
         assert!(
             registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active,
             "reading in-memory history must not interrupt running children or discard their mailbox"

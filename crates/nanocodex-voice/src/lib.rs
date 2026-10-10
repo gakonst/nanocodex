@@ -921,7 +921,8 @@ async fn run_voice(
         .await?;
     if builder.include_startup_context {
         let rollout = lifecycle_agent
-            .rollout()
+            .persistence()
+            .and_then(|persistence| persistence.rollout)
             .map(|rollout| rollout.path().to_path_buf());
         if let Some(startup) = startup_context::build(&context, rollout.as_deref()) {
             builder.instructions = Arc::from(format!("{}\n\n{startup}", builder.instructions));

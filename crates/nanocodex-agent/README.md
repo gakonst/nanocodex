@@ -40,6 +40,42 @@ and process state. Cloning [`Nanocodex`] only clones its command capability;
 [`Nanocodex::spawn`] creates a clean sibling and [`Nanocodex::fork`] creates an
 independent branch from committed history.
 
+## Sessions, checkpoints, and forks
+
+Every handle exposes the same harness-neutral session contract.
+[`Nanocodex::session`] returns its [`SessionInfo`]: identity, harness family,
+and [`Lineage`] (root, parent, [`Origin`], and depth).
+[`Nanocodex::capabilities`] states which lifecycle operations the backend
+supports, and [`Nanocodex::persistence`] reports any rollout or durable store.
+
+A [`SessionCheckpoint`] is the single portable value for resuming, forking at an
+exact boundary, and restoring evicted children. [`Nanocodex::checkpoint`] copies
+the latest committed boundary without waiting for an active turn, and
+[`TurnResult::checkpoint`] materializes the boundary a completed turn retained.
+Checkpoints contain the complete unredacted conversation; protect them like any
+transcript.
+
+```rust,no_run
+use nanocodex_agent::{ForkRequest, Nanocodex, OpenAi, Origin, SessionCheckpoint};
+
+# async fn run(openai: OpenAi) -> Result<(), Box<dyn std::error::Error>> {
+let (agent, _events) = Nanocodex::builder(openai.clone()).build()?;
+let first = agent.prompt("Map the parser module.").await?.result().await?;
+
+// Fork exactly at that turn, or explore a side question from the latest boundary.
+let (_branch, _branch_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
+let (side, _side_events) = agent.fork(ForkRequest::latest().side_conversation()).await?;
+assert_eq!(side.session().lineage.origin, Origin::SideConversation);
+
+// Persist a checkpoint and resume it in a fresh runtime later.
+let json = agent.checkpoint().await?.to_json()?;
+let (_resumed, _resumed_events) = Nanocodex::builder(openai)
+    .resume(SessionCheckpoint::from_json(&json)?)?
+    .build()?;
+# Ok(())
+# }
+```
+
 The runtime appends the selected model ID to developer instructions, including
 when the caller replaces the built-in prompt. It derives this identity from the
 current agent configuration on model changes, child creation, and completed-session
@@ -109,8 +145,9 @@ agent.shutdown().await?;
 - [`events`](nanocodex_agent::events) contains the complete typed lifecycle
   event taxonomy.
 - [`input`](nanocodex_agent::input) contains prompts and multimodal user input.
-- [`session`](nanocodex_agent::session) contains session identities and
-  serializable resume snapshots.
+- [`session`](nanocodex_agent::session) contains the harness-neutral session
+  contract (identity, lineage, checkpoints, fork requests, capabilities, and
+  persistence) and the Codex-native snapshot payload.
 - [`execution`](nanocodex_agent::execution) is the neutral model/tool/checkpoint
   interception seam implemented by optional higher-layer policies.
 - [`usage`](nanocodex_agent::usage) contains token accounting and USD estimates.

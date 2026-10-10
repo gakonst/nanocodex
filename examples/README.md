@@ -119,8 +119,8 @@ orchestration topology and follow-ups from the goal. Initial workers return an
 through that child's retained session. `tools_factory` reinstantiates
 agent-relative handlers with a weak `AgentHandle` for every driver. Its
 `spawn()` method reuses private builder configuration without inheriting
-conversation history, while `fork()` targets the agent that actually invoked
-the tool.
+conversation history, while `fork(ForkRequest::latest())` targets the agent
+that actually invoked the tool.
 The example prints only the final root answer by default. Set
 `NANOCODEX_SUBAGENT_JSONL=1` to emit each child's lifecycle JSONL to stderr;
 the records retain their native request IDs and sequence numbers without a
