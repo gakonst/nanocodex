@@ -18,6 +18,11 @@ pub struct NanocodexBuilder<F = StandardServiceFactory> {
     // Whether this builder chose a tier, which then wins over a resumed
     // snapshot's recorded tier (as an explicit thinking level does).
     pub(super) service_tier_explicit: bool,
+    // Whether the host named this session's identity through
+    // `NanocodexBuilder::session_id` rather than inheriting it from a
+    // resumed checkpoint. A host-named identity is never replaced by an
+    // attached durable state's ID.
+    pub(super) session_id_explicit: bool,
     pub(super) factory: F,
 }
 
@@ -39,6 +44,7 @@ where
             resume: None,
             lineage: None,
             service_tier_explicit: false,
+            session_id_explicit: false,
             factory,
         }
     }
@@ -121,6 +127,8 @@ impl<F> NanocodexBuilder<F> {
         self.session_id = Some(snapshot.session_id.parse().map_err(|error| {
             NanocodexError::InvalidCheckpoint(format!("invalid child session: {error}"))
         })?);
+        // The checkpoint's identity is inherited, not host-named.
+        self.session_id_explicit = false;
         self.resume = snapshot.conversation;
         self.lineage = Some(snapshot.lineage);
         if snapshot.stateless_http {
@@ -293,6 +301,7 @@ impl<F> NanocodexBuilder<F> {
             self.lineage = None;
         }
         self.session_id = Some(session_id);
+        self.session_id_explicit = true;
         self
     }
 
@@ -423,6 +432,19 @@ impl<F> NanocodexBuilder<F> {
     pub fn lineage(mut self, lineage: Lineage) -> Self {
         self.lineage = Some(lineage);
         self
+    }
+
+    /// Returns the session identity the host named through
+    /// [`session_id`](Self::session_id), if any. An identity inherited from
+    /// a resumed checkpoint is not host-named.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn explicit_session_id(&self) -> Option<SessionId> {
+        if self.session_id_explicit {
+            self.session_id
+        } else {
+            None
+        }
     }
 
     /// Returns the explicitly configured native resume boundary, if any.
@@ -734,6 +756,7 @@ mod tests {
             resume: Some(snapshot),
             lineage: None,
             service_tier_explicit: false,
+            session_id_explicit: false,
             factory: ObservingFactory {
                 model: Arc::clone(&observed_model),
             },

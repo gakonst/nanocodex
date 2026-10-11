@@ -61,7 +61,7 @@ impl CodexRecipe {
         client: OpenAi,
         session_id: SessionId,
         workspace: PathBuf,
-    ) -> NanocodexBuilder {
+    ) -> nanocodex::NanocodexBuilder {
         let tools = self.tools.clone();
         let registry = self.registry.clone();
         let workspaces = Arc::clone(&self.workspaces);

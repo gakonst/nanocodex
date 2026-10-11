@@ -88,6 +88,21 @@ export function createSessionId() {
   return `${encoded.slice(0, 4).join("")}-${encoded.slice(4, 6).join("")}-${encoded.slice(6, 8).join("")}-${encoded.slice(8, 10).join("")}-${encoded.slice(10).join("")}`;
 }
 
+// Canonical runtime session IDs as Rust prints them: lowercase UUIDv7.
+const CANONICAL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
+ * Internal host seam: the runtime identity for a session the host did not name.
+ * A durable session whose state ID is itself a canonical runtime session ID is
+ * identified by that state, exactly as Rust reports it; any other session gets
+ * a fresh UUIDv7. A host-named session ID always wins over the state ID.
+ */
+export function defaultSessionId(durabilityId) {
+  return typeof durabilityId === "string" && CANONICAL_SESSION_ID.test(durabilityId)
+    ? durabilityId
+    : createSessionId();
+}
+
 export function prompt(agent, options) {
   const state = agentState(agent);
   const input = actionInput(options);

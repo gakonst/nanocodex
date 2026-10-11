@@ -4756,3 +4756,29 @@ fn codex_snapshot(result: &nanocodex_agent::TurnResult) -> Option<SessionSnapsho
     let checkpoint = result.checkpoint()?;
     serde_json::from_value(checkpoint.payload()["conversation"].clone()).ok()
 }
+
+#[tokio::test]
+async fn a_host_named_session_identity_wins_over_a_session_shaped_state_id() -> Result<()> {
+    // Durable Objects persisted before identities were unified stored a
+    // random runtime session beside their UUIDv7 state ID. The host names
+    // that stored identity; reopening must keep it instead of renaming the
+    // session to its state ID (which orphaned its events and task tree).
+    let state_id: SessionId = "01a12244-cea3-782a-9609-7a921dadb8d8".parse()?;
+    let legacy: SessionId = "01a12244-d5ac-7b43-94dc-b0dc8559e02a".parse()?;
+    let workspace = temporary_workspace("durability-host-named-identity")?;
+    let store = MemoryStore::new()?;
+    for (named, expected) in [(Some(legacy), legacy), (None, state_id)] {
+        let state = DurableSession::open(store.clone(), state_id.to_string()).await?;
+        let mut builder =
+            Nanocodex::builder(OpenAi::builder("test-key").build()?).workspace(&workspace);
+        if let Some(named) = named {
+            builder = builder.session_id(named);
+        }
+        let (agent, events) = builder.durability(state).await?.build()?;
+        assert_eq!(agent.session_id().to_string(), expected.to_string());
+        agent.shutdown().await?;
+        drop((agent, events));
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

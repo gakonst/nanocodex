@@ -10,6 +10,9 @@ extend-exclude = [
     "js/account/public/data/",
     "js/account/src/data/harness-repository.json",
     "js/account/worker-configuration.d.ts",
+    # Durable Object storage captured byte-for-byte from 552653c2c; its
+    # content-addressed records include truncated prompt prefixes.
+    "js/nanocodex/test/support/legacy-cloudflare-identity-552653c2c.json",
 ]
 
 # Preserve the intentionally misspelled model-identity prompt fixture.
