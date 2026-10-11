@@ -6669,7 +6669,16 @@ export class DurableAgentSession extends DurableComputerObject {
     // An exported or importing agent no longer owns its outbox.
     const nextCompletion = this.#durabilityExported || this.#durabilityImportState === "pending"
       ? undefined : nextSubagentCompletionAttempt(this.ctx.storage);
-    if (this.#session() !== undefined && nextCompletion !== undefined && nextCompletion <= Date.now()) {
+    if (this.#session() !== undefined && nextCompletion !== undefined && nextCompletion <= Date.now()
+      && !this.#agent && !this.#speculativeConstructionAllowed("subagent_completion")) {
+      // A runtime construction died with its isolate: a recorded completion
+      // must not rebuild it from an alarm. The rows stay undecided and back
+      // off; the next turn or a later alarm, once the guard decays, delivers.
+      for (const row of backOffDueSubagentCompletions(this.ctx.storage, Date.now())) {
+        console.warn({ type: "managed.subagent_completion", action: "alarm_drain_paused", revision: row.revision,
+          attempts: row.attempts, next_at: row.next_at, agent: this.#sessionId() });
+      }
+    } else if (this.#session() !== undefined && nextCompletion !== undefined && nextCompletion <= Date.now()) {
       // Recorded completions outlive the runtime that received them.
       try {
         if (!this.#agent) await this.#ensureAgent();
