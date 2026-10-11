@@ -31,8 +31,14 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
         let record = state.record().await.map_err(agent_error)?;
         let mut builder = self.child_journal(state.child_journal());
         // A durable Codex session is identified by its state; events,
-        // persistence, and resume all report the same identity.
-        if let Ok(session_id) = state_id.parse::<SessionId>() {
+        // persistence, and resume all report the same identity. A host that
+        // names the identity explicitly owns it: a Durable Object persisted
+        // before identities were unified keeps the runtime session ID its
+        // event log, task tree, effect journals and checkpoint lineage were
+        // recorded under, rather than being silently renamed to its state ID.
+        if builder.explicit_session_id().is_none()
+            && let Ok(session_id) = state_id.parse::<SessionId>()
+        {
             builder = builder.session_id(session_id);
         }
         if let Some(record) = &record {

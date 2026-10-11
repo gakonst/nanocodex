@@ -11,7 +11,7 @@ import {
   checkpointWorkspace,
   createAgentClient,
   createEventChannel,
-  createSessionId,
+  defaultSessionId,
   defineRuntime,
   loadDurabilityRuntime,
   loadSubscriptionRuntime,
@@ -60,7 +60,7 @@ export function create(options = {}) {
     codeEvaluator = createNodeEvaluator(),
     codeEffectJournal,
   } = options;
-  const stableSessionId = sessionId ?? createSessionId();
+  const stableSessionId = sessionId ?? defaultSessionId(durabilityId);
   const {
     apiKey,
     subscription,

@@ -1,6 +1,5 @@
 import {
   boundedEventCost,
-  hydrateManagedEventRows,
   isOversizedEvent,
   MAX_HISTORY_PAGE_BYTES,
   truncatedEventMessage,
@@ -18,6 +17,11 @@ const DEFAULT_SEGMENT_TARGET_BYTES = 8 * 1024 * 1024;
 const DEFAULT_RECENT_EVENT_COUNT = 512;
 const MAX_RECENT_DESCRIPTORS = 16;
 const MAX_SEAL_ROWS = 4_096;
+// Seal reads and encodes source rows in batches of at most this many stored
+// bytes (one row minimum), and chunked rows one chunk at a time, so building
+// a segment holds about one copy of its encoded bytes instead of every source
+// string, its hydrated copy, the concatenated body and its bytes at once.
+const SEAL_READ_BATCH_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 
 type EventRow = ManagedEventRow;
@@ -89,9 +93,20 @@ type IndexEnvelope = Readonly<{
   version: 1;
 }>;
 
-type SegmentReadCache<Message> = {
-  segment?: { events: DurableEvent<Message>[]; key: string };
+/** Per-reader position hint. Decoded events live only in the archive's single
+ * shared slot, so concurrent readers never pin one decoded segment each. */
+type SegmentReadCache<_Message> = {
+  segment?: { key: string };
 };
+
+/** What seal verified about one source row, without retaining its body. */
+type SourceFingerprint = Readonly<{
+  bytes: number;
+  created_at: number;
+  cursor: string;
+  hash: string;
+  turn_id: string | null;
+}>;
 
 export type ManagedEventArchiveCapacity = Readonly<{
   archived_bytes: number;
@@ -133,6 +148,10 @@ export class ManagedEventArchive<Message extends { type: string }> {
   readonly #sealThresholdBytes: number;
   readonly #segmentTargetBytes: number;
   readonly #storage: DurableObjectStorage;
+  // At most one decoded segment is resident and at most one is being decoded
+  // per archive, however many SSE, WebSocket and history readers are active.
+  #resident: { events: DurableEvent<Message>[]; key: string } | undefined;
+  #decodeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     storage: DurableObjectStorage,
@@ -260,42 +279,51 @@ export class ManagedEventArchive<Message extends { type: string }> {
       if (selectedBytes >= this.#segmentTargetBytes) break;
     }
     if (selectedCandidates.length === 0) return emptySeal(state.archived_through);
-    const selectedHeads = this.#storage.sql.exec<EventRow>(
-      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
-       FROM managed_events
-       WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER)
-       ORDER BY managed_events.cursor`,
-      selectedCandidates[0]!.cursor,
-      selectedCandidates.at(-1)!.cursor,
-    ).toArray();
-    const selected = hydrateManagedEventRows(this.#storage, selectedHeads);
-    if (selected.length !== selectedCandidates.length
-      || selected.some((row, index) => (
-        encoder.encode(row.message_json).byteLength !== selectedCandidates[index]!.message_bytes
-      ))) {
-      throw new Error("managed event archive source changed during selection");
+    const fingerprints: SourceFingerprint[] = [];
+    const parts: Uint8Array[] = [encoder.encode('{"version":1,"kind":"managed_event_segment","events":[')];
+    for (let start = 0; start < selectedCandidates.length;) {
+      let end = start + 1;
+      let batchBytes = selectedCandidates[start]!.message_bytes;
+      while (end < selectedCandidates.length
+        && batchBytes + selectedCandidates[end]!.message_bytes <= SEAL_READ_BATCH_BYTES) {
+        batchBytes += selectedCandidates[end]!.message_bytes;
+        end++;
+      }
+      const heads = this.#sourceHeads(selectedCandidates[start]!.cursor, selectedCandidates[end - 1]!.cursor);
+      if (heads.length !== end - start) throw new Error("managed event archive source changed during selection");
+      for (const [offset, head] of heads.entries()) {
+        const index = start + offset;
+        const candidate = selectedCandidates[index]!;
+        // Stored messages are already canonical JSON. Embed them directly,
+        // byte-for-byte as earlier segments were written.
+        const encoded = this.#encodeSourceMessage(head);
+        if (head.cursor !== candidate.cursor || encoded.bytes !== candidate.message_bytes) {
+          throw new Error("managed event archive source changed during selection");
+        }
+        parts.push(encoder.encode((index === 0 ? "" : ",") + '{"cursor":' + JSON.stringify(head.cursor)
+          + ',"created_at":' + head.created_at + ',"message":'), ...encoded.parts,
+        encoder.encode(',"turn_id":' + JSON.stringify(head.turn_id) + '}'));
+        fingerprints.push({ bytes: encoded.bytes, created_at: head.created_at, cursor: head.cursor,
+          hash: encoded.hash, turn_id: head.turn_id });
+      }
+      start = end;
     }
-    if (BigInt(selected[0]!.cursor) <= BigInt(state.archived_through)) {
+    parts.push(encoder.encode("]}"));
+    if (BigInt(fingerprints[0]!.cursor) <= BigInt(state.archived_through)) {
       throw new Error("managed event archive source is not newer than its ownership fence");
     }
-
-    // Stored messages are already canonical JSON. Embed them directly instead
-    // of retaining a second decoded copy of the complete segment during upload.
-    const segmentBody = '{"version":1,"kind":"managed_event_segment","events":['
-      + selected.map((row) => '{"cursor":' + JSON.stringify(row.cursor)
-        + ',"created_at":' + row.created_at + ',"message":' + row.message_json
-        + ',"turn_id":' + JSON.stringify(row.turn_id) + '}').join(',') + ']}';
-    const segmentBytes = encoder.encode(segmentBody);
+    const segmentBytes = concatBytes(parts);
+    parts.length = 0;
     const segmentHash = await sha256Hex(segmentBytes);
     const descriptor: SegmentDescriptor = {
       bytes: segmentBytes.byteLength,
-      count: selected.length,
+      count: fingerprints.length,
       // Source-derived so a crash after an immutable R2 put can retry the same
       // ordinal index page byte-for-byte before SQLite advances its fence.
-      created_at: selected.at(-1)!.created_at,
-      end_cursor: selected.at(-1)!.cursor,
-      key: `${this.#prefix}segments/${padCursor(selected[0]!.cursor)}-${padCursor(selected.at(-1)!.cursor)}-${segmentHash}.json`,
-      start_cursor: selected[0]!.cursor,
+      created_at: fingerprints.at(-1)!.created_at,
+      end_cursor: fingerprints.at(-1)!.cursor,
+      key: `${this.#prefix}segments/${padCursor(fingerprints[0]!.cursor)}-${padCursor(fingerprints.at(-1)!.cursor)}-${segmentHash}.json`,
+      start_cursor: fingerprints[0]!.cursor,
     };
     await this.#putImmutable(descriptor.key, segmentBytes, "managed_event_segment", segmentHash);
 
@@ -332,26 +360,19 @@ export class ManagedEventArchive<Message extends { type: string }> {
         || retained.recent_json !== state.recent_json) {
         throw new Error("managed event archive seal lost its SQLite ownership fence");
       }
-      const retainedHeads = this.#storage.sql.exec<EventRow>(
-        `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
-         FROM managed_events
-         WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER)
-         ORDER BY managed_events.cursor`,
-        descriptor.start_cursor,
-        descriptor.end_cursor,
-      ).toArray();
-      const retainedRows = hydrateManagedEventRows(this.#storage, retainedHeads);
-      const sourceUnchanged = retainedRows.length === selected.length
-        && retainedRows.every((row, index) => {
-          const source = selected[index]!;
-          return row.cursor === source.cursor
-            && row.turn_id === source.turn_id
-            && row.message_json === source.message_json
-            && row.created_at === source.created_at;
+      // Rows are re-verified one at a time; a chunked row one chunk at a time.
+      const retainedHeads = this.#sourceMetadata(descriptor.start_cursor, descriptor.end_cursor);
+      const sourceUnchanged = retainedHeads.length === fingerprints.length
+        && retainedHeads.every((head, index) => {
+          const source = fingerprints[index]!;
+          if (head.cursor !== source.cursor || head.turn_id !== source.turn_id
+            || head.created_at !== source.created_at) return false;
+          const retained = this.#fingerprintSourceMessage(head);
+          return retained.bytes === source.bytes && retained.hash === source.hash;
         });
       if (!sourceUnchanged) {
         throw new Error(
-          `managed event archive source prefix changed before commit (rows ${retainedRows.length}/${descriptor.count})`,
+          `managed event archive source prefix changed before commit (rows ${retainedHeads.length}/${descriptor.count})`,
         );
       }
       this.#storage.sql.exec(
@@ -448,7 +469,10 @@ export class ManagedEventArchive<Message extends { type: string }> {
       const archived = BigInt(after) < BigInt(fence.archived_through);
       // A caught-up subscriber must not pin its last decoded archive segment
       // for the lifetime of an otherwise idle SSE/WebSocket connection.
-      if (!archived) cache.segment = undefined;
+      if (!archived) {
+        if (cache.segment !== undefined && this.#resident?.key === cache.segment.key) this.#resident = undefined;
+        cache.segment = undefined;
+      }
       const events = archived
         ? boundArchivedEvents(await this.pageAfter(after, limit, cache), false, bounds).data
         : local.page(after, limit, bounds);
@@ -612,7 +636,29 @@ export class ManagedEventArchive<Message extends { type: string }> {
     descriptor: SegmentDescriptor,
     cache: SegmentReadCache<Message>,
   ): Promise<DurableEvent<Message>[]> {
-    if (cache.segment?.key === descriptor.key) return cache.segment.events;
+    cache.segment = { key: descriptor.key };
+    const resident = this.#resident;
+    if (resident?.key === descriptor.key) return resident.events;
+    // Single-flight and serialized: a reader waiting for another segment
+    // starts decoding only after the previous decode released its buffers.
+    const task = this.#decodeQueue.then(async () => {
+      const current = this.#resident;
+      if (current?.key === descriptor.key) return current.events;
+      this.#resident = undefined;
+      const events = await this.#decodeSegment(descriptor);
+      this.#resident = { events, key: descriptor.key };
+      return events;
+    });
+    this.#decodeQueue = task.catch(() => undefined);
+    return await task;
+  }
+
+  /** Number of decoded archive segments this archive retains (at most one). */
+  residentSegments(): number {
+    return this.#resident === undefined ? 0 : 1;
+  }
+
+  async #decodeSegment(descriptor: SegmentDescriptor): Promise<DurableEvent<Message>[]> {
     // Only content-addressed segments are cached. Ordinal index keys can be
     // reused by portability, so they still come from the authoritative bucket.
     // This named cache is internal; public history still checks authorization.
@@ -671,8 +717,89 @@ export class ManagedEventArchive<Message extends { type: string }> {
         throw new Error("managed event archive segment contains an invalid event sequence");
       }
     }
-    cache.segment = { events: value.events, key: descriptor.key };
     return value.events;
+  }
+
+  /** Source row heads in one cursor range; chunked bodies stay in SQLite. */
+  #sourceHeads(start: string, end: string): EventRow[] {
+    return this.#storage.sql.exec<EventRow>(
+      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
+       FROM managed_events
+       WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER)
+       ORDER BY managed_events.cursor`,
+      start,
+      end,
+    ).toArray();
+  }
+
+  /** Row identities in one cursor range without any message body. */
+  #sourceMetadata(start: string, end: string): Omit<EventRow, "message_json">[] {
+    return this.#storage.sql.exec<Omit<EventRow, "message_json">>(
+      "SELECT CAST(cursor AS TEXT) AS cursor, turn_id, created_at FROM managed_events "
+        + "WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER) ORDER BY managed_events.cursor",
+      start,
+      end,
+    ).toArray();
+  }
+
+  /** The stored message pieces of one row: its direct body or each chunk in
+   * order. A head without a body reads it alone. */
+  #forEachSourcePiece(source: EventRow | Omit<EventRow, "message_json">, visit: (piece: string) => void): void {
+    const head: EventRow = "message_json" in source ? source : {
+      ...source,
+      message_json: this.#storage.sql.exec<{ message_json: string }>(
+        "SELECT message_json FROM managed_events WHERE cursor = CAST(? AS INTEGER)",
+        source.cursor,
+      ).toArray()[0]?.message_json ?? "",
+    };
+    const chunks = this.#storage.sql.exec<{ count: number; last: number | null }>(
+      "SELECT COUNT(*) AS count, MAX(chunk_index) AS last FROM managed_event_chunks WHERE cursor = CAST(? AS INTEGER)",
+      head.cursor,
+    ).toArray()[0] ?? { count: 0, last: null };
+    if (chunks.count === 0) {
+      if (head.message_json === "") throw new Error(`missing managed event chunks for cursor ${head.cursor}`);
+      visit(head.message_json);
+      return;
+    }
+    if (head.message_json !== "" || chunks.last !== chunks.count - 1) {
+      throw new Error(`invalid managed event chunks for cursor ${head.cursor}`);
+    }
+    for (let index = 0; index < chunks.count; index++) {
+      const chunk = this.#storage.sql.exec<{ message_json: string }>(
+        "SELECT message_json FROM managed_event_chunks WHERE cursor = CAST(? AS INTEGER) AND chunk_index = ?",
+        head.cursor,
+        index,
+      ).toArray()[0];
+      if (typeof chunk?.message_json !== "string") {
+        throw new Error(`invalid managed event chunks for cursor ${head.cursor}`);
+      }
+      visit(chunk.message_json);
+    }
+  }
+
+  /** Chunks never split a surrogate pair, so encoding them one at a time
+   * yields exactly the bytes of the whole stored message. */
+  #encodeSourceMessage(head: EventRow): { bytes: number; hash: string; parts: Uint8Array[] } {
+    const parts: Uint8Array[] = [];
+    const hash = new SourceHash();
+    let bytes = 0;
+    this.#forEachSourcePiece(head, (piece) => {
+      const encoded = encoder.encode(piece);
+      parts.push(encoded);
+      bytes += encoded.byteLength;
+      hash.update(piece);
+    });
+    return { bytes, hash: hash.digest(), parts };
+  }
+
+  #fingerprintSourceMessage(head: Omit<EventRow, "message_json">): { bytes: number; hash: string } {
+    const hash = new SourceHash();
+    let bytes = 0;
+    this.#forEachSourcePiece(head, (piece) => {
+      bytes += encoder.encode(piece).byteLength;
+      hash.update(piece);
+    });
+    return { bytes, hash: hash.digest() };
   }
 
   async #readIndex(ordinal: number): Promise<IndexEnvelope> {
@@ -895,4 +1022,42 @@ function sameFence(left: ArchiveReadFence, right: ArchiveReadFence): boolean {
 
 function padCursor(cursor: string): string {
   return cursor.padStart(19, "0");
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  let size = 0;
+  for (const part of parts) size += part.byteLength;
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return bytes;
+}
+
+/**
+ * Synchronous change detector for a source row between selection and commit
+ * (two independent 32-bit FNV-1a style lanes over UTF-16 code units). Rows are
+ * append-only with never-reused cursors; with the exact byte length this
+ * detects an accidental rewrite without retaining the row body.
+ */
+class SourceHash {
+  #left = 0x811c9dc5;
+  #right = 0x01000193;
+
+  update(value: string): void {
+    let left = this.#left, right = this.#right;
+    for (let index = 0; index < value.length; index++) {
+      const unit = value.charCodeAt(index);
+      left = Math.imul(left ^ unit, 0x01000193);
+      right = Math.imul(right ^ unit, 0x0100019d) ^ (right >>> 15);
+    }
+    this.#left = left;
+    this.#right = right;
+  }
+
+  digest(): string {
+    return (this.#left >>> 0).toString(16).padStart(8, "0") + (this.#right >>> 0).toString(16).padStart(8, "0");
+  }
 }
