@@ -410,7 +410,8 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     assert.match(JSON.stringify(childExecuted.input[0].output), /root/);
     sendCompleted(childSocket, "child-submit", [codeCall("call-submit", "submit_result", JSON.stringify({ output: { report: "portable" } }))]);
     const childSubmitted = await childReader.next();
-    assert.deepEqual(codeResult(childSubmitted.input[0].output), { accepted: true, status: "accepted" });
+    // The root is durable, so the child's acceptance is journaled before its receipt.
+    assert.deepEqual(codeResult(childSubmitted.input[0].output), { accepted: true, status: "accepted", durable: true });
     sendFinal(childSocket, "child-final", "submitted");
 
     const rootWaited = await rootReader.next();
@@ -425,7 +426,12 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
   })();
 
   try {
-    const result = await agent.turn.prompt({ input: "Delegate this check." }).result();
+    // A failed provider step must fail this test and reach cleanup; otherwise
+    // the prompt waits forever and its open sockets keep the file alive.
+    const result = await Promise.race([
+      agent.turn.prompt({ input: "Delegate this check." }).result(),
+      scenario.then(() => new Promise(() => {})),
+    ]);
     assert.equal(result.finalMessage, "portable");
     await scenario;
     assert.equal(rootToolContexts.length, 1);
@@ -489,6 +495,15 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
   }
 });
 
+// No durability store: an accepted result lives only in this runtime, and the
+// receipt says so instead of inviting a resubmission.
+const IN_MEMORY_ACCEPTANCE = {
+  accepted: true,
+  status: "accepted",
+  durable: false,
+  note: "Accepted in memory; not yet durable across a restart. Do not submit again.",
+};
+
 test("Node host invokes canonical subagent handlers without a root model turn", async () => {
   const server = await startServer();
   const agent = await createWarmAgent({
@@ -540,7 +555,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
         output: { answer: "thread-memory" },
       }))]);
     const submitted = await bounded(childReader.next(), "submit_result output");
-    assert.deepEqual(codeResult(submitted.input[0].output), { accepted: true, status: "accepted" });
+    assert.deepEqual(codeResult(submitted.input[0].output), IN_MEMORY_ACCEPTANCE);
     sendFinal(childSocket, "direct-final", "submitted");
 
     const waited = await bounded(Subagents.wait(agent, {
@@ -561,6 +576,8 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
       status: { state: "completed", output: { answer: "thread-memory" } },
       can_message: true,
       can_manage: true,
+      // The listed result is the logical completion of the first delegation.
+      completion_revision: 1,
     }]);
 
     const sendPromise = Subagents.send(agent, {
@@ -581,7 +598,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
         output: { answer: "thread-memory-confirmed" },
       }))]);
     const messageSubmitted = await bounded(childReader.next(), "message submit_result output");
-    assert.deepEqual(codeResult(messageSubmitted.input[0].output), { accepted: true, status: "accepted" });
+    assert.deepEqual(codeResult(messageSubmitted.input[0].output), IN_MEMORY_ACCEPTANCE);
     sendFinal(childSocket, "direct-message-final", "submitted");
     const messageWait = await bounded(Subagents.wait(agent, {
       agentIds: [started.agent_id],
