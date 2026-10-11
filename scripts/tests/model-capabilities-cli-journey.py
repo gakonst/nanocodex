@@ -17,6 +17,10 @@ spec = importlib.util.spec_from_file_location('screen', Path(__file__).with_name
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+# The composer omits its "Enter send" hint when the workspace path on its
+# bottom border leaves no room; each scenario's --cwd is its artifact
+# directory, which on CI is over 110 columns.
+COLUMNS = 240
 
 
 def main():
@@ -112,10 +116,10 @@ def main():
         command = [binary, '--cwd', str(out), *common, *launch]
         (out / 'scenario.json').write_text(json.dumps({'command': command}, indent=2))
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment(out), start_new_session=True)
         os.close(slave)
-        screen = h.TerminalScreen()
+        screen = h.TerminalScreen(columns=COLUMNS)
         transcript = bytearray()
 
         def drain():
@@ -249,10 +253,10 @@ def main():
         start = len(requests)
         command = [binary, '--cwd', str(out), *common, *flags]
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment(out), start_new_session=True)
         os.close(slave)
-        screen, transcript = h.TerminalScreen(), bytearray()
+        screen, transcript = h.TerminalScreen(columns=COLUMNS), bytearray()
         deadline = time.monotonic() + 30
         try:
             while time.monotonic() < deadline:

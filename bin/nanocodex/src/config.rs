@@ -6,14 +6,9 @@ use std::{
 
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "musl")),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use nanocodex::NanocodexBuilder;
 use nanocodex::{
-    AgentEvents, DurableAgentExt as _, HarnessFamily, HarnessModel, Model, Nanocodex, OpenAi,
-    ReasoningMode, Thinking, Tools,
+    AgentEvents, DurableAgentExt as _, HarnessFamily, HarnessModel, Model, Nanocodex,
+    NanocodexBuilder, OpenAi, ReasoningMode, Thinking, Tools,
     agent::{rollout::RolloutConfig, session::SessionId},
     oai::{
         auth::{OpenAiAuth, OpenAiAuthMode},
