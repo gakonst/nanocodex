@@ -3938,8 +3938,10 @@ fn forward_subagent_updates(
                                 }
                             }
                             Err(error) => {
+                                // A completion is a status to the host: a
+                                // persistent rejection logs once per child.
                                 report_subagent_host_error(
-                                    "forwarding a subagent completion",
+                                    "forwarding a subagent status",
                                     &session_id,
                                     &error,
                                 );
