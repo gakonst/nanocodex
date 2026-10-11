@@ -290,8 +290,23 @@ pub struct AgentDescriptor {
 #[derive(Debug)]
 pub enum AgentUpdate {
     Added(AgentDescriptor),
-    Event { id: AgentId, event: AgentEvent },
-    Status { id: AgentId, status: AgentStatus },
+    Event {
+        id: AgentId,
+        event: AgentEvent,
+    },
+    Status {
+        id: AgentId,
+        status: AgentStatus,
+    },
+    /// A completed turn's status with the instruction revision identifying
+    /// that logical completion. The registry journals it as pending before
+    /// announcing it, re-announces it after every restore, and clears it only
+    /// when the host acknowledges delivery (Registry::acknowledge_completion).
+    Completion {
+        id: AgentId,
+        status: AgentStatus,
+        revision: u64,
+    },
     Message(AgentMessageUpdate),
 }
 

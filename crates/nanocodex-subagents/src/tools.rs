@@ -767,6 +767,8 @@ impl Tool for SubmitResult {
             "properties": {
                 "accepted": { "type": "boolean" },
                 "status": { "type": "string", "enum": ["accepted", "superseded"] },
+                "durable": { "type": "boolean" },
+                "note": { "type": "string" },
                 "decoded_json_text": { "type": "boolean", "const": true }
             },
             "required": ["accepted", "status"],
@@ -780,12 +782,21 @@ impl Tool for SubmitResult {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let outcome = registry
-            .submit_result(context.session_id(), context.instruction_revision(), output)
+        let (outcome, durable) = registry
+            .submit_result_durably(context.session_id(), context.instruction_revision(), output)
             .await?;
         let output = match outcome {
             SubmissionOutcome::Accepted { decoded_json_text } => {
-                let mut receipt = json!({ "accepted": true, "status": "accepted" });
+                // durable reports whether the acceptance survives a restart.
+                let mut receipt =
+                    json!({ "accepted": true, "status": "accepted", "durable": durable });
+                if !durable {
+                    // Accepted in this runtime and persistence is retried. A
+                    // second submission would be rejected, so say so plainly.
+                    receipt["note"] = json!(
+                        "Accepted in memory; not yet durable across a restart. Do not submit again."
+                    );
+                }
                 if decoded_json_text {
                     receipt["decoded_json_text"] = json!(true);
                 }
@@ -1172,7 +1183,8 @@ fn wait_agent_output_schema() -> Value {
                         "task": { "type": "string" },
                         "parent_agent_id": { "type": ["integer", "null"] },
                         "status": agent_status_schema(),
-                        "last_output": {}
+                        "last_output": {},
+                        "completion_revision": { "type": "integer", "minimum": 0 }
                     },
                     "required": ["agent_id", "role", "task", "parent_agent_id", "status"],
                     "additionalProperties": false

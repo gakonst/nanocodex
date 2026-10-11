@@ -242,7 +242,15 @@ impl Journey {
             .tool(pending, call_id, "submit_result", json!({"output":"done"}))
             .await;
         let receipt: Value = serde_json::from_str(&tool_output(&next.0, call_id)).unwrap();
-        assert_eq!(receipt, json!({"accepted":true, "status":"accepted"}));
+        // No journal is installed here, so the acceptance is not durable.
+        assert_eq!(receipt["durable"], json!(false));
+        assert!(
+            receipt["note"]
+                .as_str()
+                .unwrap()
+                .contains("Do not submit again")
+        );
+        assert_eq!(receipt["accepted"], json!(true));
         next.1
             .send(generation(None))
             .unwrap_or_else(|_| panic!("final receiver closed"));

@@ -4314,6 +4314,11 @@ impl RootNode {
             AgentUpdate::Status {
                 id,
                 status: AgentStatus::Completed { .. },
+            }
+            | AgentUpdate::Completion {
+                id,
+                status: AgentStatus::Completed { .. },
+                ..
             } => Some(*id),
             _ => None,
         };

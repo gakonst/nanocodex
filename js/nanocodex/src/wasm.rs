@@ -3905,6 +3905,53 @@ fn forward_subagent_updates(
                         );
                     }
                 }
+                SubagentUpdate::Completion {
+                    id,
+                    status,
+                    revision,
+                } => {
+                    let session_id = sessions
+                        .borrow()
+                        .get(&(root_session_id.clone(), id))
+                        .cloned();
+                    // The host deduplicates by (agent, completion_revision).
+                    // Only a delivered completion is acknowledged; otherwise
+                    // it stays pending: retried with backoff in this runtime
+                    // and announced again after the next restore.
+                    let Some(session_id) = session_id else {
+                        if let Some(registry) = registry.upgrade() {
+                            registry.retry_completion(&root_session_id, id, revision);
+                        }
+                        continue;
+                    };
+                    if let Ok(mut encoded) = serde_json::to_value(&status) {
+                        if let Some(object) = encoded.as_object_mut() {
+                            object.insert("completion_revision".into(), revision.into());
+                        }
+                        match host_subagent_status(&session_id, &encoded.to_string()) {
+                            Ok(()) => {
+                                if let Some(registry) = registry.upgrade() {
+                                    let root = root_session_id.clone();
+                                    spawn_local(async move {
+                                        registry.acknowledge_completion(&root, id, revision).await;
+                                    });
+                                }
+                            }
+                            Err(error) => {
+                                // A completion is a status to the host: a
+                                // persistent rejection logs once per child.
+                                report_subagent_host_error(
+                                    "forwarding a subagent status",
+                                    &session_id,
+                                    &error,
+                                );
+                                if let Some(registry) = registry.upgrade() {
+                                    registry.retry_completion(&root_session_id, id, revision);
+                                }
+                            }
+                        }
+                    }
+                }
                 SubagentUpdate::Message(_) => {}
             }
         }
