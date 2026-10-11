@@ -127,6 +127,8 @@ impl<F> NanocodexBuilder<F> {
         self.session_id = Some(snapshot.session_id.parse().map_err(|error| {
             NanocodexError::InvalidCheckpoint(format!("invalid child session: {error}"))
         })?);
+        // The checkpoint's identity is inherited, not host-named.
+        self.session_id_explicit = false;
         self.resume = snapshot.conversation;
         self.lineage = Some(snapshot.lineage);
         if snapshot.stateless_http {
