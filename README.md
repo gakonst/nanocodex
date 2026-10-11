@@ -1027,6 +1027,7 @@ while their pinned native/proxy dependencies are unavailable from crates.io.
 | --- | --- | --- |
 | [`nanocodex`](crates/nanocodex/README.md) | Stable, published | Thin Alloy-style facade and canonical imports; no runtime implementation. |
 | [`nanocodex-agent`](crates/nanocodex-agent/README.md) | Stable, published | Owned driver, turns/results/events, history policy, snapshots, compaction, branches, and cancellation. |
+| [`nanocodex-muse`](crates/nanocodex-muse/README.md) | Source integration | Muse Spark HTTP Responses recipe and caller-owned OAuth, using its adapted reference agent and the shared tool runtime. Available through the facade's `muse` feature. |
 | [`nanocodex-durability`](crates/nanocodex-durability/README.md) | Supported, 0.6 registry release, optional | Total execution state, deduplication, recovery policy, staged outcomes, checkpoints, and memory/SQLite/Postgres/host stores. |
 | [`nanocodex-oai-api`](crates/nanocodex-oai-api/README.md) | Stable, published | OpenAI auth, typed Responses and Realtime boundaries, persistent transports, managed context, retry, pricing, and Tower client. |
 | [`nanocodex-oai-tools`](crates/nanocodex-oai-tools/README.md) | Supported, publishable | OpenAI tool contracts, standard tools, shell/process lifecycle, Code Mode, deferred search, MCP, and remote dispatch. |

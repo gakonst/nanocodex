@@ -1,0 +1,313 @@
+use super::*;
+
+/// The current conversation and execution position. This replaces completed
+/// effect receipts; it is not a collection of historical model requests.
+#[derive(Deserialize, Serialize)]
+struct CurrentExecution {
+    phase: ExecutionPhase,
+    #[serde(default)]
+    instruction_revision: Option<u64>,
+    workspace: String,
+    canonical_context: ResponseItem,
+    #[serde(default)]
+    client_authored: std::collections::BTreeSet<String>,
+    context_baseline: ContextBaseline,
+    #[serde(default)]
+    context_usage: Option<Usage>,
+    #[serde(default)]
+    server_reasoning_included: bool,
+    #[serde(default)]
+    context_usage_is_estimate: bool,
+    prompt_cache_key: String,
+    model: String,
+    effort: Thinking,
+    #[serde(flatten, with = "crate::service_tier_serde")]
+    service_tier: ServiceTier,
+    reasoning_mode: String,
+    model_id_prefix: Option<String>,
+    store_responses: bool,
+    stats: RunStats,
+    #[serde(default)]
+    operation_started_at: Option<Duration>,
+    usage_reported: bool,
+    usage_cost: Option<nanocodex_oai_api::pricing::EstimatedUsdCost>,
+    warmup_reported: bool,
+    warmup_cost: Option<nanocodex_oai_api::pricing::EstimatedUsdCost>,
+    context_window_tokens: u64,
+    force_compaction: bool,
+    tool_call_indices: HashMap<Box<str>, u32>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) enum ExecutionPhase {
+    Warmup,
+    PrepareTurn,
+    Generate,
+    Compact,
+}
+
+impl<S> ModelRun<S>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + AgentSend + 'static,
+    S::Error: Into<nanocodex_oai_api::ResponseError>,
+    S::Future: AgentSend,
+{
+    pub(super) async fn restore_execution(
+        &mut self,
+        requested_workspace: Option<&str>,
+        logical_turn: u64,
+    ) -> Result<Option<(ModelSessionState, ExecutionPhase)>> {
+        let Some(steps) = &self.execution_steps else {
+            return Ok(None);
+        };
+        let Some((mut saved, history, prefix)) = steps.continuation::<CurrentExecution>().await?
+        else {
+            return Ok(None);
+        };
+        if saved.stats.model_calls == u32::MAX {
+            return Err(NanocodexError::InvalidExecutionPolicy(
+                "invalid execution continuation".into(),
+            ));
+        }
+        let mut session = self.empty_session(Some(&saved.workspace))?;
+        session.validate_workspace(requested_workspace)?;
+        let (history, prefix) = if session.tools.is_code_only() {
+            let mut history = history;
+            clear_code_only_schemas(&mut history);
+            // Keep admitted instructions, but the embedding's strict capability
+            // boundary applies to an active continuation as well as a new turn.
+            let mut prefix = prefix;
+            // Redeclare the current tools where the admitted prefix declared
+            // them, so the request keeps the layout of a fresh one.
+            let tools_at = prefix
+                .iter()
+                .position(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                .unwrap_or(prefix.len());
+            prefix.retain(|item| !matches!(item, ResponseItem::AdditionalTools { .. }));
+            clear_code_only_schemas(&mut prefix);
+            let current_tools = session
+                .factory
+                .profile()
+                .prefix()
+                .iter()
+                .filter(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            prefix.splice(tools_at..tools_at, current_tools);
+            (history, prefix)
+        } else {
+            (history, prefix)
+        };
+        self.model = saved
+            .model
+            .parse::<crate::Model>()
+            .map_err(NanocodexError::InvalidExecutionPolicy)?;
+        self.thinking = saved.effort;
+        self.service_tier = saved.service_tier;
+        let config = Arc::make_mut(&mut self.config);
+        config.reasoning_mode = saved
+            .reasoning_mode
+            .parse::<crate::ReasoningMode>()
+            .map_err(NanocodexError::InvalidExecutionPolicy)?;
+        config.model_id_prefix = saved.model_id_prefix.clone().map(Arc::from);
+        config.store_responses = saved.store_responses;
+        config.context_window_tokens = saved.context_window_tokens;
+        self.force_compaction = saved.force_compaction;
+        self.instruction_revision = saved.instruction_revision;
+        session.factory = session
+            .factory
+            .with_request_content(
+                saved.prompt_cache_key,
+                prefix.into(),
+                saved.model_id_prefix,
+                saved
+                    .reasoning_mode
+                    .parse::<crate::ReasoningMode>()
+                    .map_err(NanocodexError::InvalidExecutionPolicy)?,
+                saved.store_responses,
+            )
+            .for_logical_turn(logical_turn);
+        session.conversation = if history.is_empty() && saved.phase == ExecutionPhase::Compact {
+            ConversationState::empty(saved.canonical_context)
+        } else {
+            ConversationState::resume(saved.canonical_context, history)?
+        };
+        session
+            .conversation
+            .managed
+            .restore_client_authored(saved.client_authored);
+        session.conversation.managed.restore_context_usage(
+            saved.context_usage.as_ref(),
+            saved.server_reasoning_included,
+            saved.context_usage_is_estimate,
+        );
+        // Provider response IDs are connection-local; only the conversation is durable.
+        session.conversation.reset_for_full_request();
+        session.context = ContextState::new(
+            self.context_source
+                .project_instructions(&saved.workspace)
+                .map(Arc::<str>::from),
+            saved.context_baseline,
+        );
+        saved.stats.last_response_id = None;
+        saved.stats.usage.reported = saved.usage_reported;
+        saved.stats.usage.estimated_cost = saved.usage_cost;
+        saved.stats.warmup_usage.reported = saved.warmup_reported;
+        saved.stats.warmup_usage.estimated_cost = saved.warmup_cost;
+        self.stats = saved.stats;
+        if let Some(origin) = saved.operation_started_at {
+            // Compare attempt starts, then use the live monotonic timer. This
+            // includes receipt replay and downtime without adding overlapping
+            // model/tool counters or losing work after the last checkpoint.
+            self.elapsed_before_attempt = self
+                .operation_started_at
+                .and_then(|started_at| started_at.checked_sub(origin))
+                .unwrap_or_default();
+            self.operation_started_at = Some(origin);
+        }
+        self.tool_call_indices = saved.tool_call_indices;
+        self.active_tools
+            .as_ref()
+            .expect("restored tools")
+            .begin_turn();
+        Ok(Some((session, saved.phase)))
+    }
+
+    pub(super) fn restore_runtime(
+        &mut self,
+        configured: (Arc<ModelConfig>, Model),
+        logical_turn: u64,
+    ) -> Result<()> {
+        let recovered_settings = !Arc::ptr_eq(&self.config, &configured.0);
+        self.config = configured.0;
+        self.model = configured.1;
+        if !recovered_settings {
+            return Ok(());
+        }
+        // Saved request settings belong to the unfinished operation. Future
+        // turns use the current runtime's instructions and tool catalog.
+        if let Some(mut session) = self.session.take() {
+            let current = self.attempt_factory(&session.tools)?;
+            session.factory = session
+                .factory
+                .with_request_content(
+                    current.profile().prompt_cache_key().to_owned(),
+                    current.profile().shared_prefix(),
+                    self.config.model_id_prefix.as_deref().map(str::to_owned),
+                    self.config.reasoning_mode,
+                    self.config.store_responses,
+                )
+                .for_logical_turn(logical_turn);
+            self.session = Some(session);
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_transport(&mut self) {
+        self.stats
+            .apply_transport(self.transport_stats.since(self.transport_baseline));
+        self.transport_baseline = self.transport_stats.snapshot();
+    }
+
+    pub(super) async fn retain_execution(
+        &mut self,
+        session: &ModelSessionState,
+        phase: ExecutionPhase,
+    ) -> Result<()> {
+        if self.execution_steps.is_none() {
+            return Ok(());
+        }
+        self.record_transport();
+        let steps = self.execution_steps.as_ref().expect("durable execution");
+        let saved = CurrentExecution {
+            phase,
+            instruction_revision: self.instruction_revision,
+            workspace: session.workspace.clone(),
+            canonical_context: (*session.conversation.canonical_context).clone(),
+            client_authored: session.conversation.managed.client_authored().clone(),
+            context_baseline: session.context.baseline(),
+            context_usage: session.conversation.managed.context_usage().0.cloned(),
+            server_reasoning_included: session.conversation.managed.context_usage().1,
+            context_usage_is_estimate: session.conversation.managed.context_usage_is_estimate(),
+            prompt_cache_key: session.factory.profile().prompt_cache_key().to_owned(),
+            model: self.model.as_str().to_owned(),
+            effort: self.thinking,
+            service_tier: self.service_tier,
+            reasoning_mode: self.config.reasoning_mode.as_str().to_owned(),
+            model_id_prefix: self.config.model_id_prefix.as_deref().map(str::to_owned),
+            store_responses: self.config.store_responses,
+            stats: self.stats.clone(),
+            operation_started_at: self.operation_started_at,
+            usage_reported: self.stats.usage.reported,
+            usage_cost: self.stats.usage.estimated_cost.clone(),
+            warmup_reported: self.stats.warmup_usage.reported,
+            warmup_cost: self.stats.warmup_usage.estimated_cost.clone(),
+            context_window_tokens: self.config.context_window_tokens,
+            force_compaction: self.force_compaction,
+            tool_call_indices: self.tool_call_indices.clone(),
+        };
+        steps
+            .advance(
+                &saved,
+                session.conversation.flattened_history(),
+                session.factory.profile().prefix().to_vec(),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_accounting_basis_roundtrips_and_defaults_for_legacy_records() {
+        let saved = CurrentExecution {
+            phase: ExecutionPhase::Generate,
+            instruction_revision: None,
+            workspace: ".".into(),
+            canonical_context: ResponseItem::message(
+                MessageRole::User,
+                [ContentItem::input_text("task")],
+            ),
+            client_authored: Default::default(),
+            context_baseline: ContextBaseline::Missing,
+            context_usage: Some(Usage {
+                total_tokens: 150007,
+                ..Usage::default()
+            }),
+            server_reasoning_included: true,
+            context_usage_is_estimate: true,
+            prompt_cache_key: "synthetic".into(),
+            model: Model::Astra.as_str().into(),
+            effort: Thinking::Low,
+            service_tier: ServiceTier::Standard,
+            reasoning_mode: "standard".into(),
+            model_id_prefix: None,
+            store_responses: false,
+            stats: RunStats::default(),
+            operation_started_at: None,
+            usage_reported: false,
+            usage_cost: None,
+            warmup_reported: false,
+            warmup_cost: None,
+            context_window_tokens: 272000,
+            force_compaction: false,
+            tool_call_indices: HashMap::new(),
+        };
+        let mut encoded = serde_json::to_value(saved).unwrap();
+        let restored: CurrentExecution = serde_json::from_value(encoded.clone()).unwrap();
+        assert!(restored.context_usage_is_estimate);
+        assert!(restored.server_reasoning_included);
+        assert_eq!(restored.context_usage.unwrap().total_tokens, 150007);
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("context_usage_is_estimate");
+        let legacy: CurrentExecution = serde_json::from_value(encoded).unwrap();
+        assert!(!legacy.context_usage_is_estimate);
+        assert!(legacy.server_reasoning_included);
+        assert_eq!(legacy.context_usage.unwrap().total_tokens, 150007);
+    }
+}

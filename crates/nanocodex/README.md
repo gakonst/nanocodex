@@ -97,6 +97,15 @@ through `nanocodex::claude_tools`. The separate `workspace-tools` feature enable
 the OpenAI workspace runtime. The `claude` feature alone does not enable
 durability or tool adapters.
 
+## Muse
+
+Enable `muse` for the Muse-owned adaptation of the reference agent loop, sharing
+Responses transports and tool types. `Muse::builder(auth)` selects Standard;
+`.model(MuseModel::Contributor)` selects Contributor. `Nanocodex::builder(muse)`
+returns the Muse lifecycle builder. Its agent and snapshots are available through
+`nanocodex::muse`; `nanocodex-agent` remains the unchanged reference implementation.
+See [nanocodex-muse](../nanocodex-muse/README.md) for OAuth, images, and compaction.
+
 ## Reusable native harnesses
 
 `Harness` composes explicitly registered construction recipes. Each recipe

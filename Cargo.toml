@@ -12,6 +12,7 @@ members = [
     "bin/nanousd-api",
     "crates/nanocodex",
     "crates/nanocodex-agent",
+    "crates/nanocodex-muse",
     "crates/nanocodex-claude",
     "crates/nanocodex-claude-tools",
     "crates/nanocodex-decisions",
@@ -105,6 +106,7 @@ krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/
 mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "2e265801d216ef54a85b31acda5d0fac192e1b5e", default-features = false }
 nanocodex = { version = "0.6.7", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.6.7", path = "crates/nanocodex-agent" }
+nanocodex-muse = { version = "0.6.7", path = "crates/nanocodex-muse" }
 nanocodex-claude = { version = "0.6.7", path = "crates/nanocodex-claude" }
 nanocodex-claude-tools = { version = "0.6.7", path = "crates/nanocodex-claude-tools", default-features = false }
 nanocodex-decisions = { version = "0.6.7", path = "crates/nanocodex-decisions" }

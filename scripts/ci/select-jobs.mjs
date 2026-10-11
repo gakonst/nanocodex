@@ -6,10 +6,10 @@ import { pathToFileURL } from "node:url";
 // Each family gates jobs in .github/workflows/ci.yml (see `gate`). Draft PRs
 // skip the heavy families. See README.md for the selection policy.
 export const families = [
-  "hands", "windows", "vm", "voice", "python", "rust", "rust_extra", "wasm_rust",
+  "hands", "windows", "vm", "voice", "muse", "python", "rust", "rust_extra", "wasm_rust",
   "wasm", "bindings", "apps", "preview", "policy", "codeql",
 ];
-const heavyFamilies = ["hands", "windows", "vm", "voice", "python", "rust_extra", "preview", "codeql"];
+const heavyFamilies = ["hands", "windows", "vm", "voice", "muse", "python", "rust_extra", "preview", "codeql"];
 // Workspace packages whose build a job exercises. A change to any package in
 // their dependency closure (normal, build, or dev) selects the job.
 const jobRoots = {
@@ -17,6 +17,7 @@ const jobRoots = {
   windows: ["nanocodex-bin", "nanocodex-hand-daemon"],
   vm: ["nanocodex-vm"],
   voice: ["nanocodex-voice-native"],
+  muse: ["nanocodex-muse"],
   python: ["nanocodex-python"],
   wasm_rust: ["nanocodex-wasm"],
 };
@@ -229,6 +230,7 @@ const gate = {
   "voice-native": o => o.voice,
   "windows-hand": o => o.windows,
   clippy: o => o.rust,
+  "muse-journeys": o => o.muse,
   "rust-extra": o => o.rust_extra,
   "vm-guest": o => o.vm || (o.tests && o.hands),
   policy: o => o.policy,

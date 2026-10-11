@@ -293,6 +293,74 @@ impl ResponsesAttempt {
         }
     }
 
+    /// Applies the configured raw-event policy to a custom transport's event pipeline.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_raw_api_events(mut self, enabled: bool) -> Self {
+        self.observer.events = self.observer.events.with_raw_api_events(enabled);
+        self
+    }
+
+    /// Records an HTTP attempt and its outbound payload on the existing event pipeline.
+    #[doc(hidden)]
+    pub fn record_http_request(&self, encoded: &crate::EncodedRequest) -> Result<(), EventError> {
+        self.observer
+            .stats
+            .response_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        self.observer.emit(
+            AgentEventKind::ModelAttemptStarted,
+            crate::telemetry::AttemptStarted {
+                phase: self.kind,
+                model_call_index: self.call_index,
+                attempt: self.attempt,
+                max_attempts: self.max_attempts,
+                replay_mode: self.replay_mode(),
+                previous_response_id: self.previous_response_id(),
+                connection_generation: 0,
+            },
+        )?;
+        self.observer.emit(
+            AgentEventKind::ApiEvent,
+            crate::telemetry::ApiEvent {
+                direction: "outbound",
+                transport: crate::ResponsesTransport::Https.as_str(),
+                phase: self.kind.phase(),
+                model_call_index: self.call_index,
+                event: encoded.raw(),
+            },
+        )
+    }
+
+    /// Encodes this attempt as a generation for a custom HTTP Responses service.
+    /// Compaction services may adapt the generation payload before sending it.
+    pub fn encode_generation(
+        &self,
+        config: &crate::ModelConfig,
+        turn_state: Option<&str>,
+    ) -> Result<crate::EncodedRequest, crate::ResponsesError> {
+        use crate::responses::{CreatePolicy, ResponseCreate};
+        crate::EncodedRequest::new(&ResponseCreate::generation_with_policy(
+            config,
+            CreatePolicy::new(
+                crate::ResponsesTransport::Https,
+                self.model(),
+                self.thinking(),
+                self.service_tier(),
+            ),
+            self.input(),
+            self.previous_response_id(),
+            &self.profile,
+            turn_state,
+        ))
+    }
+
+    /// Returns the stable session and thread metadata for this attempt.
+    #[must_use]
+    pub fn profile(&self) -> &RequestProfile {
+        &self.profile
+    }
+
     /// Returns the provider operation represented by this attempt.
     #[must_use]
     pub const fn kind(&self) -> ResponsesAttemptKind {

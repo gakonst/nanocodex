@@ -139,6 +139,16 @@ pub struct OpenAiBuilder<F = StandardServiceFactory> {
 }
 
 impl<F> OpenAiBuilder<F> {
+    /// Replaces the service factory while retaining the configured client policy.
+    /// Each service receives the final configuration for its managed session.
+    #[must_use]
+    pub fn service_factory<M: ResponsesServiceFactory>(self, factory: M) -> OpenAiBuilder<M> {
+        OpenAiBuilder {
+            config: self.config,
+            factory,
+        }
+    }
+
     /// Selects the default coding model for new sessions and agents.
     ///
     /// A higher-level session or agent builder may override this reusable

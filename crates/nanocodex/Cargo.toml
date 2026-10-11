@@ -20,6 +20,7 @@ rustdoc-args = ["-D", "warnings"]
 [features]
 default = ["durability", "mcp", "openai", "tools"]
 claude = ["dep:nanocodex-claude", "nanocodex-durability?/claude"]
+muse = ["dep:nanocodex-muse", "openai"]
 claude-tools = ["claude", "dep:nanocodex-claude-tools", "nanocodex-claude/tools"]
 durability = ["dep:nanocodex-durability", "openai"]
 managed = ["dep:nanocodex-managed"]
@@ -41,6 +42,7 @@ workspace-tools = [
 [dependencies]
 nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.7", default-features = false }
 nanocodex-claude = { workspace = true, optional = true }
+nanocodex-muse = { workspace = true, optional = true }
 nanocodex-claude-tools = { workspace = true, optional = true }
 nanocodex-durability = { workspace = true, optional = true }
 nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.7", default-features = false, features = ["events"] }

@@ -44,7 +44,9 @@ impl ResponsesRetryPolicy {
     // const across every supported target even though the native adapter is
     // zero-sized.
     #[allow(clippy::missing_const_for_fn)]
-    pub(crate) fn for_config(max_attempts: NonZeroU32, config: &ModelConfig) -> Self {
+    /// Uses the configured embedding host for retry delays on hosted targets.
+    #[doc(hidden)]
+    pub fn for_config(max_attempts: NonZeroU32, config: &ModelConfig) -> Self {
         Self {
             max_attempts,
             delay: RetryDelay::from_config(config),

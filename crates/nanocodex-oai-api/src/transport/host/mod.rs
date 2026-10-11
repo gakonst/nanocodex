@@ -81,6 +81,8 @@ pub struct HostConnectRequest<'a> {
     session_id: &'a str,
     thread_id: &'a str,
     turn_state: Option<&'a str>,
+    responses_lite: bool,
+    additional_headers: &'static [(&'static str, &'static str)],
 }
 
 impl<'a> HostConnectRequest<'a> {
@@ -126,7 +128,32 @@ impl<'a> HostConnectRequest<'a> {
             session_id,
             thread_id,
             turn_state,
+            responses_lite: true,
+            additional_headers: &[],
         }
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(crate) const fn with_http_headers(
+        mut self,
+        responses_lite: bool,
+        additional_headers: &'static [(&'static str, &'static str)],
+    ) -> Self {
+        self.responses_lite = responses_lite;
+        self.additional_headers = additional_headers;
+        self
+    }
+
+    /// Whether the embedding should include Responses Lite HTTP headers.
+    #[must_use]
+    pub const fn responses_lite_headers(&self) -> bool {
+        self.responses_lite
+    }
+
+    /// Additional provider-owned HTTP headers without authorization material.
+    #[must_use]
+    pub const fn additional_headers(&self) -> &'static [(&'static str, &'static str)] {
+        self.additional_headers
     }
 
     /// Returns the complete Responses WebSocket endpoint.

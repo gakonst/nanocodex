@@ -17,6 +17,10 @@ pub use harness::{Harness, HarnessBuilder, HarnessRequest};
 #[cfg(feature = "claude")]
 #[cfg_attr(docsrs, doc(cfg(feature = "claude")))]
 pub use nanocodex_claude::Claude;
+#[cfg(feature = "muse")]
+#[cfg_attr(docsrs, doc(cfg(feature = "muse")))]
+pub use nanocodex_muse::{Muse, MuseBuilder, MuseModel};
+
 #[cfg(feature = "durability")]
 #[cfg_attr(docsrs, doc(cfg(feature = "durability")))]
 pub use nanocodex_durability::DurableAgentExt;
@@ -26,6 +30,11 @@ pub use nanocodex_durability::DurableAgentExt;
     doc(cfg(all(not(target_family = "wasm"), feature = "managed")))
 )]
 pub use nanocodex_managed::{Managed, ManagedApiKey};
+/// Muse Responses provider and caller-owned native OAuth credentials.
+#[cfg(feature = "muse")]
+#[cfg_attr(docsrs, doc(cfg(feature = "muse")))]
+#[doc(inline)]
+pub use nanocodex_muse as muse;
 #[cfg(feature = "openai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use nanocodex_oai_api::OpenAi;

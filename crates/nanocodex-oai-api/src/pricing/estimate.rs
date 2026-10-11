@@ -126,6 +126,20 @@ const MIMO_STANDARD: TokenRates = TokenRates {
     cache_write_input: 435,
     output: 870,
 };
+// https://dev.meta.ai/docs/pricing-rate-limits
+// Meta publishes no separate cache-write fee or long-context premium.
+const MUSE_SPARK13_STANDARD: TokenRates = TokenRates {
+    input: 1_250,
+    cached_input: 150,
+    cache_write_input: 1_250,
+    output: 4_250,
+};
+const MUSE_SPARK13_CONTRIBUTOR: TokenRates = TokenRates {
+    input: 100,
+    cached_input: 2,
+    cache_write_input: 100,
+    output: 200,
+};
 const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
 
 #[derive(Clone, Copy)]
@@ -144,6 +158,8 @@ impl TokenRates {
 
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
         match (model, service_tier, long) {
+            (Model::MuseSpark13, _, _) => MUSE_SPARK13_STANDARD,
+            (Model::MuseSpark13Contributor, _, _) => MUSE_SPARK13_CONTRIBUTOR,
             (Model::Glm53, _, _) => GLM53_STANDARD,
             (Model::Kimi, _, _) => KIMI_STANDARD,
             (Model::Mimo, _, _) => MIMO_STANDARD,
@@ -205,6 +221,7 @@ impl ServiceTier {
     pub const fn effective_for_model(self, model: Model) -> Self {
         match (model, self) {
             (Model::Glm53 | Model::Kimi | Model::Mimo, _) => Self::Standard,
+            (Model::MuseSpark13 | Model::MuseSpark13Contributor, _) => Self::Standard,
             (Model::Luna, Self::Ultrafast) => Self::Fast,
             _ => self,
         }

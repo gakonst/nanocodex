@@ -14,6 +14,7 @@ Jobs are selected by the packages they build:
 | `windows` | Windows Hand and installer | `nanocodex-bin` and `nanocodex-hand-daemon` closures, `windows/`, `install.ps1` |
 | `vm` | static guest and Docker Hand | `nanocodex-vm` closure, CUA bridges |
 | `voice` | native voice runtime | `nanocodex-voice-native` closure, `third_party/codex-voice` |
+| `muse` | Muse auth and HTTP image/tool journeys | `nanocodex-muse` closure |
 | `python` | Python wheels | `nanocodex-python` closure, `py/`, `examples/python` |
 | `wasm_rust` | WASM Clippy; also selects JS consumers | `nanocodex-wasm` closure |
 | `wasm`, `bindings`, `apps`, `preview` | WASM artifact and JS consumers | JS package paths |

@@ -16,6 +16,7 @@ crates=(
   "nanocodex-decisions:crates/nanocodex-decisions"
   "nanocodex-voice-ffi:crates/nanocodex-voice-ffi"
   "nanocodex-agent:crates/nanocodex-agent"
+  "nanocodex-muse:crates/nanocodex-muse"
   "nanocodex-claude-tools:crates/nanocodex-claude-tools"
   "nanocodex-claude:crates/nanocodex-claude"
   "nanocodex-durability:crates/nanocodex-durability"

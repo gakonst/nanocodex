@@ -16,6 +16,12 @@ pub struct ResponsesServiceError {
 }
 
 impl ResponsesServiceError {
+    /// Constructs a provider protocol failure.
+    #[must_use]
+    pub const fn protocol(detail: &'static str) -> Self {
+        Self::invalid_attempt_state(detail, FailurePhase::Protocol, 0)
+    }
+
     const fn new(
         source: ResponsesServiceErrorSource,
         phase: FailurePhase,
@@ -91,7 +97,9 @@ impl ResponsesServiceError {
         self
     }
 
-    pub(crate) fn with_request_input(self, request: &crate::ResponsesAttempt) -> Self {
+    /// Resolves provider input indices against this attempt before retry changes its replay mode.
+    #[doc(hidden)]
+    pub fn with_request_input(self, request: &crate::ResponsesAttempt) -> Self {
         match self.source {
             ResponsesServiceErrorSource::Responses(source) => {
                 let source = source.with_request_input(request.input_items());

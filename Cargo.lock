@@ -5783,6 +5783,7 @@ dependencies = [
  "nanocodex-claude-tools",
  "nanocodex-durability",
  "nanocodex-managed",
+ "nanocodex-muse",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "nanocodex-observability",
@@ -6363,6 +6364,36 @@ dependencies = [
  "url",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "nanocodex-muse"
+version = "0.6.7"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "eyre",
+ "futures-util",
+ "iana-time-zone",
+ "image",
+ "nanocodex-agent",
+ "nanocodex-home",
+ "nanocodex-oai-api",
+ "nanocodex-oai-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+ "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]

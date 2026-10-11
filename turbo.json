@@ -18,6 +18,7 @@
         "$TURBO_ROOT$/js/nanocodex-vite/scripts/**",
         "$TURBO_ROOT$/crates/nanocodex/**",
         "$TURBO_ROOT$/crates/nanocodex-agent/**",
+        "$TURBO_ROOT$/crates/nanocodex-muse/**",
         "$TURBO_ROOT$/crates/nanocodex-claude/**",
         "$TURBO_ROOT$/crates/nanocodex-claude-tools/**",
         "$TURBO_ROOT$/crates/nanocodex-durability/**",
