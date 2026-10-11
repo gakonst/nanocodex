@@ -207,7 +207,9 @@ impl SubagentTree {
                     .update(TranscriptEvent::Record(Arc::new(record)));
                 true
             }
-            AgentUpdate::Status { id, status } => {
+            // A root child's completion carries its revision for durable hosts;
+            // the local tree shows it like any other status.
+            AgentUpdate::Status { id, status } | AgentUpdate::Completion { id, status, .. } => {
                 let Some(node) = self.node_mut(id) else {
                     return false;
                 };
