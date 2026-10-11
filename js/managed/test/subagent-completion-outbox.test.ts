@@ -92,7 +92,8 @@ it("backs due rows off after a failed drain and floors the outbox alarm", async 
     expect(dueSubagentCompletions(storage, Date.now())).toEqual([]);
     expect(backOffDueSubagentCompletions(storage, Date.now())).toEqual([]);
     // The next failure (once due again) doubles the delay.
-    const later = first[0].next_at;
+    // Each row's delay starts at its own clock read, so wait for the later one.
+    const later = Math.max(...first.map(row => row.next_at));
     const second = backOffDueSubagentCompletions(storage, later);
     expect(second.map(row => row.attempts)).toEqual([2, 2]);
     expect(second.every(row => row.next_at - Date.now() >= 4_000 - 50)).toBe(true);

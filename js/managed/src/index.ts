@@ -5753,6 +5753,15 @@ export class DurableAgentSession extends DurableComputerObject {
       if (this.#cronTriggers.hasTriggers() || this.#cronTriggers.hasDeliveries()) {
         return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
       }
+      // The completion outbox is destination-local and never exported: an
+      // undecided row would be lost with the source. Deliver it first.
+      if (pendingSubagentCompletions(this.ctx.storage).length > 0) {
+        this.ctx.waitUntil(this.#drainSubagentCompletions().catch(() => {}));
+        return json({ error: "subagent_completions_pending", message: "Wait for subagent completions to be delivered (or close those subagents) before exporting this agent." }, {
+          status: 409,
+          headers: { "retry-after": "2" },
+        });
+      }
       if (this.#durabilityImportState === "pending") {
         return json({ error: "durability_import_pending" }, { status: 409 });
       }
@@ -6635,7 +6644,9 @@ export class DurableAgentSession extends DurableComputerObject {
       this.#scheduleRecovery();
       return;
     }
-    const nextCompletion = nextSubagentCompletionAttempt(this.ctx.storage);
+    // An exported or importing agent no longer owns its outbox.
+    const nextCompletion = this.#durabilityExported || this.#durabilityImportState === "pending"
+      ? undefined : nextSubagentCompletionAttempt(this.ctx.storage);
     if (this.#session() !== undefined && nextCompletion !== undefined && nextCompletion <= Date.now()) {
       // Recorded completions outlive the runtime that received them.
       try {
@@ -14969,8 +14980,10 @@ A direct subagent completed after the previous turn ended. Continue the current 
     const now = Date.now();
     const targets: number[] = [];
     // Only an idle parent's undecided completions need the alarm (backed off
-    // per row); a busy parent's are re-decided when its turn ends.
-    if (this.#turns.size === 0 && this.#recoverableTurnCount() === 0) {
+    // per row); a busy parent's are re-decided when its turn ends. An exported
+    // or importing agent no longer owns its outbox.
+    if (this.#turns.size === 0 && this.#recoverableTurnCount() === 0
+      && !this.#durabilityExported && this.#durabilityImportState !== "pending") {
       const nextCompletion = subagentCompletionAlarmAt(this.ctx.storage, now);
       if (nextCompletion !== undefined) {
         targets.push(nextCompletion);
