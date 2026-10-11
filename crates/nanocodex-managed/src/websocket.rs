@@ -340,6 +340,7 @@ async fn run(
             pending.sent_at = None;
         }
         let connected_at = tokio::time::Instant::now();
+        let resumed_from = cursor.clone();
         let disconnected = connection(
             &mut live.socket,
             &mut commands,
@@ -352,7 +353,9 @@ async fn run(
         if !disconnected || events.is_closed() {
             return;
         }
-        if connected_at.elapsed() >= Duration::from_millis(250) {
+        // The Worker replays history in bounded windows and closes the socket
+        // after each one; a connection that delivered events made progress.
+        if connected_at.elapsed() >= Duration::from_millis(250) || cursor != resumed_from {
             backoff = RECONNECT_MIN;
         }
         tokio::select! {

@@ -435,6 +435,25 @@ const MAX_RETRY_DELAY_MS = 60_000;
 // Set while the resident runtime owns unfinished subagents. A restarted
 // isolate has no runtime to ask, so its alarm uses this to rebuild one.
 const SUBAGENTS_ACTIVE_KEY = "managed.subagents_active";
+// WebSocket replay has no client acknowledgement and Workers expose no send
+// backpressure, so one connection may queue at most this many bytes of
+// replayed history. The socket then closes with 1013 and the client
+// reconnects from its last delivered cursor, exactly as after a network drop.
+const SOCKET_REPLAY_WINDOW_BYTES = 2 * 1024 * 1024;
+const SOCKET_REPLAY_MIN_WINDOW_BYTES = 128 * 1024;
+const SOCKET_REPLAY_CONTINUE_CODE = 1013;
+// Survives isolate resets: a replay window that started but never finished.
+// Each interrupted window halves the next one, so a reconnecting client can
+// never drive the object into the same failing replay again and again.
+const SOCKET_REPLAY_GUARD_KEY = "managed.socket_replay_guard";
+const SOCKET_REPLAY_STRIKE_TTL_MS = 10 * 60_000;
+// Same persisted guard for runtime construction. A construction that never
+// settled was killed with its isolate (for example by its memory limit);
+// opportunistic rebuilds (alarm-driven subagent restore) stop until the
+// strikes decay, so they cannot crash-loop the object. Turns and explicit
+// requests still construct, under their own bounded retry policy.
+const RUNTIME_CONSTRUCTION_GUARD_KEY = "managed.runtime_construction_guard";
+const SPECULATIVE_CONSTRUCTION_MAX_STRIKES = 1;
 const MAX_IMPORT_BATCHES_PER_CREATE = 4;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -4529,6 +4548,9 @@ export class DurableAgentSession extends DurableComputerObject {
   #agent?: CloudflareAgent.Agent;
   #subagentBindings = new ManagedSubagentBindings();
   #agentPromise?: Promise<CloudflareAgent.Agent>;
+  #socketReplayTail: Promise<void> = Promise.resolve();
+  // Identifies this isolate's replay windows and constructions in persisted guards.
+  readonly #socketReplayToken = crypto.randomUUID();
   #agentConstruction?: AgentConstructionOwnership;
   readonly #agentConstructions = new Set<AgentConstructionOwnership>();
   #agentShutdownPromise?: Promise<void>;
@@ -6662,7 +6684,8 @@ export class DurableAgentSession extends DurableComputerObject {
       }
     }
     if (!this.#agent && !this.#agentPromise && this.#session() !== undefined
-      && this.ctx.storage.kv.get(SUBAGENTS_ACTIVE_KEY) === true) {
+      && this.ctx.storage.kv.get(SUBAGENTS_ACTIVE_KEY) === true
+      && this.#speculativeConstructionAllowed("subagent_restore")) {
       // Eviction or a deploy dropped a runtime that still owned children.
       // Rebuilding it lets the durable registry restore the task tree and
       // resume interrupted children without waiting for the next prompt.
@@ -7508,15 +7531,66 @@ export class DurableAgentSession extends DurableComputerObject {
     if (cursor !== latestCursor) void this.#replayClientSocket(server, cursor);
     // Observers omit the opt-in; only admitted interactive sockets start the
     // existing coalesced task. Neither ready nor replay waits for preparation.
-    if (prepare) this.#prepareActiveConversation(authorization);
-    else this.#warmPersonalization();
+    // Attaching never reconstructs a restored runtime: a long thread's agent
+    // is the largest allocation this object makes, and a reconnecting client
+    // would repeat it on every attempt. A fresh session (no accepted turn) or
+    // a resident agent is prepared; a restored one is built by its next turn.
+    if (prepare && (this.#agent !== undefined
+      || (session.accepted_turns === 0 && this.#speculativeConstructionAllowed("socket_prepare")))) {
+      this.#prepareActiveConversation(authorization);
+    } else this.#warmPersonalization();
     return new Response(null, { status: 101, webSocket: client,
       ...(prepare ? { headers: { [CONVERSATION_PREPARE_HEADER]: CONVERSATION_PREPARE_VALUE } } : {}) });
   }
 
-  async #replayClientSocket(socket: WebSocket, after: string): Promise<void> {
+  /** Replays are serialized per object: one bounded window is in flight at a
+   * time, however many sockets reconnect or resume after hibernation. */
+  #replayClientSocket(socket: WebSocket, after: string): Promise<void> {
+    const task = this.#socketReplayTail.then(() => this.#replayClientWindow(socket, after));
+    this.#socketReplayTail = task.catch(() => {});
+    return task;
+  }
+
+  /** Strikes against work interrupted by an isolate reset, without starting any. */
+  #guardStrikes(key: string): number {
+    const guard = this.ctx.storage.kv.get<{ token: string | null; strikes: number; at: number }>(key);
+    if (guard === undefined || Date.now() - guard.at >= SOCKET_REPLAY_STRIKE_TTL_MS) return 0;
+    // Work owned by another isolate never finished: that isolate was reset.
+    return guard.strikes + (guard.token && guard.token !== this.#socketReplayToken ? 1 : 0);
+  }
+
+  /** Persists that guarded work started in this isolate; returns its strikes. */
+  #beginGuarded(key: string): number {
+    const strikes = this.#guardStrikes(key);
+    this.ctx.storage.kv.put(key, { token: this.#socketReplayToken, strikes, at: Date.now() });
+    return strikes;
+  }
+
+  /** Guarded work settled in this isolate; one strike decays. */
+  #finishGuarded(key: string): void {
+    const guard = this.ctx.storage.kv.get<{ token: string | null; strikes: number; at: number }>(key);
+    if (guard === undefined || guard.token !== this.#socketReplayToken) return;
+    if (guard.strikes <= 1) this.ctx.storage.kv.delete(key);
+    else this.ctx.storage.kv.put(key, { token: null, strikes: guard.strikes - 1, at: guard.at });
+  }
+
+  /** Starts one persisted replay window and returns its byte budget. */
+  #beginSocketReplay(): number {
+    const strikes = this.#beginGuarded(SOCKET_REPLAY_GUARD_KEY);
+    if (strikes > 0) this.#observe("managed.socket_replay_degraded", { interrupted: strikes }, "warn");
+    return Math.max(SOCKET_REPLAY_MIN_WINDOW_BYTES, SOCKET_REPLAY_WINDOW_BYTES / 2 ** Math.min(strikes, 8));
+  }
+
+  #finishSocketReplay(): void {
+    this.#finishGuarded(SOCKET_REPLAY_GUARD_KEY);
+  }
+
+  async #replayClientWindow(socket: WebSocket, after: string): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const window = this.#beginSocketReplay();
     const page = this.#eventArchive.pageReader(this.#eventLog);
     let cursor = after;
+    let sent = 0;
     try {
       while (socket.readyState === WebSocket.OPEN) {
         const events = await page(cursor, MAX_HISTORY_PAGE_SIZE);
@@ -7528,7 +7602,16 @@ export class DurableAgentSession extends DurableComputerObject {
             ...(event.turn_id === null ? {} : { turn_id: event.turn_id }),
           };
           const encoded = JSON.stringify(message);
+          const bytes = utf8ByteLength(encoded);
+          // Delivered events are durable and cursor-addressed; the client
+          // resumes after the last one it received. A single event larger
+          // than the window is still delivered whole, alone.
+          if (sent > 0 && sent + bytes > window) {
+            closeSocket(socket, SOCKET_REPLAY_CONTINUE_CODE, "event replay continues from the delivered cursor");
+            return;
+          }
           if (!this.#sendEncoded(socket, encoded)) return;
+          sent += bytes;
           cursor = event.cursor;
           socket.serializeAttachment({
             ...(socket.deserializeAttachment() as SessionSocketAttachment),
@@ -7550,6 +7633,8 @@ export class DurableAgentSession extends DurableComputerObject {
         message: "durable event replay failed",
       });
       closeSocket(socket, 1011, "durable event replay failed");
+    } finally {
+      this.#finishSocketReplay();
     }
   }
 
@@ -10491,6 +10576,14 @@ export class DurableAgentSession extends DurableComputerObject {
     }));
   }
 
+  /** Opportunistic rebuilds pause after a construction died with its isolate. */
+  #speculativeConstructionAllowed(reason: string): boolean {
+    const strikes = this.#guardStrikes(RUNTIME_CONSTRUCTION_GUARD_KEY);
+    if (strikes <= SPECULATIVE_CONSTRUCTION_MAX_STRIKES) return true;
+    this.#observe("managed.speculative_construction_paused", { interrupted: strikes, retry_source: reason }, "warn");
+    return false;
+  }
+
   #prepareModelTransport(agent: CloudflareAgent.Agent | undefined = this.#agent): void {
     if (agent === undefined || this.#deleting || this.#deleted || this.#agent !== agent) return;
     try {
@@ -10594,6 +10687,8 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#agentConstructions.add(construction);
     // Register ownership before starting credential/catalog I/O. Retirement
     // aborts preparation and joins this exact construction before replacement.
+    const strikes = this.#beginGuarded(RUNTIME_CONSTRUCTION_GUARD_KEY);
+    if (strikes > 0) this.#observe("managed.runtime_construction_after_reset", { interrupted: strikes }, "warn");
     construction.promise = Promise.resolve().then(() => this.#createAgent(construction.abort.signal));
     const publication = this.#publishAgentConstruction(construction);
     construction.publication = publication;
@@ -10601,6 +10696,7 @@ export class DurableAgentSession extends DurableComputerObject {
     try {
       return await publication;
     } finally {
+      this.#finishGuarded(RUNTIME_CONSTRUCTION_GUARD_KEY);
       if (this.#agentPromise === publication) this.#agentPromise = undefined;
       if (this.#agentConstruction === construction) this.#agentConstruction = undefined;
     }
@@ -16440,6 +16536,20 @@ function uuidV7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+
+/** UTF-8 length of a string without allocating its encoding. */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < value.length
+      && (value.charCodeAt(index + 1) & 0xfc00) === 0xdc00) { bytes += 4; index++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {
   if (socket.readyState !== WebSocket.CONNECTING && socket.readyState !== WebSocket.OPEN) return;
