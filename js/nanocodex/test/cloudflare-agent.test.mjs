@@ -2215,3 +2215,47 @@ test("rejected subagent statuses log one redacted, coded line while the child ke
   assert.match(record.session_id, /^[0-9a-f-]{36}$/);
   assert.ok(!JSON.stringify(logged).includes("SECRET-TASK-TEXT"), "quoted content never reaches logs");
 });
+
+
+test("a Durable Object persisted before unified identities resumes under its stored runtime session", { timeout: 60_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  // Written by the Cloudflare adapter at 552653c2c, the parent of 71125d3c2:
+  // a random runtime session ID beside the managed thread's UUIDv7 state ID.
+  const fixture = JSON.parse(await readFile(
+    new URL("./support/legacy-cloudflare-identity-552653c2c.json", import.meta.url), "utf8"));
+  const legacyStorage = () => Object.assign(new MemoryStorage(), {
+    sessionId: fixture.sessionId, stateId: fixture.stateId, states: fixture.states,
+    records: new Map(fixture.records), owners: new Map(fixture.owners), chunks: fixture.chunks,
+    chunkHeads: new Map(fixture.chunkHeads), stateRevisions: new Map(fixture.stateRevisions),
+  });
+  const storage = legacyStorage();
+  assert.notEqual(storage.sessionId, storage.stateId);
+  assert.match(storage.stateId, /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
+  const requests = [];
+  const gateway = { provider: "vercel", model: "gpt-6-astra", reasoningEffort: "low", apiKey: "synthetic-fixture-key",
+    async fetch(_url, init) {
+      requests.push(init.body);
+      return gatewayFixtureResponse(JSON.parse(init.body), { choices: [{ finish_reason: "stop", message: { content: "RESUMED_TURN" } }] });
+    } };
+  const options = { durabilityId: fixture.stateId,
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: { model: "gpt-6-astra", thinking: "low", reasoning_mode: "standard", fast_mode: false },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { gateway } };
+  const agent = await create(module, durableOwner(storage), options);
+  try {
+    assert.equal(agent.sessionId, fixture.sessionId, "the stored runtime identity survives the upgrade");
+    assert.equal(agent.session.info().sessionId, fixture.sessionId);
+    assert.equal(storage.sessionId, fixture.sessionId, "the stored identity is never rewritten");
+    assert.equal(storage.stateId, fixture.stateId);
+    const children = (await Subagents.list(agent, { includeCompleted: true })).agents;
+    assert.deepEqual(children.map(child => child.role), ["legacy-child"], "the legacy task tree is not orphaned");
+    const result = await agent.turn.prompt({ input: "first prompt after the upgrade" }).result();
+    assert.equal(result.finalMessage, "RESUMED_TURN");
+    const resumed = requests.find(body => body.includes("first prompt after the upgrade"));
+    for (const committed of ["first legacy prompt", "LEGACY_TURN_1", "second legacy prompt", "LEGACY_TURN_2"]) {
+      assert.ok(resumed?.includes(committed), "legacy history continues: " + committed);
+    }
+  } finally { await agent.session.shutdown(); }
+  const reopened = await create(module, durableOwner(storage), options);
+  try { assert.equal(reopened.sessionId, fixture.sessionId); } finally { await reopened.session.shutdown(); }
+});
+

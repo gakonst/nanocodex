@@ -13,6 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
+# The composer omits its "Enter send" hint when the workspace path on its
+# bottom border leaves no room; CI artifact paths exceed 170 columns.
+COLUMNS = 240
 spec = importlib.util.spec_from_file_location('screen', Path(__file__).with_name('claude-scheduler-monitor-cli-journey.py'))
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
@@ -112,10 +115,10 @@ def main():
         command = [binary, '--cwd', str(out), *common, *launch]
         (out / 'scenario.json').write_text(json.dumps({'command': command}, indent=2))
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment(out), start_new_session=True)
         os.close(slave)
-        screen = h.TerminalScreen()
+        screen = h.TerminalScreen(columns=COLUMNS)
         transcript = bytearray()
 
         def drain():
@@ -249,10 +252,10 @@ def main():
         start = len(requests)
         command = [binary, '--cwd', str(out), *common, *flags]
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 170, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, COLUMNS, 0, 0))
         process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, cwd=out, env=environment(out), start_new_session=True)
         os.close(slave)
-        screen, transcript = h.TerminalScreen(), bytearray()
+        screen, transcript = h.TerminalScreen(columns=COLUMNS), bytearray()
         deadline = time.monotonic() + 30
         try:
             while time.monotonic() < deadline:
