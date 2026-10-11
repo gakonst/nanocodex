@@ -211,8 +211,11 @@ fn install(bytes: &[u8], root: &Path, uid: u32) -> Result<PathBuf, ManagedError>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
         Err(e) => return Err(error(e)),
     }
+    // tempfile creates directories as 0777 & umask (0755 under the usual 022),
+    // which verify() rightly rejects; request the private mode explicitly.
     let temporary = tempfile::Builder::new()
         .prefix("extract-")
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
         .tempdir_in(root)
         .map_err(error)?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
@@ -428,6 +431,14 @@ fn verify(root: &Path, uid: u32, expected: &[u8]) -> Result<(), ManagedError> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    /// A cache root that satisfies the production 0700 contract regardless of
+    /// the runner's umask (tempdirs are 0777 & umask, i.e. 0755 under 022).
+    fn private_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
     fn bundle(extra: Option<(&str, tar::EntryType)>) -> Vec<u8> {
         let content = b"test helper";
         let names = ["bin/waymote-streamd", "bin/grim", loader_path().unwrap()];
@@ -469,7 +480,7 @@ mod tests {
     }
     #[test]
     fn extract_reuse_and_tamper_fail_closed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_root();
         let uid = nix::unistd::geteuid().as_raw();
         let data = bundle(None);
         let destination = install(&data, root.path(), uid).unwrap();
@@ -491,7 +502,7 @@ mod tests {
     #[test]
     fn link_duplicate_and_traversal_entries_fail_closed() {
         for kind in [tar::EntryType::Symlink, tar::EntryType::Link] {
-            let root = tempfile::tempdir().unwrap();
+            let root = private_root();
             assert!(
                 install(
                     &bundle(Some(("bin/evil", kind))),
@@ -516,7 +527,7 @@ mod tests {
         let uid = nix::unistd::geteuid().as_raw();
         let data = bundle(None);
         for variant in 0..4 {
-            let root = tempfile::tempdir().unwrap();
+            let root = private_root();
             let destination = install(&data, root.path(), uid).unwrap();
             match variant {
                 0 => {
@@ -550,7 +561,7 @@ mod tests {
             }
             assert!(install(&data, root.path(), uid).is_err());
         }
-        let root = tempfile::tempdir().unwrap();
+        let root = private_root();
         assert!(
             install(
                 &bundle(Some(("bin/grim", tar::EntryType::Regular))),
@@ -585,7 +596,7 @@ mod tests {
     }
     #[test]
     fn owner_and_manifest_limits_are_enforced() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_root();
         let uid = nix::unistd::geteuid().as_raw();
         assert!(install(&bundle(None), root.path(), uid.wrapping_add(1)).is_err());
         assert!(manifest(b"{}").is_err());

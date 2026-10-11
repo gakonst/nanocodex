@@ -13,6 +13,7 @@ import WebSocket from "ws";
 import { createTools } from "nanocodex/tools";
 import { createAttachment } from "nanocodex-tools/attachment";
 import { createNodeProcessTools } from "nanocodex-tools/node";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Resolve the validator from the existing nanocodex dependency, matching its tool validation library.
 const { Validator } = createRequire(import.meta.resolve("nanocodex/tools"))("@cfworker/json-schema");

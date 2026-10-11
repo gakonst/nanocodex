@@ -59,7 +59,7 @@ registry checksum, and new build-script invalidation; and the `../` target paths
 for `nanocodex2` and `phone-voice-cloud`. `cook --no-build` reconstructs the real
 workspace skeleton in an empty directory and Cargo validates its target metadata.
 Overlay checks confirm the original assets and entrypoints return. It does not
-compile production dependencies and does not enable any paused CI test suite.
+compile production dependencies or run CI test suites.
 
 Hosted validation must still build all three complete Linux images and run the
 existing image checks. Record a cold run and a run with only an existing Rust

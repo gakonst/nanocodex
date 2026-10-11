@@ -22,6 +22,7 @@
         "$TURBO_ROOT$/crates/nanocodex-claude/**",
         "$TURBO_ROOT$/crates/nanocodex-claude-tools/**",
         "$TURBO_ROOT$/crates/nanocodex-durability/**",
+        "$TURBO_ROOT$/crates/nanocodex-home/**",
         "$TURBO_ROOT$/crates/nanocodex-oai-api/**",
         "$TURBO_ROOT$/crates/nanocodex-subagents/**",
         "$TURBO_ROOT$/crates/nanocodex-oai-tools/**",
@@ -55,6 +56,10 @@
     },
     "@nanocodex/connect-api#build": {
       "dependsOn": ["nanocodex-connect-protocol#build"],
+      "outputs": []
+    },
+    "nanocodex-tools#test": {
+      "dependsOn": ["build"],
       "outputs": []
     },
     "nanocodex-computer#test": {

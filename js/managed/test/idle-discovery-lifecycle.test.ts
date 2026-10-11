@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { DurableAgentSession } from "../src/index";
-import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { DEFAULT_OPENAI_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 import { MANAGED_ACCESS_TTL_MS } from "../src/managed-access";
 import { ACCOUNT_DISCOVERY_TTL_MS } from "../src/account-catalog";
@@ -28,7 +28,7 @@ async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<vo
 }
 
 async function setup(instance: DurableAgentSession, state: DurableObjectState, idleTimeoutMs?: number) {
-  const counts = { catalog: 0, vault: 0, hands: 0, inference: 0, responses: 0, close: 0 };
+  const counts = { catalog: 0, vault: 0, hands: 0, inference: 0, titles: 0, responses: 0, close: 0 };
   const stages: Record<string, unknown>[] = [];
   const logs = vi.spyOn(console, "info").mockImplementation((entry) => {
     if (entry && typeof entry === "object") stages.push(entry as Record<string, unknown>);
@@ -60,7 +60,13 @@ async function setup(instance: DurableAgentSession, state: DurableObjectState, i
   Object.defineProperty(instance, "env", { configurable: true, value: { ...original,
     NANOCODEX_THREAD_ROUTING: "true",
     ...(idleTimeoutMs === undefined ? {} : { AGENT_IDLE_TIMEOUT_MS: String(idleTimeoutMs) }),
-    AI: { run: async () => { counts.inference++; return {}; } },
+    // Thread titles use deployment-owned GLM on env.AI since d8a8541d8; count them
+    // apart so `inference` still pins that a fixed model never runs a classifier.
+    AI: { run: async (_model: string, input: unknown) => {
+      if (JSON.stringify(input).includes("Write a short session title")) counts.titles++;
+      else counts.inference++;
+      return {};
+    } },
     NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname.includes("/responses") && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST") {
@@ -93,10 +99,14 @@ async function setup(instance: DurableAgentSession, state: DurableObjectState, i
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }));
   };
+  // The fixture speaks the OpenAI Responses socket; the Claude default (398726862)
+  // would need a private Messages binding, so pin the OpenAI default settings.
   const created = await request("/create", {
-    session_id: "0198d3f0-8844-7000-8000-000000000092", owner_id: principal.userId,
+    // Fresh per fixture: a managed session ID is its runtime session ID, which
+    // is unique per isolate across Durable Objects (one DO per session).
+    session_id: "0198d3f0-8844-7000-8000-" + crypto.randomUUID().slice(-12), owner_id: principal.userId,
     organization_id: principal.organizationId, team_id: principal.teamId, authorization_epoch: 1,
-    public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS,
+    public_origin: "https://nanocodex.example", settings: DEFAULT_OPENAI_AGENT_SETTINGS,
     configuration: {},
   });
   expect(created.status).toBe(200);
@@ -122,7 +132,9 @@ describe("fixed-model idle discovery lifecycle", () => {
       await vi.waitFor(() => expect(f.sockets).toHaveLength(1));
       expect(f.counts.catalog).toBe(1);
       expect(f.sends).toEqual([]);
-      expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
+      // Model startup no longer joins optional discovery (bef68f600): the agent
+      // loads while the catalog read is still blocked.
+      await vi.waitFor(async () => expect(await f.snapshot()).toMatchObject({ agent_loaded: true }));
       expect((await f.request("/prepare")).status).toBe(202);
       expect(f.counts.catalog).toBe(1);
     } finally { catalog.resolve(Response.json({ connectors: {}, mcp_connections: [] })); }
@@ -143,7 +155,8 @@ describe("fixed-model idle discovery lifecycle", () => {
         method: "PATCH", headers, body: JSON.stringify({ model: "gpt-6-luna" }),
       }));
       await vi.waitFor(() => expect(f.sockets[0].readyState).toBe(3));
-      expect(f.sockets).toHaveLength(1);
+      // The replacement no longer waits for blocked optional discovery (bef68f600).
+      await vi.waitFor(() => expect(f.sockets).toHaveLength(2));
       expect(f.sends).toEqual([]);
     } finally { catalog.resolve(Response.json({ connectors: {}, mcp_connections: [] })); }
     expect((await changed!).status).toBe(200);
@@ -218,7 +231,8 @@ describe("fixed-model idle discovery lifecycle", () => {
         await f.prepare();
         const expected = elapsed > ACCOUNT_DISCOVERY_TTL_MS ? 2 : 1;
         if (elapsed - lastHandRefresh > MANAGED_ACCESS_TTL_MS) { handRefreshes++; lastHandRefresh = elapsed; }
-        expect(f.counts).toMatchObject({ catalog: expected, vault: expected, hands: handRefreshes });
+        // Preparation projects only a resolved Vault snapshot and never reads it (bef68f600).
+        expect(f.counts).toMatchObject({ catalog: expected, vault: 0, hands: handRefreshes });
       }
       expect(f.sockets).toHaveLength(5);
       expect(f.sends).toEqual([]);
@@ -261,7 +275,7 @@ describe("fixed-model idle discovery lifecycle", () => {
       expect(f.counts).toEqual(before);
       const limited = { ...principal, capabilities: ["agents:write", "tools:use"] } as Principal;
       await f.prepare(limited);
-      expect(f.counts).toMatchObject({ catalog: 1, vault: 1, inference: 0 });
+      expect(f.counts).toMatchObject({ catalog: 1, vault: 0, inference: 0 }); // No Vault read at preparation (bef68f600).
     } finally { clock.mockRestore(); }
   }));
 

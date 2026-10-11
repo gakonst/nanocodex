@@ -3,7 +3,7 @@
 //! Construct this module only after the host authorizes and isolates the workspace. The
 //! path checks are defense in depth, not a substitute for OS-level isolation or permissions.
 
-use crate::{ToolContent, ToolOutput, media::MediaReadOptions};
+use crate::{SessionEnvironment, ToolContent, ToolOutput, media::MediaReadOptions};
 use regex::RegexBuilder;
 use serde_json::{Value, json};
 use std::{
@@ -112,6 +112,22 @@ impl ClaudeWorkspaceFiles {
         input: Value,
         include_project_context: bool,
     ) -> Result<ToolOutput, String> {
+        self.execute_output_in_session(name, input, include_project_context, None)
+            .await
+    }
+
+    /// Like [`Self::execute_output_with_context`], on behalf of `session`.
+    ///
+    /// Helper processes (PDF rendering) receive the session identity as
+    /// `CODEX_THREAD_ID` and `NANOCODEX_ROOT_SESSION_ID`, overriding inherited
+    /// values; without a session those variables are removed.
+    pub async fn execute_output_in_session(
+        &self,
+        name: &str,
+        input: Value,
+        include_project_context: bool,
+        session: Option<SessionEnvironment>,
+    ) -> Result<ToolOutput, String> {
         let this = self.clone();
         let name = name.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -125,7 +141,7 @@ impl ClaudeWorkspaceFiles {
                     return Err(format!("unsupported Read option: {key}"));
                 }
                 let (_, path) = this.file(Self::field(&input, "file_path")?)?;
-                media = crate::media::read(&path, &input, &this.media)?;
+                media = crate::media::read(&path, &input, &this.media, session.as_ref())?;
             }
             let mut output = match media {
                 Some(output) => output,

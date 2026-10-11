@@ -99,6 +99,13 @@ function normalize(owner: string, value: unknown, now: number): Event {
     eligible: (raw.eventType === undefined || raw.eventType === "default") && raw.endTimeUnspecified !== true,
     self_declined: self?.responseStatus === "declined", self_known: self !== undefined, omitted: raw.attendeesOmitted === true || (Array.isArray(raw.attendees) && raw.attendees.length > 200), guests, valid };
 }
+// People matching a guest email (one owner ? each): by record email, or by an email
+// alias on a record whose own email differs. Kept as two indexed lookups; an OR of
+// both makes SQLite scan every person per guest, quadratic in a dense backfill.
+const emailPeople = "FROM crm_records r WHERE r.owner_id=? AND r.kind='person' AND lower(trim(r.email))=json_extract(g.value,'$.email')";
+const aliasPeople = `FROM crm_identities i JOIN crm_records r ON r.owner_id=i.owner_id AND r.id=i.record_id
+  WHERE i.owner_id=? AND i.kind='email' AND i.normalized=json_extract(g.value,'$.email') AND r.kind='person'
+  AND lower(trim(r.email)) IS NOT json_extract(g.value,'$.email')`;
 function view(row: Row) {
   const { start_ms: _, ...rest } = row;
   return { ...rest, all_day: Boolean(row.all_day), attendees_complete: Boolean(row.attendees_complete), organizer: JSON.parse(row.organizer), skipped: Boolean(row.skipped), needs_notes: Boolean(row.needs_notes) };
@@ -162,20 +169,19 @@ export async function importCalendarEvents(db: D1Database, ownerId: string, inpu
       statements.push(session.prepare(`INSERT INTO crm_records(owner_id,id,kind,name,email,tags,created_at,updated_at)
         SELECT ?,json_extract(g.value,'$.create_id'),'person',coalesce(json_extract(g.value,'$.name'),json_extract(g.value,'$.email')),json_extract(g.value,'$.email'),'[]',?,?
         FROM json_each(?) g WHERE json_extract(g.value,'$.email') IS NOT NULL AND ${guard}
-        AND NOT EXISTS (SELECT 1 FROM crm_records r WHERE r.owner_id=? AND r.kind='person' AND (lower(trim(r.email))=json_extract(g.value,'$.email') OR EXISTS (
-          SELECT 1 FROM crm_identities i WHERE i.owner_id=r.owner_id AND i.record_id=r.id AND i.kind='email' AND i.normalized=json_extract(g.value,'$.email'))))
-        ON CONFLICT(owner_id,id) DO NOTHING RETURNING id`).bind(ownerId, now, now, guests, ownerId, meetingId, token, ownerId));
+        AND NOT EXISTS (SELECT 1 ${emailPeople}) AND NOT EXISTS (SELECT 1 ${aliasPeople})
+        ON CONFLICT(owner_id,id) DO NOTHING RETURNING id`).bind(ownerId, now, now, guests, ownerId, meetingId, token, ownerId, ownerId));
       statements.push(session.prepare(`INSERT INTO crm_meeting_attendees(owner_id,meeting_id,ordinal,email,name,response_status,person_id)
         SELECT ?,?,coalesce((SELECT min(a.ordinal) FROM crm_meeting_attendees a WHERE a.owner_id=? AND a.meeting_id=?
             AND json_extract(g.value,'$.email') IS a.email
             AND (a.email IS NOT NULL OR (a.ordinal=CAST(g.key AS INTEGER) AND json_extract(g.value,'$.name') IS a.name))),
           (SELECT coalesce(max(a.ordinal),-1)+1 FROM crm_meeting_attendees a WHERE a.owner_id=? AND a.meeting_id=?)+CAST(g.key AS INTEGER)),
           json_extract(g.value,'$.email'),json_extract(g.value,'$.name'),json_extract(g.value,'$.response_status'),
-          (SELECT CASE WHEN count(*)=1 THEN min(r.id) ELSE NULL END FROM crm_records r WHERE r.owner_id=? AND r.kind='person' AND (lower(trim(r.email))=json_extract(g.value,'$.email') OR EXISTS (
-          SELECT 1 FROM crm_identities i WHERE i.owner_id=r.owner_id AND i.record_id=r.id AND i.kind='email' AND i.normalized=json_extract(g.value,'$.email'))))
+          (SELECT CASE WHEN e.n+a.n=1 THEN coalesce(e.id,a.id) ELSE NULL END
+            FROM (SELECT count(*) AS n,min(r.id) AS id ${emailPeople}) e, (SELECT count(*) AS n,min(r.id) AS id ${aliasPeople}) a)
         FROM json_each(?) g WHERE ${guard}
         ON CONFLICT(owner_id,meeting_id,ordinal) DO UPDATE SET email=excluded.email,name=excluded.name,
-          response_status=excluded.response_status,person_id=excluded.person_id`).bind(ownerId, meetingId, ownerId, meetingId, ownerId, meetingId, ownerId, guests, ownerId, meetingId, token));
+          response_status=excluded.response_status,person_id=excluded.person_id`).bind(ownerId, meetingId, ownerId, meetingId, ownerId, meetingId, ownerId, ownerId, guests, ownerId, meetingId, token));
       statements.push(session.prepare(`SELECT a.email,CASE WHEN a.email IS NULL THEN 'missing_email' ELSE 'ambiguous_email' END AS reason
         FROM crm_meeting_attendees a WHERE a.owner_id=? AND a.meeting_id=? AND a.person_id IS NULL AND ${guard}`).bind(ownerId, meetingId, ownerId, meetingId, token));
       const changed = await session.batch(statements);

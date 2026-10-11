@@ -7,6 +7,10 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use writer::*;
+// The internal file writer, not the public harness-neutral one.
+use writer::RolloutWriter;
+
+use crate::session::{Origin, SessionStart};
 
 /// Stable identity and file location of a recorded Nanocodex thread.
 #[derive(Clone, Debug)]
@@ -51,8 +55,55 @@ pub(crate) struct RolloutRecorder {
 
 #[derive(Clone, Copy)]
 pub(crate) struct RolloutOrigin<'a> {
-    pub(crate) kind: &'a str,
+    pub(crate) start: SessionStart,
     pub(crate) parent_thread_id: Option<&'a str>,
+    /// Root of the conversation tree; a fresh root is its own.
+    pub(crate) root_session_id: Option<&'a str>,
+}
+
+impl SessionStart {
+    /// Start recorded when this session's mirror file is created now. A
+    /// reopened session that was never mirrored, such as a durable branch,
+    /// records its persisted provenance rather than a root resume.
+    pub(crate) const fn for_new_mirror(self, origin: Origin) -> Self {
+        match (self, origin) {
+            (Self::Resume | Self::Restore, Origin::Root) | (Self::New(_), _) => self,
+            (Self::Resume | Self::Restore, origin) => Self::New(origin),
+        }
+    }
+}
+
+impl RolloutOrigin<'_> {
+    /// Persisted `origin_kind`; side conversations are recorded as forks.
+    const fn kind(self) -> &'static str {
+        match self.start {
+            SessionStart::New(Origin::Root) => "root",
+            SessionStart::New(Origin::Fork | Origin::Branch | Origin::SideConversation) => "fork",
+            SessionStart::New(Origin::Subagent) => "spawn",
+            SessionStart::Resume => "resume",
+            SessionStart::Restore => "restore",
+        }
+    }
+
+    /// Persisted `conversation_role`.
+    const fn conversation_role(self) -> &'static str {
+        match self.start {
+            SessionStart::New(Origin::Subagent) => "subagent",
+            SessionStart::New(Origin::Fork | Origin::Branch) => "branch",
+            SessionStart::New(Origin::SideConversation) => "side_conversation",
+            SessionStart::New(Origin::Root) | SessionStart::Resume | SessionStart::Restore => {
+                "root"
+            }
+        }
+    }
+
+    /// Whether the parent is also the conversation this one was copied from.
+    const fn forked(self) -> bool {
+        matches!(
+            self.start,
+            SessionStart::New(Origin::Fork | Origin::Branch | Origin::SideConversation)
+        )
+    }
 }
 
 pub(crate) struct RolloutCreate<'a> {
@@ -83,48 +134,66 @@ enum RolloutCommand {
 }
 
 pub(super) struct RolloutCommit {
-    history: ResponseHistory,
+    history: RolloutHistory,
     revision: u64,
     turn: RolloutTurn,
-    model: Model,
+    model: &'static str,
     context_baseline: ContextBaseline,
     client_authored: std::collections::BTreeSet<String>,
 }
 
 impl RolloutCommit {
+    #[cfg(feature = "openai")]
     fn from_session(session: &CommittedSession, turn: RolloutTurn) -> Self {
         Self {
-            history: session.rollout_history(),
+            history: RolloutHistory::Shared(session.rollout_history()),
             revision: session.history_revision(),
             turn,
-            model: session.selected_model(),
+            model: session.selected_model().as_str(),
             context_baseline: session.context_baseline().clone(),
             client_authored: session.model().client_authored().clone(),
         }
     }
 
+    #[cfg(feature = "openai")]
     fn compaction(session: &CommittedSession, turn: RolloutTurn) -> Self {
         Self {
-            history: session.rollout_history(),
+            history: RolloutHistory::Shared(session.rollout_history()),
             revision: session.history_revision(),
             turn,
-            model: session.selected_model(),
+            model: session.selected_model().as_str(),
             context_baseline: session.context_baseline().clone(),
             client_authored: session.model().client_authored().clone(),
         }
     }
 
-    #[cfg(test)]
+    pub(in crate::rollout) fn neutral(
+        history: Vec<ResponseItem>,
+        revision: u64,
+        turn: RolloutTurn,
+        model: crate::HarnessModel,
+    ) -> Self {
+        Self {
+            history: RolloutHistory::Items(history.into()),
+            revision,
+            turn,
+            model: model.as_str(),
+            context_baseline: ContextBaseline::Missing,
+            client_authored: std::collections::BTreeSet::new(),
+        }
+    }
+
+    #[cfg(all(test, feature = "openai"))]
     pub(super) const fn from_history(
         history: ResponseHistory,
         revision: u64,
         turn: RolloutTurn,
     ) -> Self {
         Self {
-            history,
+            history: RolloutHistory::Shared(history),
             revision,
             turn,
-            model: Model::Sol,
+            model: Model::Sol.as_str(),
             context_baseline: ContextBaseline::Missing,
             client_authored: std::collections::BTreeSet::new(),
         }
@@ -267,26 +336,14 @@ impl RolloutRecorder {
         let meta = SessionMeta {
             root_session_id: config
                 .root_session_id
-                .get_or_init(|| thread_id.to_owned())
+                .get_or_init(|| origin.root_session_id.unwrap_or(thread_id).to_owned())
                 .clone(),
-            origin_kind: if origin.kind == "side_conversation" {
-                "fork"
-            } else {
-                origin.kind
-            }
-            .to_owned(),
-            conversation_role: match origin.kind {
-                "spawn" => "subagent",
-                "fork" => "branch",
-                "side_conversation" => "side_conversation",
-                _ => "root",
-            },
+            origin_kind: origin.kind().to_owned(),
+            conversation_role: origin.conversation_role(),
             session_id: thread_id.to_owned(),
             id: thread_id.to_owned(),
             prompt_cache_key: prompt_cache_key.to_owned(),
-            forked_from_id: (matches!(origin.kind, "fork" | "side_conversation"))
-                .then(|| parent_thread_id.clone())
-                .flatten(),
+            forked_from_id: origin.forked().then(|| parent_thread_id.clone()).flatten(),
             parent_thread_id,
             timestamp: timestamp.clone(),
             cwd: cwd.to_path_buf(),
@@ -390,6 +447,7 @@ impl RolloutRecorder {
             .map_err(|_| io::Error::other("rollout writer stopped"))?
     }
 
+    #[cfg(feature = "openai")]
     pub(crate) async fn persist(
         &self,
         session: &CommittedSession,
@@ -399,6 +457,7 @@ impl RolloutRecorder {
             .await
     }
 
+    #[cfg(feature = "openai")]
     pub(crate) async fn persist_compaction(
         &self,
         session: &CommittedSession,
@@ -406,6 +465,13 @@ impl RolloutRecorder {
     ) -> io::Result<()> {
         self.persist_commit(RolloutCommit::compaction(session, turn))
             .await
+    }
+
+    pub(in crate::rollout) async fn persist_neutral(
+        &self,
+        commit: RolloutCommit,
+    ) -> io::Result<()> {
+        self.persist_commit(commit).await
     }
 
     async fn persist_commit(&self, commit: RolloutCommit) -> io::Result<()> {
@@ -422,7 +488,7 @@ impl RolloutRecorder {
             .map_err(|_| io::Error::other("Codex rollout writer stopped"))?
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "openai"))]
     pub(in crate::rollout) async fn persist_history(
         &self,
         history: ResponseHistory,

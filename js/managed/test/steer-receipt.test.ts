@@ -9,6 +9,7 @@ describe("durable identified steering receipts", () => {
     await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
       const now = Date.now();
       const input = "already accepted";
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
         VALUES (1, 'fixture-session', 'fixture-owner', 'fixture-org', 'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, now);
       state.storage.sql.exec(`INSERT INTO managed_turns (id, request_hash, input_json, authorization_json, state, accepted_cursor, may_have_inner_operation, attempt_count, created_at, accepted_at, updated_at)

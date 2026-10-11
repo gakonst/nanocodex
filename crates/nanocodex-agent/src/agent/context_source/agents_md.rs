@@ -1,75 +1,46 @@
-use std::{
-    fs::{self, File},
-    io::{self, Read},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
+use nanocodex_home::{AgentHome, Convention, Diagnostic, Level, ProjectHome};
 use tracing::warn;
 
-const MAX_PROJECT_INSTRUCTIONS_BYTES: usize = 32 * 1024;
-const CANDIDATE_FILENAMES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
 const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
 
-struct ProjectInstructionsError {
-    path: PathBuf,
-    source: io::Error,
-}
-
-pub(crate) fn load_global_instructions(codex_home: Option<&Path>) -> Option<Arc<str>> {
-    let codex_home = codex_home?;
-    for filename in CANDIDATE_FILENAMES {
-        let path = codex_home.join(filename);
-        match fs::metadata(&path) {
-            Ok(metadata) if !metadata.is_file() => continue,
-            Ok(_) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
-            Err(source) => {
-                warn!(
-                    path = %path.display(),
-                    error = %source,
-                    "failed to read global AGENTS.md instructions"
-                );
-                continue;
-            }
-        }
-        let data = match fs::read(&path) {
-            Ok(data) => data,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
-            Err(source) => {
-                warn!(
-                    path = %path.display(),
-                    error = %source,
-                    "failed to read global AGENTS.md instructions"
-                );
-                continue;
-            }
-        };
-        let text = String::from_utf8_lossy(&data);
-        let text = text.trim();
-        if !text.is_empty() {
-            return Some(Arc::from(text));
-        }
-    }
-    None
+/// User-level instructions from the configured homes: the Codex home's
+/// `AGENTS.override.md` (when non-empty) or `AGENTS.md`, then the Claude
+/// home's `CLAUDE.md` when it is a distinct document.
+pub(crate) fn load_global_instructions(
+    codex_home: Option<&Path>,
+    claude_home: Option<&Path>,
+) -> Option<Arc<str>> {
+    let (codex, claude) = match (codex_home, claude_home) {
+        (None, None) => return None,
+        (Some(codex), Some(claude)) => (codex, claude),
+        (Some(home), None) | (None, Some(home)) => (home, home),
+    };
+    let global = AgentHome::new(codex, claude).global_instructions();
+    report(&global.diagnostics);
+    // A home that was not configured contributes nothing, even when the
+    // configured one is passed for both.
+    let texts = global
+        .sources
+        .iter()
+        .filter(|source| match source.convention {
+            Convention::Codex => codex_home.is_some(),
+            Convention::Claude => claude_home.is_some(),
+        })
+        .map(|source| source.text.as_str())
+        .collect::<Vec<_>>();
+    (!texts.is_empty()).then(|| Arc::from(texts.join("\n\n")))
 }
 
 pub(super) fn load_instructions(
     workspace: &Path,
     global_instructions: Option<&str>,
 ) -> Option<String> {
-    let project_instructions = match load_project_instructions(workspace) {
-        Ok(instructions) => instructions,
-        Err(error) => {
-            warn!(
-                path = %error.path.display(),
-                error = %error.source,
-                "failed to read project AGENTS.md instructions"
-            );
-            None
-        }
-    };
-    combine_instructions(global_instructions, project_instructions.as_deref())
+    combine_instructions(
+        global_instructions,
+        load_project_instructions(workspace).as_deref(),
+    )
 }
 
 pub(super) fn combine_instructions(
@@ -84,87 +55,26 @@ pub(super) fn combine_instructions(
     }
 }
 
-fn load_project_instructions(workspace: &Path) -> Result<Option<String>, ProjectInstructionsError> {
-    let root = find_project_root(workspace)?;
-    let mut directories = workspace
-        .ancestors()
-        .take_while(|directory| *directory != root)
-        .map(Path::to_path_buf)
-        .collect::<Vec<_>>();
-    directories.push(root);
-    directories.reverse();
+/// Project instructions root-to-leaf, each loaded whole: per directory
+/// `AGENTS.override.md` or `AGENTS.md`, then the Claude conventions
+/// `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/CLAUDE.md`, each distinct
+/// document once.
+fn load_project_instructions(workspace: &Path) -> Option<String> {
+    let instructions = ProjectHome::discover(workspace).read_instructions();
+    report(&instructions.diagnostics);
+    instructions.combined()
+}
 
-    let mut remaining = MAX_PROJECT_INSTRUCTIONS_BYTES;
-    let mut documents = Vec::new();
-    for directory in directories {
-        if remaining == 0 {
-            break;
-        }
-        let Some(path) = instruction_file(&directory)? else {
-            continue;
-        };
-        let (data, truncated) =
-            read_bounded(&path, remaining).map_err(|source| ProjectInstructionsError {
-                path: path.clone(),
-                source,
-            })?;
-        if truncated {
+fn report(diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        if matches!(diagnostic.level, Level::Warning) {
             warn!(
-                path = %path.display(),
-                remaining_bytes = remaining,
-                "project doc exceeds remaining budget; truncating"
+                path = %diagnostic.path.display(),
+                message = %diagnostic.message,
+                "instruction file skipped"
             );
         }
-        let text = String::from_utf8_lossy(&data).into_owned();
-        if !text.trim().is_empty() {
-            remaining -= data.len();
-            documents.push(text);
-        }
     }
-
-    Ok((!documents.is_empty()).then(|| documents.join("\n\n")))
-}
-
-fn find_project_root(workspace: &Path) -> Result<PathBuf, ProjectInstructionsError> {
-    for directory in workspace.ancestors() {
-        let marker = directory.join(".git");
-        match fs::metadata(&marker) {
-            Ok(_) => return Ok(directory.to_path_buf()),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(ProjectInstructionsError {
-                    path: marker,
-                    source,
-                });
-            }
-        }
-    }
-    Ok(workspace.to_path_buf())
-}
-
-fn instruction_file(directory: &Path) -> Result<Option<PathBuf>, ProjectInstructionsError> {
-    for filename in CANDIDATE_FILENAMES {
-        let path = directory.join(filename);
-        match fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => return Ok(Some(path)),
-            Ok(_) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(ProjectInstructionsError { path, source });
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn read_bounded(path: &Path, limit: usize) -> io::Result<(Vec<u8>, bool)> {
-    let file = File::open(path)?;
-    let mut data = Vec::with_capacity(limit.saturating_add(1).min(8 * 1024));
-    file.take(limit.saturating_add(1) as u64)
-        .read_to_end(&mut data)?;
-    let truncated = data.len() > limit;
-    data.truncate(limit);
-    Ok((data, truncated))
 }
 
 #[cfg(test)]
@@ -179,7 +89,7 @@ mod tests {
     fn missing_global_files_return_no_instructions() {
         let home = tempdir().unwrap();
 
-        assert!(load_global_instructions(Some(home.path())).is_none());
+        assert!(load_global_instructions(Some(home.path()), None).is_none());
     }
 
     #[test]
@@ -189,7 +99,7 @@ mod tests {
         fs::write(home.path().join("AGENTS.override.md"), " override \n").unwrap();
 
         assert_eq!(
-            load_global_instructions(Some(home.path())).as_deref(),
+            load_global_instructions(Some(home.path()), None).as_deref(),
             Some("override")
         );
     }
@@ -201,7 +111,7 @@ mod tests {
         fs::write(home.path().join("AGENTS.md"), " default \n").unwrap();
 
         assert_eq!(
-            load_global_instructions(Some(home.path())).as_deref(),
+            load_global_instructions(Some(home.path()), None).as_deref(),
             Some("default")
         );
     }
@@ -213,7 +123,7 @@ mod tests {
         fs::write(home.path().join("AGENTS.md"), "default").unwrap();
 
         assert_eq!(
-            load_global_instructions(Some(home.path())).as_deref(),
+            load_global_instructions(Some(home.path()), None).as_deref(),
             Some("default")
         );
     }
@@ -228,7 +138,7 @@ mod tests {
         fs::write(home.path().join("AGENTS.md"), "default").unwrap();
 
         assert_eq!(
-            load_global_instructions(Some(home.path())).as_deref(),
+            load_global_instructions(Some(home.path()), None).as_deref(),
             Some("default")
         );
     }
@@ -239,8 +149,45 @@ mod tests {
         fs::write(home.path().join("AGENTS.md"), b"global\xff doc").unwrap();
 
         assert_eq!(
-            load_global_instructions(Some(home.path())).as_deref(),
+            load_global_instructions(Some(home.path()), None).as_deref(),
             Some("global\u{fffd} doc")
+        );
+    }
+
+    #[test]
+    fn claude_home_instructions_follow_the_codex_home() {
+        let codex = tempdir().unwrap();
+        let claude = tempdir().unwrap();
+        fs::write(codex.path().join("AGENTS.md"), "codex").unwrap();
+        fs::write(claude.path().join("CLAUDE.md"), " claude \n").unwrap();
+
+        assert_eq!(
+            load_global_instructions(Some(codex.path()), Some(claude.path())).as_deref(),
+            Some("codex\n\nclaude")
+        );
+        assert_eq!(
+            load_global_instructions(None, Some(claude.path())).as_deref(),
+            Some("claude")
+        );
+        // An unconfigured Claude home is never read.
+        assert_eq!(
+            load_global_instructions(Some(claude.path()), None).as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn project_claude_conventions_join_agents_md_once() {
+        let repo = tempdir().unwrap();
+        fs::create_dir(repo.path().join(".git")).unwrap();
+        fs::write(repo.path().join("AGENTS.md"), "shared").unwrap();
+        // A CLAUDE.md with the same text (or a symlink to AGENTS.md) is listed once.
+        fs::write(repo.path().join("CLAUDE.md"), "shared").unwrap();
+        fs::write(repo.path().join("CLAUDE.local.md"), "personal").unwrap();
+
+        assert_eq!(
+            load_instructions(repo.path(), None),
+            Some("shared\n\npersonal".to_owned())
         );
     }
 
@@ -261,14 +208,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_project_docs_do_not_consume_the_shared_budget() {
+    fn whitespace_project_docs_are_skipped() {
         let repo = tempdir().unwrap();
         fs::create_dir(repo.path().join(".git")).unwrap();
-        fs::write(
-            repo.path().join("AGENTS.md"),
-            " ".repeat(MAX_PROJECT_INSTRUCTIONS_BYTES),
-        )
-        .unwrap();
+        fs::write(repo.path().join("AGENTS.md"), " ".repeat(32 * 1024)).unwrap();
         let workspace = repo.path().join("crate");
         fs::create_dir(&workspace).unwrap();
         fs::write(workspace.join("AGENTS.md"), "use the crate instructions").unwrap();
@@ -276,6 +219,22 @@ mod tests {
         assert_eq!(
             load_instructions(&workspace, None),
             Some("use the crate instructions".to_owned())
+        );
+    }
+
+    #[test]
+    fn project_docs_beyond_the_former_32_kib_budget_are_loaded_whole() {
+        let repo = tempdir().unwrap();
+        fs::create_dir(repo.path().join(".git")).unwrap();
+        let root = format!("root {}", "r".repeat(64 * 1024));
+        fs::write(repo.path().join("AGENTS.md"), &root).unwrap();
+        let workspace = repo.path().join("crate");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("AGENTS.md"), "crate tail").unwrap();
+
+        assert_eq!(
+            load_instructions(&workspace, None),
+            Some(format!("{root}\n\ncrate tail"))
         );
     }
 

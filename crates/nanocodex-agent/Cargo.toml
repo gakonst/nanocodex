@@ -20,11 +20,11 @@ rustdoc-args = ["-D", "warnings"]
 [features]
 default = ["openai"]
 openai = [
+    "rollout",
     "dep:chrono",
     "dep:iana-time-zone",
     "dep:nanocodex-oai-tools",
     "nanocodex-oai-tools/code-mode",
-    "dep:serde_json",
     "dep:sha2",
     "dep:tower",
     "dep:tracing",
@@ -34,14 +34,18 @@ openai = [
     "nanocodex-oai-api/client",
 ]
 
+# Codex-compatible JSONL rollout recording and loading, usable by every harness.
+rollout = ["dep:chrono", "dep:tracing", "dep:uuid"]
+
 [dependencies]
+nanocodex-home.workspace = true
 chrono = { workspace = true, optional = true }
 futures-util.workspace = true
 iana-time-zone = { workspace = true, optional = true }
 nanocodex-oai-api = { version = "0.6.7", path = "../nanocodex-oai-api", default-features = false, features = ["events"] }
 nanocodex-oai-tools = { workspace = true, optional = true }
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }

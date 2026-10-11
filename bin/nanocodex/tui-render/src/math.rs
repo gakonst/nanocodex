@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::sync::Notify;
+
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatex::{FormulaState, FormulaWidget, GraphicsSupport, PixelSize, Ratatex, TerminalProfile};
 // ratatex exposes 0.29 buffers, converted below into the shared 0.30 renderer.
@@ -36,6 +38,24 @@ static INITIALIZING: AtomicBool = AtomicBool::new(false);
 static UPDATES: AtomicU64 = AtomicU64::new(0);
 /// Set when a layout used a formula that is still rendering.
 static PENDING: AtomicBool = AtomicBool::new(false);
+/// Wakes the TUI event loop after every [UPDATES] bump. A ratatex worker calls
+/// its update callback only after queueing the formula's upload, so the frame
+/// drawn for this wake writes that upload. [Notify::notify_one] stores a permit
+/// while the loop is busy, so a wake that lands mid-frame is not lost.
+static WAKE: Notify = Notify::const_new();
+
+/// Records a renderer change and wakes the event loop, in that order.
+fn updated() {
+    UPDATES.fetch_add(1, Ordering::AcqRel);
+    WAKE.notify_one();
+}
+
+/// Resolves after a formula finishes, uploads are requeued or the renderer
+/// starts. The TUI event loop awaits this alongside input and stream events;
+/// with nothing rendering it stays pending, so idle terminals never wake.
+pub async fn changed() {
+    WAKE.notified().await;
+}
 
 /// Starts terminal detection and the renderer off the input loop. Idempotent.
 pub fn start() {
@@ -49,9 +69,7 @@ pub fn start() {
             let profile = detect();
             if profile.graphics == GraphicsSupport::Kitty {
                 match Ratatex::builder(profile)
-                    .on_update(|| {
-                        UPDATES.fetch_add(1, Ordering::AcqRel);
-                    })
+                    .on_update(updated)
                     .build()
                 {
                     Ok(renderer) => {
@@ -64,7 +82,7 @@ pub fn start() {
                 }
             }
             INITIALIZING.store(false, Ordering::Release);
-            UPDATES.fetch_add(1, Ordering::AcqRel);
+            updated();
         });
     if spawned.is_err() {
         INITIALIZING.store(false, Ordering::Release);
@@ -128,6 +146,7 @@ pub fn clear_pending() {
 }
 
 /// Poll cadence while a formula is rendering; idle terminals never wake for math.
+/// Finished formulas also wake the loop through [changed].
 pub fn deadline(now: Instant) -> Option<Instant> {
     pending().then(|| now + Duration::from_millis(33))
 }

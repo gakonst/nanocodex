@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // SMS delivery and wallet provisioning are external fixtures. Login, cookies,
 // key authority, permission HTTP routes, data storage and restarts are real.

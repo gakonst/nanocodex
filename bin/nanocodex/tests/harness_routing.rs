@@ -1084,9 +1084,9 @@ async fn run_tui(command: Command, artifact: &Path, answer: &str) -> Result<()> 
         serde_json::to_vec_pretty(&json!({
             "reproduce":"cargo test --locked -p nanocodex-bin --test harness_routing claude_root_needs_only_anthropic_credentials -- --nocapture",
             "command":format!("{terminal_command:?}"),
-            "expected":format!("TUI displays {answer}, then exits successfully after Ctrl+D"),
+            "expected":format!("TUI displays {answer}, then exits successfully after Ctrl+C Ctrl+C"),
             "boundary":"shipped nanocodex executable in a 140x32 PTY; only external providers use loopback fixtures",
-            "input_after_answer":"Ctrl+D (0x04)",
+            "input_after_answer":"Ctrl+C Ctrl+C (0x03 0x03)",
             "terminal_transcript":"terminal.log"
         }))?,
     )?;
@@ -1136,7 +1136,8 @@ async fn run_tui(command: Command, artifact: &Path, answer: &str) -> Result<()> 
             bytes.extend(chunk);
         }
         answer_visible = true;
-        keyboard.write_all(b"\x04")?;
+        // The unified TUI quits on a confirmed Ctrl+C; Ctrl+D edits the composer.
+        keyboard.write_all(b"\x03\x03")?;
         keyboard.flush()?;
         loop {
             if let Some(status) = child.0.try_wait()? {

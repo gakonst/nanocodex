@@ -5,6 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 crates=(
   "nanocodex-hand:crates/nanocodex-hand"
+  "nanocodex-home:crates/nanocodex-home"
   "nanocodex-oai-api:crates/nanocodex-oai-api"
   "nanocodex-observability:crates/nanocodex-observability"
   "nanocodex-oai-tools-macros:crates/nanocodex-oai-tools/macros"

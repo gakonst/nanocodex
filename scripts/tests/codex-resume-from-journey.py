@@ -175,7 +175,13 @@ def main():
         digest = hashlib.sha256(copied.read_bytes()).hexdigest()
         env.update(HOME=str(target_home), CODEX_HOME=str(target_home))
         before = len(provider.requests)
-        tui([str(binary), "resume", "--from", str(copied), "--at", "1", "--workspace-tools", "false",
+        branched = subprocess.run([str(binary), "rewind", "--from", str(copied), "--through", "1",
+                                   "--restore", "--cwd", str(target_ws)], cwd=artifact, env=env,
+                                  capture_output=True, text=True, timeout=30)
+        (artifact / "rewind.stdout.json").write_text(branched.stdout)
+        assert branched.returncode == 0, branched.stderr
+        branch = json.loads(branched.stdout)["branch_session"]
+        tui([str(binary), "resume", branch, "--workspace-tools", "false",
              *common, "--cwd", str(target_ws), "--prompt", "THIRD_PROMPT"],
             env, artifact, target_home, 2, artifact / "third.terminal.txt")
         assert len(provider.requests) == before + 1, "expected exactly one model request"
@@ -196,8 +202,8 @@ def main():
 
         # A point past the end fails before any model request.
         before = len(provider.requests)
-        late = subprocess.run([str(binary), "resume", "--from", str(copied), "--at", "5", *common,
-                               "--cwd", str(target_ws)], cwd=artifact, env=env,
+        late = subprocess.run([str(binary), "rewind", "--from", str(copied), "--through", "5",
+                               "--restore", "--cwd", str(target_ws)], cwd=artifact, env=env,
                               capture_output=True, text=True, timeout=30)
         (artifact / "late.stderr.txt").write_text(late.stderr)
         assert late.returncode != 0 and "fewer than 5" in late.stderr, late.stderr

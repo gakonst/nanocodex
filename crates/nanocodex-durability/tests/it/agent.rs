@@ -11,8 +11,8 @@ use std::{
 
 use eyre::{Result, eyre};
 use nanocodex_agent::{
-    ExecutionPolicyDisposition, Model, Nanocodex, NanocodexError, OpenAi, PromptRequest,
-    PromptRoute, ResponseError, ServiceTier, Tools,
+    ExecutionPolicyDisposition, ForkRequest, Model, Nanocodex, NanocodexError, OpenAi,
+    PromptRequest, PromptRoute, ResponseError, ServiceTier, Tools,
     events::{AgentEventKind, AgentEvents, RunStatus, RunTerminal},
     execution::{
         ExecutionAdmission, ExecutionFuture, ExecutionOutput, ExecutionPolicy,
@@ -36,6 +36,60 @@ fn temporary_workspace(label: &str) -> Result<PathBuf> {
 
 fn test_session_id() -> SessionId {
     SessionId::default()
+}
+
+// Agents require Code Mode since eda4a21e3: each model tool call is one exec
+// cell that awaits a single nested tool. Its exec step is the durable receipt.
+fn exec_tool_call(
+    call_id: &str,
+    tool: &str,
+) -> (
+    nanocodex_oai_api::responses::ResponseItem,
+    nanocodex_oai_api::tower::CodeCall,
+) {
+    let input = format!("text(JSON.stringify(await tools.{tool}({{}})));");
+    let item = serde_json::from_value(json!({
+        "type": "custom_tool_call",
+        "call_id": call_id,
+        "name": "exec",
+        "input": input
+    }))
+    .expect("exec call item decodes");
+    let call = nanocodex_oai_api::tower::CodeCall {
+        call_id: call_id.to_owned(),
+        name: "exec".to_owned(),
+        namespace: None,
+        input,
+        kind: nanocodex_oai_api::tower::CodeCallKind::Custom,
+    };
+    (item, call)
+}
+
+// Returns the model-visible text of one exec cell output in a provider request.
+fn exec_output_text(
+    item: &nanocodex_oai_api::responses::ResponseItem,
+    expected_call_id: &str,
+) -> Option<String> {
+    use nanocodex_oai_api::responses::{FunctionOutputBody, FunctionOutputContent, ResponseItem};
+    let ResponseItem::CustomToolCallOutput {
+        call_id, output, ..
+    } = item
+    else {
+        return None;
+    };
+    if &**call_id != expected_call_id {
+        return None;
+    }
+    Some(match output {
+        FunctionOutputBody::Text(text) => text.to_string(),
+        FunctionOutputBody::Content(parts) => parts
+            .iter()
+            .filter_map(|part| match part {
+                FunctionOutputContent::InputText { text } => Some(&**text),
+                _ => None,
+            })
+            .collect(),
+    })
 }
 
 #[derive(Clone)]
@@ -228,8 +282,12 @@ async fn six_hundred_turns_cross_retention_and_twenty_four_owner_changes() -> Re
                     .result()
                     .await?;
                 assert_eq!(
-                    serde_json::to_value(replay.snapshot())?,
-                    serde_json::to_value(result.snapshot())?
+                    codex_snapshot(&replay)
+                        .map(serde_json::to_value)
+                        .transpose()?,
+                    codex_snapshot(&result)
+                        .map(serde_json::to_value)
+                        .transpose()?
                 );
                 assert_eq!(state.state().await?.revision(), retained.revision());
             }
@@ -1219,12 +1277,10 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
 
     fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
         use nanocodex_oai_api::{
-            responses::{
-                ContentItem, FunctionOutputBody, MessageRole, ResponseItem, WarmupResponse,
-            },
+            responses::{ContentItem, MessageRole, ResponseItem, WarmupResponse},
             tower::{
-                CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats,
-                ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse,
+                GenerationOutput, ResponsePipelineStats, ResponsesAttemptKind, ResponsesOutput,
+                ResponsesServiceResponse,
             },
         };
 
@@ -1252,13 +1308,8 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                     .generations
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if generation == 0 {
-                    let item = serde_json::from_value(json!({
-                        "type": "function_call",
-                        "call_id": "call-recorded-hidden-tool",
-                        "name": "recorded_hidden_tool",
-                        "arguments": "{}"
-                    }))
-                    .expect("recorded tool call item decodes");
+                    let (item, call) =
+                        exec_tool_call("call-recorded-hidden-tool", "recorded_hidden_tool");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "recorded-tool-response".to_owned(),
                         reported_model: None,
@@ -1266,27 +1317,16 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                         end_turn: Some(false),
                         final_message: None,
                         output_items: vec![item],
-                        code_calls: vec![CodeCall {
-                            call_id: "call-recorded-hidden-tool".to_owned(),
-                            name: "recorded_hidden_tool".to_owned(),
-                            namespace: None,
-                            input: "{}".to_owned(),
-                            kind: CodeCallKind::Function,
-                        }],
+                        code_calls: vec![call],
                         usage: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
                     })
                 } else {
-                    let recovered_output = request.input_items().find_map(|item| match item {
-                        ResponseItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionOutputBody::Text(output),
-                            ..
-                        } if &**call_id == "call-recorded-hidden-tool" => Some(output.as_ref()),
-                        _ => None,
-                    });
+                    let recovered_output = request
+                        .input_items()
+                        .find_map(|item| exec_output_text(item, "call-recorded-hidden-tool"));
                     if request.model_call_index() != Some(1) {
                         let recovered_output = recovered_output
                             .expect("recovery must replay the completed tool result");
@@ -1332,12 +1372,10 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
 
     fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
         use nanocodex_oai_api::{
-            responses::{
-                ContentItem, FunctionOutputBody, MessageRole, ResponseItem, WarmupResponse,
-            },
+            responses::{ContentItem, MessageRole, ResponseItem, WarmupResponse},
             tower::{
-                CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats,
-                ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse,
+                GenerationOutput, ResponsePipelineStats, ResponsesAttemptKind, ResponsesOutput,
+                ResponsesServiceResponse,
             },
         };
         let output = match request.kind() {
@@ -1350,13 +1388,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                     .generations
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if generation == 0 {
-                    let item = serde_json::from_value(json!({
-                        "type": "function_call",
-                        "call_id": "call-count-once",
-                        "name": "count_once",
-                        "arguments": "{}"
-                    }))
-                    .expect("durable tool call item decodes");
+                    let (item, call) = exec_tool_call("call-count-once", "count_once");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "durable-tool-response".to_owned(),
                         reported_model: None,
@@ -1364,27 +1396,16 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                         end_turn: Some(false),
                         final_message: None,
                         output_items: vec![item],
-                        code_calls: vec![CodeCall {
-                            call_id: "call-count-once".to_owned(),
-                            name: "count_once".to_owned(),
-                            namespace: None,
-                            input: "{}".to_owned(),
-                            kind: CodeCallKind::Function,
-                        }],
+                        code_calls: vec![call],
                         usage: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
                     })
                 } else {
-                    let recovered_output = request.input_items().find_map(|item| match item {
-                        ResponseItem::FunctionCallOutput {
-                            call_id,
-                            output: FunctionOutputBody::Text(output),
-                            ..
-                        } if &**call_id == "call-count-once" => Some(output.as_ref()),
-                        _ => None,
-                    });
+                    let recovered_output = request
+                        .input_items()
+                        .find_map(|item| exec_output_text(item, "call-count-once"));
                     assert!(
                         recovered_output
                             .expect("recovery must include the retried tool result")
@@ -1432,8 +1453,8 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
         use nanocodex_oai_api::{
             responses::{ContentItem, MessageRole, ResponseItem, WarmupResponse},
             tower::{
-                CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats,
-                ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse,
+                GenerationOutput, ResponsePipelineStats, ResponsesAttemptKind, ResponsesOutput,
+                ResponsesServiceResponse,
             },
         };
 
@@ -1445,13 +1466,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
             ResponsesAttemptKind::Generation => {
                 let generation = self.generations.fetch_add(1, Ordering::SeqCst);
                 if generation == 0 {
-                    let item = serde_json::from_value(json!({
-                        "type": "function_call",
-                        "call_id": "call-replay-fence",
-                        "name": "count_once",
-                        "arguments": "{}"
-                    }))
-                    .expect("replay-fence tool call item decodes");
+                    let (item, call) = exec_tool_call("call-replay-fence", "count_once");
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "old-socket-response".to_owned(),
                         reported_model: None,
@@ -1459,13 +1474,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                         end_turn: Some(false),
                         final_message: None,
                         output_items: vec![item],
-                        code_calls: vec![CodeCall {
-                            call_id: "call-replay-fence".to_owned(),
-                            name: "count_once".to_owned(),
-                            namespace: None,
-                            input: "{}".to_owned(),
-                            kind: CodeCallKind::Function,
-                        }],
+                        code_calls: vec![call],
                         usage: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
@@ -1489,14 +1498,14 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                     let model_index = input
                         .iter()
                         .position(|item| {
-                            item["type"] == "function_call"
+                            item["type"] == "custom_tool_call"
                                 && item["call_id"] == "call-replay-fence"
                         })
                         .expect("full replay retains the durable model output");
                     let tool_index = input
                         .iter()
                         .position(|item| {
-                            item["type"] == "function_call_output"
+                            item["type"] == "custom_tool_call_output"
                                 && item["call_id"] == "call-replay-fence"
                                 && item.to_string().contains("counted")
                         })
@@ -2326,7 +2335,7 @@ async fn durable_terminal_replays_emit_one_terminal_without_model_execution() ->
         .await?
         .result()
         .await?;
-    assert!(completed.snapshot().is_some());
+    assert!(completed.checkpoint().is_some());
     let snapshot = state
         .latest_checkpoint()
         .await?
@@ -2992,14 +3001,28 @@ async fn active_cancel_does_not_invent_an_outcome_for_an_unfinished_tool() -> Re
         .iter()
         .enumerate()
         .filter(|(_, event)| event.event.kind == AgentEventKind::ToolResult)
+        .map(|(index, event)| -> Result<(usize, serde_json::Value)> {
+            Ok((index, event.event.decode_payload()?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // The exec cell and its nested handler each report the cancellation.
+    assert_eq!(tool_results.len(), 2, "{tool_results:?}");
+    let nested = tool_results
+        .iter()
+        .filter(|(_, result)| result["tool"] == "count_once")
+        .collect::<Vec<_>>();
+    assert_eq!(nested.len(), 1, "{tool_results:?}");
+    assert_eq!(nested[0].1["status"], "cancelled");
+    let cells = tool_results
+        .iter()
+        .filter(|(_, result)| result["tool"] == "exec")
         .collect::<Vec<_>>();
     assert_eq!(
-        tool_results.len(),
+        cells.len(),
         1,
         "cancellation must emit the cancelled live tool result exactly once"
     );
-    let (tool_result_index, tool_result) = tool_results[0];
-    let tool_result = tool_result.event.decode_payload::<serde_json::Value>()?;
+    let (tool_result_index, tool_result) = cells[0].clone();
     assert_eq!(tool_result["call_id"], "call-count-once");
     assert_eq!(tool_result["status"], "cancelled");
     let emitted_duration_ns = tool_result["duration_ns"]
@@ -3553,8 +3576,8 @@ async fn abandoned_terminal_replay_acceptance_emits_no_terminal_event() -> Resul
         .prompt("seed replay snapshot")
         .await?
         .result()
-        .await?
-        .snapshot()
+        .await
+        .map(|result| codex_snapshot(&result))?
         .expect("local turns always retain a snapshot");
     seed.shutdown().await?;
     drop((seed, seed_events));
@@ -3623,8 +3646,8 @@ async fn abandoned_routed_terminal_replay_emits_no_terminal_event() -> Result<()
         .prompt("seed routed replay snapshot")
         .await?
         .result()
-        .await?
-        .snapshot()
+        .await
+        .map(|result| codex_snapshot(&result))?
         .expect("local turns always retain a snapshot");
     seed.shutdown().await?;
     drop((seed, seed_events));
@@ -3988,12 +4011,11 @@ async fn completed_tool_output_replays_after_tool_is_removed() -> Result<()> {
     let workspace = temporary_workspace("durability-removed-tool-recovery")?;
     let first_tools = Tools::builder()
         .without_defaults()
-        .tool_with_exposure(
-            RecordedHiddenTool {
-                calls: Arc::clone(&tool_calls),
-            },
-            nanocodex_agent::tools::ToolExposure::Hidden,
-        )
+        // Hidden tools are not callable from Code Mode; removal from the
+        // recovered runtime is what this journey exercises.
+        .tool(RecordedHiddenTool {
+            calls: Arc::clone(&tool_calls),
+        })
         .build()?;
     let state = self::DurableSession::open(failing_store, "removed-tool-recovery").await?;
     let builder = Nanocodex::builder(openai()?)
@@ -4147,6 +4169,13 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             generations.load(Ordering::SeqCst),
             if pending { 3 } else { 2 }
         );
+        let resent = requests.lock().unwrap().last().unwrap().clone();
+        recovered
+            .prompt(PromptRequest::new("continue").request_id("turn-2"))
+            .await?
+            .result()
+            .await?;
+        let next_request = requests.lock().unwrap().last().unwrap().clone();
         if let Some(input) = recorded_input {
             let mut expected = serde_json::to_value(&input.prefix)?
                 .as_array()
@@ -4162,19 +4191,31 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             for item in &mut expected {
                 item.as_object_mut().unwrap().remove("id");
             }
+            // Code Mode continuations keep their admitted instructions and
+            // history but declare the current runtime's exec/wait surface
+            // (eda4a21e3), exactly as a fresh request on that runtime does.
+            let mut current_tools =
+                serde_json::to_value(codex_snapshot(&result).unwrap())?["request_prefix"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["type"] == "additional_tools")
+                    .expect("the recovered session declares its current Code Mode tools")
+                    .clone();
+            current_tools.as_object_mut().unwrap().remove("id");
+            for item in &mut expected {
+                if item["type"] == "additional_tools" {
+                    *item = current_tools.clone();
+                }
+            }
             assert_eq!(
-                requests.lock().unwrap().last().unwrap(),
-                &json!(expected),
-                "an unfinished model call must resend its original instructions, tools, and history"
+                resent,
+                json!(expected),
+                "an unfinished model call must resend its original instructions and history with the current tools"
             );
         }
-        recovered
-            .prompt(PromptRequest::new("continue").request_id("turn-2"))
-            .await?
-            .result()
-            .await?;
-        let next = requests.lock().unwrap().last().unwrap().to_string();
-        let checkpoint = serde_json::to_value(result.snapshot().unwrap())?;
+        let next = next_request.to_string();
+        let checkpoint = serde_json::to_value(codex_snapshot(&result).unwrap())?;
         assert!(
             checkpoint["request_prefix"]
                 .to_string()
@@ -4191,7 +4232,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
 }
 
 #[tokio::test]
-async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<()> {
+async fn durable_parent_without_catalog_journals_subagents_and_rejects_forks() -> Result<()> {
     let store = MemoryStore::new()?;
     let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let state = DurableSession::open(
@@ -4219,7 +4260,17 @@ async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<(
         .durability(state.clone())
         .await?
         .build()?;
-    assert!(parent.rollout().is_some());
+    let persistence = parent
+        .persistence()
+        .expect("durable rollout-recording parent");
+    assert!(
+        persistence.rollout.is_some(),
+        "durability and the rollout mirror coexist"
+    );
+    assert_eq!(
+        persistence.durable_state_id.as_deref(),
+        Some("ephemeral-parent")
+    );
     for _ in 0..2 {
         parent
             .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
@@ -4232,73 +4283,42 @@ async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<(
         1,
         "parent receipts must still replay"
     );
+    // Without a session catalog the root saves the subagents it spawns in its
+    // task-tree journal (restored by its host), so a spawn succeeds without a
+    // catalog session of its own. A fork has no such home and is rejected.
     let (child, child_events) = parent.spawn().await?;
-    let (grandchild, grandchild_events) = child.spawn().await?;
-    for agent in [&child, &grandchild] {
-        assert!(
-            agent.rollout().is_none(),
-            "children must not create resumable rollout files"
-        );
-        assert!(matches!(
-            agent
-                .prompt(PromptRequest::new("identified").request_id("child-turn"))
-                .await,
-            Err(NanocodexError::ExecutionPolicyNotConfigured)
-        ));
-        for _ in 0..2 {
-            assert_eq!(
-                agent
-                    .prompt("child work")
-                    .await?
-                    .result()
-                    .await?
-                    .final_message(),
-                "durably replayed"
-            );
-        }
-    }
+    assert_ne!(child.session_id(), parent.session_id());
+    let persistence = child
+        .persistence()
+        .expect("every subagent mirrors a rollout");
+    assert!(
+        persistence.durable_state_id.is_none(),
+        "a journal-backed subagent has no catalog session of its own"
+    );
+    assert!(persistence.rollout.is_some());
+    assert!(matches!(
+        parent.fork(ForkRequest::latest()).await,
+        Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation: "fork" })
+    ));
+    child.shutdown().await?;
+    drop((child, child_events));
+    parent
+        .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
+        .await?
+        .result()
+        .await?;
     assert_eq!(
         generations.load(Ordering::SeqCst),
-        5,
-        "each ephemeral prompt must execute normally"
+        1,
+        "the parent stays usable"
     );
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-parent", "ephemeral-parent"],
-        "descendants must never acquire a durable owner"
-    );
-    assert!(state.agent_snapshot().await?.is_some());
-    assert!(matches!(
-        state
-            .state()
-            .await?
-            .operation("parent-turn")
-            .unwrap()
-            .status,
-        OperationStatus::Completed { .. }
-    ));
-    for agent in [&grandchild, &child] {
-        agent.shutdown().await?;
-    }
     parent.shutdown().await?;
     assert_eq!(
         rollout.list_sessions()?.len(),
         1,
         "only the parent has a disk session"
     );
-    for id in [child.session_id(), grandchild.session_id()] {
-        let empty = DurableSession::open(store.clone(), id).await?;
-        assert!(empty.agent_snapshot().await?.is_none());
-        assert!(empty.state().await?.operations().is_empty());
-    }
-    drop((
-        grandchild,
-        grandchild_events,
-        child,
-        child_events,
-        parent,
-        parent_events,
-    ));
+    drop((parent, parent_events));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -4323,8 +4343,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for LongTurnServ
         use nanocodex_oai_api::{
             responses::{ContentItem, MessageRole, ResponseItem, Usage},
             tower::{
-                CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats, ResponsesOutput,
-                ResponsesServiceResponse,
+                GenerationOutput, ResponsePipelineStats, ResponsesOutput, ResponsesServiceResponse,
             },
         };
         let index = request.model_call_index().expect("generation only");
@@ -4342,16 +4361,9 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for LongTurnServ
         let code_calls = if done {
             Vec::new()
         } else {
-            output_items.push(serde_json::from_value(json!({
-                "type": "function_call", "call_id": call_id, "name": "count_once", "arguments": "{}"
-            })).unwrap());
-            vec![CodeCall {
-                call_id,
-                name: "count_once".into(),
-                namespace: None,
-                input: "{}".into(),
-                kind: CodeCallKind::Function,
-            }]
+            let (item, call) = exec_tool_call(&call_id, "count_once");
+            output_items.push(item);
+            vec![call]
         };
         std::future::ready(Ok(ResponsesServiceResponse::new(
             ResponsesOutput::Generation(GenerationOutput {
@@ -4635,54 +4647,6 @@ async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Re
     assert_exhausted_compaction_cold_reopen(true, true).await
 }
 
-#[tokio::test]
-async fn in_memory_child_rehydration_does_not_reattach_parent_durability() -> Result<()> {
-    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = DurableSession::open(
-        CountingAcquires {
-            inner: MemoryStore::new()?,
-            acquisitions: Arc::clone(&acquisitions),
-        },
-        "ephemeral-rehydrate-parent",
-    )
-    .await?;
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = OpenAi::builder("test-key")
-        .service({
-            let generations = Arc::clone(&generations);
-            move || DurableReplayService {
-                generations: Arc::clone(&generations),
-            }
-        })
-        .build()?;
-    let workspace = temporary_workspace("ephemeral-rehydrate")?;
-    let (parent, _events) = Nanocodex::builder(openai)
-        .workspace(&workspace)
-        .durability(state)
-        .await?
-        .build()?;
-    let (child, _events) = parent.spawn().await?;
-    child.prompt("retained in memory").await?.result().await?;
-    let snapshot = child.child_snapshot().await?;
-    let expected = serde_json::to_value(&snapshot)?;
-    child.shutdown().await?;
-    let (restored, _events) = parent.restore_child(snapshot, None).await?;
-    assert_eq!(
-        serde_json::to_value(restored.child_snapshot().await?)?,
-        expected
-    );
-    restored.prompt("continue").await?.result().await?;
-    assert_eq!(generations.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        *acquisitions.lock().unwrap(),
-        ["ephemeral-rehydrate-parent", "ephemeral-rehydrate-parent"]
-    );
-    restored.shutdown().await?;
-    parent.shutdown().await?;
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
 #[derive(Clone)]
 struct HostedStreamFailureService {
     calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -4785,4 +4749,36 @@ async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() ->
 #[tokio::test]
 async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
     assert_hosted_stream_failure_recovery(false).await
+}
+
+/// Codex-native boundary retained by a completed local turn.
+fn codex_snapshot(result: &nanocodex_agent::TurnResult) -> Option<SessionSnapshot> {
+    let checkpoint = result.checkpoint()?;
+    serde_json::from_value(checkpoint.payload()["conversation"].clone()).ok()
+}
+
+#[tokio::test]
+async fn a_host_named_session_identity_wins_over_a_session_shaped_state_id() -> Result<()> {
+    // Durable Objects persisted before identities were unified stored a
+    // random runtime session beside their UUIDv7 state ID. The host names
+    // that stored identity; reopening must keep it instead of renaming the
+    // session to its state ID (which orphaned its events and task tree).
+    let state_id: SessionId = "01a12244-cea3-782a-9609-7a921dadb8d8".parse()?;
+    let legacy: SessionId = "01a12244-d5ac-7b43-94dc-b0dc8559e02a".parse()?;
+    let workspace = temporary_workspace("durability-host-named-identity")?;
+    let store = MemoryStore::new()?;
+    for (named, expected) in [(Some(legacy), legacy), (None, state_id)] {
+        let state = DurableSession::open(store.clone(), state_id.to_string()).await?;
+        let mut builder =
+            Nanocodex::builder(OpenAi::builder("test-key").build()?).workspace(&workspace);
+        if let Some(named) = named {
+            builder = builder.session_id(named);
+        }
+        let (agent, events) = builder.durability(state).await?.build()?;
+        assert_eq!(agent.session_id().to_string(), expected.to_string());
+        agent.shutdown().await?;
+        drop((agent, events));
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
 }

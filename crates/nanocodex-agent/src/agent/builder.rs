@@ -14,6 +14,15 @@ pub struct NanocodexBuilder<F = StandardServiceFactory> {
     pub(super) prompt_cache: PromptCacheConfig,
     pub(super) codex: CodexCompatibility,
     pub(super) resume: Option<SessionSnapshot>,
+    pub(super) lineage: Option<Lineage>,
+    // Whether this builder chose a tier, which then wins over a resumed
+    // snapshot's recorded tier (as an explicit thinking level does).
+    pub(super) service_tier_explicit: bool,
+    // Whether the host named this session's identity through
+    // `NanocodexBuilder::session_id` rather than inheriting it from a
+    // resumed checkpoint. A host-named identity is never replaced by an
+    // attached durable state's ID.
+    pub(super) session_id_explicit: bool,
     pub(super) factory: F,
 }
 
@@ -33,6 +42,9 @@ where
             prompt_cache: PromptCacheConfig::default(),
             codex: CodexCompatibility::default(),
             resume: None,
+            lineage: None,
+            service_tier_explicit: false,
+            session_id_explicit: false,
             factory,
         }
     }
@@ -75,22 +87,50 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Restores a native residency checkpoint through this approved Responses recipe.
-    pub fn restore_runtime(mut self, snapshot: ChildSnapshot) -> Result<Self> {
-        let ChildSnapshot::Codex(snapshot) = snapshot else {
-            return Err(NanocodexError::InvalidRequest(
-                "Codex builder requires a Responses checkpoint".into(),
-            ));
-        };
-        snapshot.validate()?;
+    /// Resumes a checkpointed session in a fresh driver, transport and tool
+    /// runtime built from this recipe.
+    ///
+    /// The resumed session *is* the checkpointed session: it keeps the
+    /// checkpoint's session identity, lineage, conversation tree, committed
+    /// history, model, thinking level, processing tier and transport policy.
+    /// This recipe supplies the credentials, instructions, tools and handlers
+    /// for later turns. Settings called after `resume` override the
+    /// checkpoint's. A checkpoint taken before the first completed turn
+    /// reopens the session with its settings and no history. Use
+    /// [`Nanocodex::fork`] to continue a conversation under a new identity.
+    ///
+    /// ```no_run
+    /// # use nanocodex_agent::{Nanocodex, SessionCheckpoint};
+    /// # async fn example(
+    /// #     openai: nanocodex_agent::OpenAi,
+    /// #     saved: &str,
+    /// # ) -> nanocodex_agent::Result<()> {
+    /// let checkpoint = SessionCheckpoint::from_json(saved)?;
+    /// let session_id = checkpoint.session_id().to_owned();
+    /// let (agent, _events) = Nanocodex::builder(openai).resume(checkpoint)?.build()?;
+    /// assert_eq!(agent.session_id().to_string(), session_id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NanocodexError::CheckpointFamilyMismatch`] for a non-Codex
+    /// checkpoint and [`NanocodexError::InvalidCheckpoint`] for an
+    /// invalid one.
+    pub fn resume(mut self, checkpoint: SessionCheckpoint) -> Result<Self> {
+        let snapshot = ChildState::from_checkpoint(checkpoint)?;
         self = self
             .model(snapshot.model)
             .thinking(snapshot.thinking)
             .service_tier(snapshot.service_tier);
         self.session_id = Some(snapshot.session_id.parse().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid child session: {error}"))
+            NanocodexError::InvalidCheckpoint(format!("invalid child session: {error}"))
         })?);
+        // The checkpoint's identity is inherited, not host-named.
+        self.session_id_explicit = false;
         self.resume = snapshot.conversation;
+        self.lineage = Some(snapshot.lineage);
         if snapshot.stateless_http {
             self.config.responses_transport = ResponsesTransport::Https;
             self.config.responses_history = ResponsesHistory::FullReplay;
@@ -176,10 +216,12 @@ impl<F> NanocodexBuilder<F> {
 
     /// Selects the processing tier for subsequently accepted turns.
     ///
-    /// Unsupported tiers use the fastest tier supported by the selected model.
+    /// Building fails when the selected model does not offer the tier; see
+    /// [`crate::ModelCapabilities::service_tiers`].
     #[must_use]
     pub const fn service_tier(mut self, service_tier: ServiceTier) -> Self {
         self.config.service_tier = service_tier;
+        self.service_tier_explicit = true;
         self
     }
 
@@ -248,10 +290,18 @@ impl<F> NanocodexBuilder<F> {
     ///
     /// The root identity also seeds its checkpoint lineage. Spawned siblings
     /// and forks receive fresh session IDs; forks retain the root's opaque
-    /// lineage so [`Nanocodex::fork_from`] can reject unrelated results.
+    /// lineage so [`Nanocodex::fork`] can reject unrelated boundaries.
+    ///
+    /// Replacing the identity of a [`resume`](Self::resume)d session starts
+    /// a new root that continues the checkpoint's conversation tree, which is
+    /// how a host seeds a separately stored copy of a conversation.
     #[must_use]
-    pub const fn session_id(mut self, session_id: SessionId) -> Self {
+    pub fn session_id(mut self, session_id: SessionId) -> Self {
+        if self.session_id.is_some_and(|current| current != session_id) {
+            self.lineage = None;
+        }
         self.session_id = Some(session_id);
+        self.session_id_explicit = true;
         self
     }
 
@@ -304,6 +354,17 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
+    /// Also loads the global `CLAUDE.md` from the supplied Claude Code
+    /// configuration directory, after the Codex home's instructions and only
+    /// when it is a distinct document. Unset by default.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+    #[must_use]
+    pub fn claude_home(mut self, claude_home: impl Into<PathBuf>) -> Self {
+        self.codex.context.set_claude_home(claude_home.into());
+        self
+    }
+
     /// Records committed history in Codex's resumable JSONL rollout layout.
     #[cfg(not(target_family = "wasm"))]
     #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
@@ -318,21 +379,75 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Restores a completed session boundary into a fresh driver, WebSocket,
-    /// and tool runtime while retaining its typed history and cache lineage.
+    /// Resumes from a Codex-native session snapshot, such as one loaded from a
+    /// rollout or a durable store.
     ///
-    /// An explicitly configured session ID names the new runtime/event stream;
-    /// it does not replace the snapshot's prompt-cache lineage. The new runtime
-    /// supplies the instructions, tool definitions, and handlers used for
-    /// subsequent turns. Previously committed typed history remains
-    /// authoritative and is replayed on the first resumed request.
+    /// The session continues with the thinking level and processing tier the
+    /// snapshot recorded, unless this builder chose them explicitly. Older
+    /// snapshots that record neither keep the builder's settings.
+    #[doc(hidden)]
     #[must_use]
-    pub fn resume(mut self, snapshot: SessionSnapshot) -> Self {
+    pub fn resume_native_snapshot(mut self, snapshot: SessionSnapshot) -> Self {
+        if let Some(thinking) = snapshot.thinking()
+            && !self.config.thinking_explicit
+        {
+            self.config.thinking = thinking;
+        }
+        if let Some(service_tier) = snapshot.service_tier()
+            && !self.service_tier_explicit
+        {
+            self.config.service_tier = service_tier;
+        }
         self.resume = Some(snapshot);
         self
     }
 
-    /// Returns the explicitly configured resume boundary, if any.
+    /// Starts a reopened stored session that has no checkpoint yet with the
+    /// model, reasoning effort and processing tier it was created with,
+    /// unless this builder chose the effort or tier explicitly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn initial_settings(
+        mut self,
+        model: Model,
+        thinking: Thinking,
+        service_tier: ServiceTier,
+    ) -> Self {
+        let explicit_thinking = self.config.thinking_explicit;
+        self = self.model(model);
+        if !explicit_thinking {
+            self.config.thinking = thinking;
+        }
+        if !self.service_tier_explicit {
+            self.config.service_tier = service_tier;
+        }
+        self
+    }
+
+    /// Records the provenance of a reopened stored session, such as a durable
+    /// fork, instead of reporting a fresh root. Telemetry and
+    /// [`Nanocodex::session`] report it; rollout metadata is unaffected.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lineage(mut self, lineage: Lineage) -> Self {
+        self.lineage = Some(lineage);
+        self
+    }
+
+    /// Returns the session identity the host named through
+    /// [`session_id`](Self::session_id), if any. An identity inherited from
+    /// a resumed checkpoint is not host-named.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn explicit_session_id(&self) -> Option<SessionId> {
+        if self.session_id_explicit {
+            self.session_id
+        } else {
+            None
+        }
+    }
+
+    /// Returns the explicitly configured native resume boundary, if any.
     #[doc(hidden)]
     #[must_use]
     pub const fn resume_snapshot(&self) -> Option<&SessionSnapshot> {
@@ -420,6 +535,13 @@ where
     if builder.resume.is_none() {
         validate_model_thinking(builder.config.model, builder.config.thinking)?;
         validate_model_reasoning_mode(builder.config.model, builder.config.reasoning_mode)?;
+        // An explicitly selected tier must be one the model offers; the
+        // client default remains a preference clamped per model.
+        if builder.service_tier_explicit {
+            crate::HarnessModel::Codex(builder.config.model)
+                .capabilities(crate::ModelTransport::Native)
+                .check_service_tier(builder.config.service_tier)?;
+        }
     }
     validate(&builder.config, builder.prompt_cache.key.as_deref())?;
     validate_execution_environment(builder.codex.context.execution_environment())?;
@@ -434,6 +556,7 @@ where
         builder.prompt_cache,
         builder.codex,
         builder.resume,
+        builder.lineage,
         service_factory,
     )
 }
@@ -594,7 +717,7 @@ mod tests {
         }))
         .expect("snapshot envelope should decode before model validation");
         let result = Nanocodex::builder(OpenAi::builder("test-key").build().unwrap())
-            .resume(obsolete)
+            .resume_native_snapshot(obsolete)
             .build();
         let error = match result {
             Ok(_) => panic!("an obsolete snapshot model must not continue as another model"),
@@ -631,6 +754,9 @@ mod tests {
             prompt_cache: PromptCacheConfig::default(),
             codex: CodexCompatibility::default(),
             resume: Some(snapshot),
+            lineage: None,
+            service_tier_explicit: false,
+            session_id_explicit: false,
             factory: ObservingFactory {
                 model: Arc::clone(&observed_model),
             },

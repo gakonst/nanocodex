@@ -32,14 +32,13 @@ policy, JS typecheck/build); marking ready reruns CI with the heavy lane. Only
 superseded PR runs are cancelled. `pnpm check:fast` runs the fast-lane
 fmt + Clippy command locally for crates changed since `origin/master`.
 
-Broader automatic tests are paused: gated steps run only when `NANOCODEX_CI_TESTS`
-in `ci.yml` is `on`. The shared Hand job still runs its Managed2 and SSH import
-CLI journeys, plus the private-input journey on Linux, whenever the job is
+Behavioral test steps are gated by the `NANOCODEX_CI_TESTS` owner switch in
+`ci.yml` (`on`). The shared Hand job runs its Managed2 and SSH import CLI
+journeys, plus the private-input journey on Linux, whenever the job is
 selected. Legacy CLI source and SSH journey script changes select that job;
-draft PRs still suppress it with the other heavy jobs.
+draft PRs still suppress it with the other heavy jobs. Hand changes also select
+`vm-guest`, whose Docker tests run `nanocodex2`.
 Rust tests use `cargo nextest run --profile ci` (`.config/nextest.toml`).
-When re-enabling, add `hands` to `vm-guest`'s condition (its Docker tests run
-`nanocodex2`).
 
 `ci success` runs `select-jobs.mjs verify` on `toJSON(needs)`: selected jobs must
 succeed and all others must be skipped; add new jobs to its `gate` table. Run
@@ -115,8 +114,7 @@ Production builds applications in deployment order. Infrastructure and managed
 Workers upload before unrelated consumer and account UI builds, with successful
 health/receipt barriers and account deployed last. Completed shared build targets
 are reused between phases. Superseded pushes stop before starting another phase.
-The small orchestration tests run in the main CI policy job even while
-behavioral test suites remain paused.
+The small orchestration tests run in the main CI policy job.
 
 Preview image validation uses BuildKit's `cacheonly` output. It still evaluates
 the complete Dockerfile, including its checks, but does not export and load an

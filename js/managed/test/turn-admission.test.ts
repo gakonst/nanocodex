@@ -7,6 +7,11 @@ import { DurableEventLog } from "../src/durable-events";
 
 const FIXTURE_UNFINISHED_TURNS = 20;
 
+// A fresh Session creates its schema on its first request (9d8b63102); this one is refused without an owner.
+async function initializeSchema(session: DurableAgentSession) {
+  await session.fetch(new Request("https://session.internal/state"));
+}
+
 // Gate a mandatory startup step, not optional account-hand inventory.
 function admissionBinding(bind: () => Response | Promise<Response>) {
   return { fetch: (input: RequestInfo | URL) => {
@@ -32,6 +37,7 @@ describe("managed durable turn admission", () => {
         } },
       } });
       const now = Date.now();
+      await initializeSchema(session);
       state.storage.sql.exec(
         `INSERT INTO session_state (
            singleton, session_id, owner_id, organization_id, team_id,
@@ -95,6 +101,7 @@ describe("managed durable turn admission", () => {
           return binding.promise;
         }),
       } });
+      await initializeSchema(session);
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, last_active
@@ -130,6 +137,7 @@ describe("managed durable turn admission", () => {
       Object.defineProperty(session, "env", { value: { ...runtimeEnv,
         NANOCODEX: admissionBinding(() => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); }),
       } });
+      await initializeSchema(session);
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, last_active
@@ -165,6 +173,7 @@ describe("managed durable turn admission", () => {
         }),
       } });
       const now = Date.now();
+      await initializeSchema(session);
       state.storage.sql.exec(
         `INSERT INTO session_state (
            singleton, session_id, owner_id, organization_id, team_id,
@@ -235,6 +244,7 @@ describe("managed durable turn admission", () => {
         }),
       } });
       const now = Date.now();
+      await initializeSchema(session);
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, last_active
@@ -299,6 +309,7 @@ describe("managed durable turn admission", () => {
           }),
         } });
         const now = Date.now();
+        await initializeSchema(session);
         state.storage.sql.exec(
           `INSERT INTO session_state (
              singleton, session_id, owner_id, organization_id, team_id,
@@ -368,6 +379,8 @@ describe("managed durable turn admission", () => {
         const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
+          // Acknowledge sidebar presentation delivery; a pending delivery adds its own 20s retry alarm (5bd4069d0).
+          NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
           NANOCODEX: admissionBinding(() => {
             bindingCalls++;
             entered.resolve();
@@ -375,6 +388,7 @@ describe("managed durable turn admission", () => {
           }),
         } });
         const now = Date.now();
+        await initializeSchema(session);
         state.storage.sql.exec(
           `INSERT INTO session_state (
              singleton, session_id, owner_id, organization_id, team_id,
@@ -462,6 +476,7 @@ describe("managed durable turn admission", () => {
     await runInDurableObject(stub, async (session, state) => {
       const now = Date.now();
       const retryAt = now + 60_000;
+      await initializeSchema(session);
       state.storage.sql.exec(
         `INSERT INTO session_state (
            singleton, session_id, owner_id, organization_id, team_id,
@@ -596,6 +611,8 @@ it("keeps a real managed automatic compaction owned across three recovery alarms
     const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
     Object.defineProperty(session, "env", { value: { ...runtimeEnv,
       NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => Response.json({}) }) },
+      // Acknowledge sidebar presentation delivery; a pending delivery adds its own 20s retry alarm (5bd4069d0).
+      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
       NANOCODEX: { async fetch(input: RequestInfo | URL, init?: RequestInit) {
         const request = new Request(input, init);
         if (new Headers(init?.headers).get("upgrade") === "websocket" || request.headers.get("upgrade") === "websocket")
@@ -604,6 +621,7 @@ it("keeps a real managed automatic compaction owned across three recovery alarms
       } },
     } });
     const now = Date.now();
+    await initializeSchema(session);
     state.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
       VALUES (1, ?, 'fixture-owner', 'fixture-org', 'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), now);
     state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));

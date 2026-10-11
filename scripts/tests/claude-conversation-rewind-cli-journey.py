@@ -130,7 +130,7 @@ def main():
     def rewind(name, mode='conversation', checkpoint=None, restore=False, session=source, success=True):
         command = [str(binary), 'rewind', session, '--mode', mode]
         if checkpoint:
-            command.extend(['--checkpoint', checkpoint])
+            command.extend(['--before', checkpoint])
         if restore:
             command.append('--restore')
         return run_command(name, command, success)
@@ -168,7 +168,7 @@ def main():
                 state = json.loads(dict(rows())[branch])['nanocodex_durable_state']
                 settled = bool(state['operations']) and all(isinstance(op['status'], dict) and 'completed' in op['status'] for op in state['operations'].values())
                 if (name + '-complete').encode() in transcript and settled and time.monotonic() - exited > .5:
-                    os.write(master, b'\x04')
+                    os.write(master, b'\x03\x03')
                     exited = time.monotonic()
                 if child.poll() is not None:
                     break
@@ -265,7 +265,7 @@ def main():
         alternate.mkdir()
         request_count = len(requests)
         mismatch = run_command('workspace-mismatch', [str(binary), 'resume', work_branch, *common, '--cwd', str(alternate)], success=False)
-        require(b'resumed Claude workspace' in mismatch.stderr and len(requests) == request_count, 'alternate cwd was not refused before provider admission')
+        require(b'resumed session workspace' in mismatch.stderr and len(requests) == request_count, 'alternate cwd was not refused before provider admission')
         pty_resume(work_branch, 'work-branch', alternate)
         require((owned_workspace / 'rewind-workspace.txt').read_text() == 'saved workspace', 'rewind branch lost source workspace binding')
         require(not (alternate / 'rewind-workspace.txt').exists() and owned_workspace.is_dir(), 'branch retargeted workspace or adopted source cleanup ownership')

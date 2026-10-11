@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import WebSocket from "ws";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Only first identity enrollment and the external model are fixtures. Account
 // ingress, key validation, session admission, WASM/Code Mode, permission consent,

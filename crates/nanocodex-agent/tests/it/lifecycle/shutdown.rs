@@ -23,7 +23,7 @@ async fn flush_is_durable_without_stopping_the_agent() {
         .result()
         .await
         .unwrap();
-    agent.flush_rollout().await.unwrap();
+    agent.flush().await.unwrap();
     let durable = RolloutConfig::new(home.path())
         .load_session(&thread_id)
         .expect("flush must make the rollout readable and durable");
@@ -36,7 +36,7 @@ async fn flush_is_durable_without_stopping_the_agent() {
         .result()
         .await
         .unwrap();
-    agent.flush_rollout().await.unwrap();
+    agent.flush().await.unwrap();
     let durable = RolloutConfig::new(home.path())
         .load_session(&thread_id)
         .expect("the second flush must advance the durable boundary");
@@ -178,7 +178,7 @@ async fn explicit_shutdown_joins_resources_and_flushes_the_rollout() {
     let (resumed, resumed_events) = Nanocodex::builder(openai)
         .tools(resumed_tools)
         .session_id(thread_id.parse().unwrap())
-        .resume(snapshot)
+        .resume_native_snapshot(snapshot)
         .rollout(rollout)
         .build()
         .expect("shutdown must leave a resumable durable boundary");

@@ -8,6 +8,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { createTools } from "../../nanocodex/tools/Tools.mjs";
 import { createNodeProcessTools } from "../../nanocodex-tools/tools/nodeProcess.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // The actual managed Session/account Durable Objects, WASM, Code Mode, SQLite,
 // reverse Hand WebSocket publisher and native shell run here. The fixture seeds
@@ -27,6 +28,8 @@ console.info = (record, ...rest) => info(record && typeof record === 'object' ? 
 export class FixtureSession extends DurableAgentSession {
   async fetch(request) {
     if (new URL(request.url).pathname === '/__seed') {
+      // Since 9d8b63102 a fresh Session creates its tables on its first request.
+      await super.fetch(new Request('https://session.internal/sites'));
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active) VALUES (1,?,?,?,?,1,'https://fixture.internal/','managed',?)", '${threadId}', '${owner}', '${org}', '${team}', Date.now());
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO managed_configuration VALUES (1, ?)", JSON.stringify({environment:{files:[],skills:[],setup_commands:[],network:{access:'enabled'}}}));
       this.ctx.storage.sql.exec("UPDATE managed_agent_settings SET model='gpt-6.1-sol',thinking='low'");

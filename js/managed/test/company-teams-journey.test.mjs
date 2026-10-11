@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const source = `
 import { UserAccount, Organization, ApiKeyRecord, NonceStorage, routeAccountRequest } from "./src/account-auth.ts";

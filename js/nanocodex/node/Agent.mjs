@@ -8,9 +8,10 @@ import { agentActions } from "../actions/index.mjs";
 import {
   activateHost,
   bindHostSession,
+  checkpointWorkspace,
   createAgentClient,
   createEventChannel,
-  createSessionId,
+  defaultSessionId,
   defineRuntime,
   loadDurabilityRuntime,
   loadSubscriptionRuntime,
@@ -59,7 +60,7 @@ export function create(options = {}) {
     codeEvaluator = createNodeEvaluator(),
     codeEffectJournal,
   } = options;
-  const stableSessionId = sessionId ?? createSessionId();
+  const stableSessionId = sessionId ?? defaultSessionId(durabilityId);
   const {
     apiKey,
     subscription,
@@ -87,7 +88,7 @@ export function create(options = {}) {
     filesystem,
     tools: hostTools,
     toolMode,
-    workspace: workspace ?? filesystem?.root ?? resume?.workspace,
+    workspace: workspace ?? filesystem?.root ?? checkpointWorkspace(resume),
     codeEvaluator,
     codeEffectJournal,
     onDispose: () => { releaseDefinitionHost(hostDefinitionId); void harnesses?.close(); },

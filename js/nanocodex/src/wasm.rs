@@ -18,7 +18,7 @@ use nanocodex::{
             OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState,
         },
         input::{Prompt, UserInput},
-        session::{SessionId, SessionSnapshot},
+        session::SessionId,
     },
     oai::auth::{
         ChatGptCredentialSeed, ChatGptLoginStatus, ChatGptSubscription, ChatGptSubscriptionHost,
@@ -38,7 +38,8 @@ use nanocodex::{
     },
 };
 use nanocodex_agent::{
-    HarnessFamily, HarnessModel,
+    Capabilities, ForkRequest, HarnessFamily, HarnessModel, Origin, Persistence, ServiceTier,
+    SessionCheckpoint, SessionInfo,
     backend::{AgentFactory, BackendFuture},
 };
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,6 @@ mod claude;
 mod claude_subscription;
 mod transport;
 
-pub use claude::WasmNanoclaude;
 pub use claude_subscription::WasmClaudeSubscription;
 
 use transport::JavaScriptResponsesHost;
@@ -75,6 +75,44 @@ use transport::JavaScriptResponsesHost;
 #[allow(clippy::missing_const_for_fn)] // wasm-bindgen requires a non-const function.
 pub fn native_spawn_contract_version() -> u32 {
     1
+}
+
+/// Canonical per-model settings from the shared Rust capability source
+/// (HarnessModel::capabilities) for every known model on both transports.
+/// JS pickers and validation tables consume or are checked against this.
+#[wasm_bindgen(js_name = modelCapabilities)]
+pub fn model_capabilities() -> Result<JsValue, JsValue> {
+    use nanocodex_agent::{ClaudeModel, HarnessModel, ModelTransport};
+    let codex = [
+        Model::Astra,
+        Model::Sol,
+        Model::Luna,
+        Model::Glm53,
+        Model::Kimi,
+        Model::Mimo,
+    ]
+    .into_iter()
+    .map(HarnessModel::Codex);
+    let claude = ClaudeModel::ALL.into_iter().map(HarnessModel::Claude);
+    let entries = codex
+        .chain(claude)
+        .flat_map(|model| {
+            [ModelTransport::Native, ModelTransport::Managed].map(|transport| {
+                let capabilities = model.capabilities(transport);
+                serde_json::json!({
+                    "model": model.as_str(),
+                    "family": model.family().as_str(),
+                    "transport": transport.as_str(),
+                    "thinking": capabilities.thinking().map(|level| level.as_str()).collect::<Vec<_>>(),
+                    "defaultThinking": capabilities.default_thinking().as_str(),
+                    "fastMode": capabilities.fast_mode(),
+                    "serviceTiers": capabilities.service_tiers().map(|tier| tier.as_str()).collect::<Vec<_>>(),
+                    "reasoningModes": capabilities.reasoning_modes().map(|mode| mode.as_str()).collect::<Vec<_>>(),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    js_sys::JSON::parse(&serde_json::Value::Array(entries).to_string())
 }
 
 #[wasm_bindgen(js_name = pruneDurableReceipts)]
@@ -1369,7 +1407,7 @@ struct WasmConfig {
     #[serde(default)]
     execution_environment: Option<WasmExecutionEnvironment>,
     #[serde(default)]
-    resume: Option<SessionSnapshot>,
+    resume: Option<SessionCheckpoint>,
     #[serde(default)]
     durability_id: Option<String>,
     #[serde(default)]
@@ -1570,12 +1608,14 @@ fn encode_subscription_credential(
     .to_string())
 }
 
-/// JavaScript binding over the shared Rust agent lifecycle.
+/// JavaScript binding over the shared Rust agent lifecycle of either harness family.
 #[wasm_bindgen(js_name = Nanocodex)]
 pub struct WasmNanocodex {
     inner: RustNanocodex,
     subagents: Option<WasmSubagents>,
     event_forwarding: Rc<Cell<bool>>,
+    /// Turns issued through this handle, so `cancel` can stop them together.
+    turns: RefCell<Vec<std::rc::Weak<RefCell<TurnState>>>>,
 }
 
 #[derive(Clone)]
@@ -1592,7 +1632,7 @@ impl WasmHarnessFactory {
         self: Arc<Self>,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
-        snapshot: Option<nanocodex_agent::ChildSnapshot>,
+        checkpoint: Option<SessionCheckpoint>,
     ) -> Result<(RustNanocodex, AgentEvents), NanocodexError> {
         let factory = self;
         let family = options.selected_harness().expect("resolved family");
@@ -1644,7 +1684,7 @@ impl WasmHarnessFactory {
                     serde_json::from_value(recipe).map_err(|_| unavailable())?,
                     auth.expect("Codex authentication"),
                     Some(factory.clone()),
-                    snapshot,
+                    checkpoint,
                     host_context,
                 )
                 .await
@@ -1653,7 +1693,7 @@ impl WasmHarnessFactory {
                 claude::build_claude(
                     serde_json::from_value(recipe).map_err(|_| unavailable())?,
                     Some(factory.clone()),
-                    snapshot,
+                    checkpoint,
                     host_context,
                 )
                 .await
@@ -1696,23 +1736,25 @@ impl AgentFactory for WasmHarnessFactory {
     fn restore(
         &self,
         parent: AgentHandle,
-        snapshot: nanocodex_agent::ChildSnapshot,
+        checkpoint: SessionCheckpoint,
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<Result<(RustNanocodex, AgentEvents), NanocodexError>> {
         let factory = Arc::new(self.clone());
         Box::pin(async move {
             parent.ensure_available().await?;
-            if parent.harness_family() == snapshot.model().family() {
-                return parent.restore_native_runtime(snapshot, host_context).await;
+            if parent.harness_family() == checkpoint.family() {
+                return parent
+                    .restore_native_runtime(checkpoint, host_context)
+                    .await;
             }
-            let model = snapshot.model();
+            let model = checkpoint.model();
             factory
                 .build_native(
                     SpawnOptions::new()
                         .harness(model.family())
                         .harness_model(model),
                     host_context,
-                    Some(snapshot),
+                    Some(checkpoint),
                 )
                 .await
         })
@@ -1928,11 +1970,43 @@ impl WasmNanocodex {
         self.inner.agent_id().to_owned()
     }
 
-    /// Returns the stable `UUIDv7` session identity.
+    /// Returns the stable session identity.
     #[wasm_bindgen(getter, js_name = sessionId)]
     #[must_use]
     pub fn session_id(&self) -> String {
         self.inner.session_id().to_string()
+    }
+
+    /// Returns this session's identity, harness family, and lineage as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Throws only if serialization fails.
+    pub fn session(&self) -> Result<String, JsValue> {
+        encode_session_info(self.inner.session())
+    }
+
+    /// Returns the lifecycle operations this session's backend supports as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Throws only if serialization fails.
+    pub fn capabilities(&self) -> Result<String, JsValue> {
+        encode_capabilities(self.inner.capabilities())
+    }
+
+    /// Returns where this session is persisted as JSON, or `undefined` when it
+    /// lives only in memory.
+    ///
+    /// # Errors
+    ///
+    /// Throws only if serialization fails.
+    pub fn persistence(&self) -> Result<Option<String>, JsValue> {
+        self.inner
+            .persistence()
+            .as_ref()
+            .map(encode_persistence)
+            .transpose()
     }
 
     /// Enables or disables the optional JavaScript event crossing for this handle.
@@ -2020,12 +2094,12 @@ impl WasmNanocodex {
         if instruction.trim().is_empty() {
             return Err(js_error("prompt instruction must not be empty"));
         }
-        Ok(WasmTurn::accept(
+        Ok(self.track(WasmTurn::accept(
             self.inner.clone(),
             Prompt::new(instruction),
             operation_id,
             cancel_on_admission.unwrap_or(false),
-        ))
+        )))
     }
 
     /// Accepts browser-safe multimodal input encoded as JSON.
@@ -2041,12 +2115,12 @@ impl WasmNanocodex {
         cancel_on_admission: Option<bool>,
     ) -> Result<WasmTurn, JsValue> {
         validate_operation_id(operation_id.as_deref())?;
-        Ok(WasmTurn::accept(
+        Ok(self.track(WasmTurn::accept(
             self.inner.clone(),
             parse_browser_prompt(content_json)?,
             operation_id,
             cancel_on_admission.unwrap_or(false),
-        ))
+        )))
     }
 
     /// Atomically steers the active turn or starts a new independently awaitable turn.
@@ -2068,43 +2142,101 @@ impl WasmNanocodex {
             .map_err(js_error)?
         {
             PromptRoute::Steered => Ok(None),
-            PromptRoute::Started(turn) => Ok(Some(WasmTurn::started(turn))),
+            PromptRoute::Started(turn) => Ok(Some(self.track(WasmTurn::started(turn)))),
         }
     }
 
-    /// Forks the latest safe committed model boundary.
+    /// Cancels every nonterminal turn issued through this handle.
+    ///
+    /// An in-flight compaction is not a turn and is not cancelled.
     ///
     /// # Errors
     ///
-    /// Rejects before the first safe boundary or after the driver stops.
-    pub async fn fork(&self) -> Result<Self, JsValue> {
-        let (inner, events) = self.inner.fork().await.map_err(js_error)?;
-        Ok(Self::from_parts(inner, events, self.subagents.clone()))
+    /// Rejects when an active turn cannot be cancelled.
+    pub async fn cancel(&self) -> Result<(), JsValue> {
+        let pending: Vec<_> = self
+            .turns
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter(|state| state.borrow().completed.is_none())
+            .collect();
+        for state in pending {
+            let turn = WasmTurn { state };
+            match turn.control().await {
+                Ok(control) => control.cancel().await.map_err(js_agent_error)?,
+                Err(error) if turn.state.borrow().completed.is_none() => {
+                    return Err(js_error(error));
+                }
+                Err(_) => {} // Completion can race cancellation.
+            }
+        }
+        Ok(())
     }
 
-    /// Forks from an exact completed historical turn.
+    /// Forks the latest committed safe boundary. `origin` is `"fork"`
+    /// (default) or `"side_conversation"`.
     ///
     /// # Errors
     ///
-    /// Rejects if the result belongs to another agent or the driver stopped.
-    #[wasm_bindgen(js_name = forkFrom)]
-    pub async fn fork_from(&self, result: &WasmTurnResult) -> Result<Self, JsValue> {
-        let (inner, events) = self
-            .inner
-            .fork_from(&result.inner)
+    /// Rejects before the first safe boundary, after the driver stops, or with
+    /// `code: "unsupported_capability"` when the backend cannot fork.
+    pub async fn fork(&self, origin: Option<String>) -> Result<Self, JsValue> {
+        self.fork_with(fork_request(ForkRequest::latest(), origin.as_deref())?)
             .await
-            .map_err(js_error)?;
-        Ok(Self::from_parts(inner, events, self.subagents.clone()))
     }
 
-    /// Exports the exact latest committed model boundary without mutating this agent.
+    /// Forks from the boundary retained by one completed turn of this conversation.
     ///
     /// # Errors
     ///
-    /// Rejects before the first safe boundary or after the driver stops.
-    #[wasm_bindgen(js_name = checkpoint)]
+    /// Rejects if the result belongs to another conversation or the driver stopped.
+    #[wasm_bindgen(js_name = forkAtTurn)]
+    pub async fn fork_at_turn(
+        &self,
+        result: &WasmTurnResult,
+        origin: Option<String>,
+    ) -> Result<Self, JsValue> {
+        self.fork_with(fork_request(
+            ForkRequest::at_turn(&result.inner),
+            origin.as_deref(),
+        )?)
+        .await
+    }
+
+    /// Forks from a portable checkpoint of this conversation tree.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed checkpoints, checkpoints of another family
+    /// (`code: "checkpoint_family_mismatch"`) or another conversation tree.
+    #[wasm_bindgen(js_name = forkAtCheckpoint)]
+    pub async fn fork_at_checkpoint(
+        &self,
+        checkpoint_json: &str,
+        origin: Option<String>,
+    ) -> Result<Self, JsValue> {
+        let checkpoint = SessionCheckpoint::from_json(checkpoint_json).map_err(js_agent_error)?;
+        self.fork_with(fork_request(
+            ForkRequest::at(checkpoint),
+            origin.as_deref(),
+        )?)
+        .await
+    }
+
+    /// Exports the portable latest committed boundary without mutating this agent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects before the first safe boundary, after the driver stops, or with
+    /// `code: "unsupported_capability"` when the backend cannot checkpoint.
     pub async fn checkpoint(&self) -> Result<String, JsValue> {
-        serde_json::to_string(&self.inner.snapshot().await.map_err(js_error)?).map_err(js_error)
+        self.inner
+            .checkpoint()
+            .await
+            .map_err(js_agent_error)?
+            .to_json()
+            .map_err(js_agent_error)
     }
 
     /// Starts a clean sibling with the same private agent policy.
@@ -2113,7 +2245,7 @@ impl WasmNanocodex {
     ///
     /// Rejects after the driver stops.
     pub async fn spawn(&self) -> Result<Self, JsValue> {
-        let (inner, events) = self.inner.spawn().await.map_err(js_error)?;
+        let (inner, events) = self.inner.spawn().await.map_err(js_agent_error)?;
         Ok(Self::from_parts(inner, events, self.subagents.clone()))
     }
 
@@ -2141,21 +2273,23 @@ impl WasmNanocodex {
         self.inner
             .set_thinking(thinking.parse::<Thinking>().map_err(js_error)?)
             .await
-            .map_err(js_error)
+            .map_err(js_agent_error)
     }
 
-    /// Changes the model before the first turn is accepted.
+    /// Changes the model to another model id of this session's harness family.
+    ///
+    /// `capabilities().model` states when the model may change.
     ///
     /// # Errors
     ///
-    /// Rejects an invalid model, an incompatible thinking level, conversation
-    /// activity, or a stopped driver.
+    /// Rejects an unknown model, a model of another family, an incompatible
+    /// thinking level, a change the backend no longer accepts, or a stopped driver.
     #[wasm_bindgen(js_name = setModel)]
     pub async fn set_model(&self, model: &str) -> Result<(), JsValue> {
         self.inner
-            .set_model(model.parse::<Model>().map_err(js_error)?)
+            .set_harness_model(model.parse::<HarnessModel>().map_err(js_error)?)
             .await
-            .map_err(js_error)
+            .map_err(js_agent_error)
     }
 
     /// Enables or disables priority processing for subsequently accepted turns.
@@ -2165,7 +2299,31 @@ impl WasmNanocodex {
     /// Rejects after the driver stops.
     #[wasm_bindgen(js_name = setFastMode)]
     pub async fn set_fast_mode(&self, enabled: bool) -> Result<(), JsValue> {
-        self.inner.set_fast_mode(enabled).await.map_err(js_error)
+        self.inner
+            .set_fast_mode(enabled)
+            .await
+            .map_err(js_agent_error)
+    }
+
+    /// Selects the processing tier for subsequently accepted turns:
+    /// `"standard"`, `"priority"`, `"fast"`, or `"ultrafast"`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown tier, a stopped driver, or with
+    /// `code: "unsupported_capability"` when the backend cannot select it.
+    #[wasm_bindgen(js_name = setServiceTier)]
+    pub async fn set_service_tier(&self, service_tier: &str) -> Result<(), JsValue> {
+        let service_tier = serde_json::from_value::<ServiceTier>(serde_json::Value::String(
+            service_tier.to_owned(),
+        ))
+        .map_err(|_| {
+            js_error("service tier must be \"standard\", \"priority\", \"fast\", or \"ultrafast\"")
+        })?;
+        self.inner
+            .set_service_tier(service_tier)
+            .await
+            .map_err(js_agent_error)
     }
 
     /// Compacts retained history immediately without fabricating a user prompt.
@@ -2174,7 +2332,7 @@ impl WasmNanocodex {
     ///
     /// Throws when compaction or the agent driver fails.
     pub async fn compact(&self) -> Result<(), JsValue> {
-        self.inner.compact().await.map_err(js_error)
+        self.inner.compact().await.map_err(js_agent_error)
     }
 
     /// Appends adapter-owned developer context at the next safe model boundary.
@@ -2195,7 +2353,7 @@ impl WasmNanocodex {
     ///
     /// Rejects after the driver stops or when context serialization fails.
     pub async fn context(&self) -> Result<String, JsValue> {
-        serialize_session_context(self.inner.context().await.map_err(js_error)?)
+        serialize_session_context(self.inner.context().await.map_err(js_agent_error)?)
     }
 
     /// Starts the canonical Codex Realtime adapter lifecycle.
@@ -2288,8 +2446,107 @@ impl WasmNanocodex {
             inner,
             subagents,
             event_forwarding,
+            turns: RefCell::new(Vec::new()),
         }
     }
+
+    async fn fork_with(&self, request: ForkRequest) -> Result<Self, JsValue> {
+        let (inner, events) = self.inner.fork(request).await.map_err(js_agent_error)?;
+        Ok(Self::from_parts(inner, events, self.subagents.clone()))
+    }
+
+    fn track(&self, turn: WasmTurn) -> WasmTurn {
+        let mut turns = self.turns.borrow_mut();
+        turns.retain(|turn| {
+            turn.upgrade()
+                .is_some_and(|state| state.borrow().completed.is_none())
+        });
+        turns.push(Rc::downgrade(&turn.state));
+        drop(turns);
+        turn
+    }
+}
+
+fn fork_request(request: ForkRequest, origin: Option<&str>) -> Result<ForkRequest, JsValue> {
+    match origin {
+        None | Some("fork") => Ok(request),
+        Some("side_conversation") => Ok(request.side_conversation()),
+        Some(_) => Err(js_error(
+            "fork origin must be \"fork\" or \"side_conversation\"",
+        )),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmSessionInfo<'a> {
+    session_id: &'a str,
+    harness: HarnessFamily,
+    lineage: WasmLineage<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmLineage<'a> {
+    root_session_id: &'a str,
+    parent_session_id: Option<&'a str>,
+    origin: Origin,
+    depth: u32,
+}
+
+fn encode_session_info(session: &SessionInfo) -> Result<String, JsValue> {
+    serde_json::to_string(&WasmSessionInfo {
+        session_id: &session.session_id,
+        harness: session.family,
+        lineage: WasmLineage {
+            root_session_id: &session.lineage.root_session_id,
+            parent_session_id: session.lineage.parent_session_id.as_deref(),
+            origin: session.lineage.origin,
+            depth: session.lineage.depth,
+        },
+    })
+    .map_err(js_error)
+}
+
+/// Encodes [`Capabilities`] as a camelCase JSON object.
+///
+/// Every field of the Rust contract crosses to JavaScript with its name
+/// converted to camelCase, so new capability flags need no change here.
+fn encode_capabilities(capabilities: Capabilities) -> Result<String, JsValue> {
+    let serde_json::Value::Object(fields) = serde_json::to_value(capabilities).map_err(js_error)?
+    else {
+        return Err(js_error("capabilities must serialize as an object"));
+    };
+    let fields: serde_json::Map<String, serde_json::Value> = fields
+        .into_iter()
+        .map(|(name, value)| (snake_to_camel(&name), value))
+        .collect();
+    serde_json::to_string(&fields).map_err(js_error)
+}
+
+fn snake_to_camel(name: &str) -> String {
+    let mut camel = String::with_capacity(name.len());
+    let mut upper = false;
+    for character in name.chars() {
+        if character == '_' {
+            upper = true;
+        } else if upper {
+            camel.extend(character.to_uppercase());
+            upper = false;
+        } else {
+            camel.push(character);
+        }
+    }
+    camel
+}
+
+fn encode_persistence(persistence: &Persistence) -> Result<String, JsValue> {
+    serde_json::to_string(&serde_json::json!({
+        "durableStateId": persistence.durable_state_id,
+        "serverSessionId": persistence.server_session_id,
+        "resumable": persistence.resumable(),
+    }))
+    .map_err(js_error)
 }
 
 impl Drop for WasmNanocodex {
@@ -3049,6 +3306,7 @@ struct TurnFailure {
     code: &'static str,
     message: String,
     blocked_by: Option<String>,
+    capability: Option<&'static str>,
 }
 
 impl TurnState {
@@ -3271,6 +3529,7 @@ impl WasmTurn {
                 code: "retryable",
                 message: "the turn stopped before it was accepted".to_owned(),
                 blocked_by: None,
+                capability: None,
             })?;
         }
     }
@@ -3314,6 +3573,7 @@ impl WasmTurn {
                 code: "retryable",
                 message: "the turn stopped before it completed".to_owned(),
                 blocked_by: None,
+                capability: None,
             })?;
         }
     }
@@ -3370,12 +3630,20 @@ fn turn_failure(error: &NanocodexError) -> TurnFailure {
             "retryable"
         }
         NanocodexError::Shutdown(source) => return turn_failure(source),
+        NanocodexError::UnsupportedCapability { .. } => "unsupported_capability",
+        NanocodexError::CheckpointFamilyMismatch { .. } => "checkpoint_family_mismatch",
+        NanocodexError::InvalidCheckpoint(_) => "invalid_checkpoint",
         _ => "failed",
+    };
+    let capability = match error {
+        NanocodexError::UnsupportedCapability { capability } => Some(*capability),
+        _ => None,
     };
     TurnFailure {
         code,
         message: error.to_string(),
         blocked_by: blocked_operation(error),
+        capability,
     }
 }
 
@@ -3416,7 +3684,17 @@ fn js_turn_error(failure: TurnFailure) -> JsValue {
     if let Some(blocked_by) = failure.blocked_by {
         let _ = js_sys::Reflect::set(&error, &"blockedBy".into(), &blocked_by.into());
     }
+    if let Some(capability) = failure.capability {
+        let _ = js_sys::Reflect::set(&error, &"capability".into(), &capability.into());
+    }
     error.into()
+}
+
+/// Maps a session lifecycle failure to an Error carrying a stable `code`,
+/// including `unsupported_capability` with its `capability` name.
+#[allow(clippy::needless_pass_by_value)]
+fn js_agent_error(error: NanocodexError) -> JsValue {
+    js_turn_error(turn_failure(&error))
 }
 
 /// JavaScript binding over one completed Rust turn result.
@@ -3434,17 +3712,22 @@ impl WasmTurnResult {
         self.inner.final_message().to_owned()
     }
 
-    /// Serializes this completed boundary's resumable session snapshot.
+    /// Serializes the portable checkpoint this completed turn committed.
     ///
     /// # Errors
     ///
-    /// Throws when serialization fails.
-    pub fn snapshot(&self) -> Result<String, JsValue> {
-        let snapshot = self
-            .inner
-            .snapshot()
-            .ok_or_else(|| js_error("the local agent did not retain a snapshot"))?;
-        serde_json::to_string(&snapshot).map_err(js_error)
+    /// Throws with `code: "unsupported_capability"` when the backend did not
+    /// retain a boundary for this result, or when serialization fails.
+    pub fn checkpoint(&self) -> Result<String, JsValue> {
+        self.inner
+            .checkpoint()
+            .ok_or_else(|| {
+                js_agent_error(NanocodexError::UnsupportedCapability {
+                    capability: "checkpoint",
+                })
+            })?
+            .to_json()
+            .map_err(js_agent_error)
     }
 
     /// Serializes exact aggregate usage for this completed logical turn.
@@ -4128,12 +4411,17 @@ async fn build_codex(
     config: WasmConfig,
     auth: nanocodex::oai::auth::OpenAiAuth,
     factory: Option<Arc<WasmHarnessFactory>>,
-    snapshot: Option<nanocodex_agent::ChildSnapshot>,
+    checkpoint: Option<SessionCheckpoint>,
     host_context: Option<Arc<str>>,
 ) -> Result<(RustNanocodex, AgentEvents), JsValue> {
     validate(&config)?;
 
     let model = config.model.parse::<Model>().map_err(js_error)?;
+    // Explicit fastMode must be offered by the model, from the shared catalog.
+    nanocodex_agent::HarnessModel::Codex(model)
+        .capabilities(nanocodex_agent::ModelTransport::Native)
+        .check_fast_mode(config.fast_mode)
+        .map_err(js_error)?;
     let host_definition_id = config.host_definition_id;
     let reasoning_mode = config
         .reasoning_mode
@@ -4193,8 +4481,8 @@ async fn build_codex(
     };
     builder = builder.instant_tool_steering(config.instant_tool_steering);
     builder = builder.host_context(host_context);
-    if let Some(snapshot) = snapshot {
-        builder = builder.restore_runtime(snapshot).map_err(js_error)?;
+    if let Some(checkpoint) = checkpoint {
+        builder = builder.resume(checkpoint).map_err(js_agent_error)?;
     }
     if config.before_compaction {
         builder = builder.before_compaction(JavaScriptBeforeCompaction { host_definition_id });
@@ -4204,6 +4492,11 @@ async fn build_codex(
     }
     if let Some(instructions) = config.additional_instructions {
         builder = builder.additional_instructions(instructions);
+    }
+    // Resuming reopens the checkpointed session; an explicit, different
+    // session ID below makes it a new root continuing that conversation.
+    if let Some(resume) = config.resume {
+        builder = builder.resume(resume).map_err(js_agent_error)?;
     }
     if let Some(session_id) = config.session_id {
         builder = builder.session_id(session_id.parse::<SessionId>().map_err(js_error)?);
@@ -4218,9 +4511,6 @@ async fn build_codex(
             environment = environment.project_instructions(project_instructions);
         }
         builder = builder.execution_environment(environment);
-    }
-    if let Some(resume) = config.resume {
-        builder = builder.resume(resume);
     }
     if let (Some(route_id), Some(state_id)) = (config.durability_host_id, config.durability_id) {
         let store = JavaScriptDurabilityStore { route_id };

@@ -846,7 +846,7 @@ function rawTurn(value) {
     async result() {
       return {
         finalMessage: value,
-        snapshot() {},
+        checkpoint() {},
         usage() {},
         free() {},
       };

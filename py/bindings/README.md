@@ -86,7 +86,7 @@ turn = agent.prompt("Inspect the parser and propose a fix.")
 turn.steer("Keep the public grammar unchanged.")
 result = turn.result()
 
-branch, branch_events = agent.fork_from(result)
+branch, branch_events = agent.fork(result)
 latest, latest_events = agent.fork()
 sibling, sibling_events = agent.spawn()
 
@@ -102,7 +102,9 @@ agent.shutdown()
 
 - `steer()` adds input at the next safe model boundary.
 - `cancel()` stops that exact active or queued turn.
-- `fork_from(result)` starts from an exact completed historical boundary.
+- `fork(result)` starts from the exact boundary a completed turn retained.
+- `fork(checkpoint)` starts from a portable `SessionCheckpoint` of the same
+  conversation tree.
 - `fork()` starts from the latest safe boundary.
 - `spawn()` creates a clean sibling with the same private configuration.
 - `compact()` replaces retained history with a model-generated compaction
@@ -111,33 +113,38 @@ agent.shutdown()
 Call `shutdown()` at an application or session boundary. It cancels unfinished
 turns, joins model and tool resources, and invalidates that Python handle.
 
-## Snapshots and resume
+## Checkpoints and resume
 
-Snapshots contain the complete unredacted model-visible conversation. Protect
+Checkpoints contain the complete unredacted model-visible conversation. Protect
 them like the underlying prompts and tool output.
 
 ```python
 completed = agent.prompt("Remember the exact identifier SNAP_42.").result()
-encoded = completed.snapshot().to_json()
+encoded = completed.checkpoint().to_json()
 
-from nanocodex import SessionSnapshot
+from nanocodex import SessionCheckpoint
 
-snapshot = SessionSnapshot.from_json(encoded)
+checkpoint = SessionCheckpoint.from_json(encoded)
 resumed, resumed_events = Nanocodex(
     os.environ["OPENAI_API_KEY"],
     instructions=(
         "You are a Rust coding agent. Preserve unrelated work and run "
         "the tests relevant to each change."
     ),
-    resume=snapshot,
+    resume=checkpoint,
 )
+assert resumed.session_id == checkpoint.session_id
 answer = resumed.prompt("Which identifier did I provide?").result()
 print(answer.final_message)
 resumed.shutdown()
 ```
 
-Resume with the same instructions, tools, and workspace policy used to create
-the snapshot.
+A resumed agent *is* the checkpointed session: it keeps the checkpoint's
+`session_id`, lineage, committed history, model, thinking level and processing
+tier. Passing an explicit `session_id` together with `resume` instead starts a
+new root that continues the checkpointed conversation. Resume with the same
+instructions, tools, and workspace policy used to create the checkpoint.
+`SessionCheckpoint` also exposes `family`, `turn_id` and `has_conversation`.
 
 ## Authentication and advanced client settings
 

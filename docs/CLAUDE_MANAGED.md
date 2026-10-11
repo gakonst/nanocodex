@@ -94,8 +94,9 @@ that Hand's image tools. Frozen dispatch and native Messages history preserve
 media across reopen without rereading mutable uploads. Web, Connect and native
 transcripts retain document labels alongside images and captions.
 
-The application bounds are 20 images, 5 MiB per inline image, five documents,
-10 MiB per document and 20 MiB combined inline media per prompt; these are conservative application limits, not a claim
+The application bounds are 20 images, 5 MiB per inline image,
+10 MiB per document and 20 MiB combined inline media per prompt (any number of
+documents fits within that combined bound); these are conservative application limits, not a claim
 about the provider's maximum. PDF/text documents use native document blocks,
 including supported tool results. Tool audio and video remain available to clients
 and produce an explicit model-facing notice; they are not native Claude media

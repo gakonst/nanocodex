@@ -71,13 +71,13 @@ impl ConversationState {
         history: Vec<ResponseItem>,
     ) -> Result<Self> {
         if !canonical_context.is_user_message() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
+            return Err(NanocodexError::InvalidCheckpoint(
                 "canonical context must be a user message".to_owned(),
             ));
         }
         assign_missing_response_item_id(&mut canonical_context);
         let managed = ManagedSessionState::resume(history)
-            .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
+            .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?;
         let mut state = Self {
             canonical_context: Arc::new(canonical_context),
             managed,

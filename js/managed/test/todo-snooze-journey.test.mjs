@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real HTTP/account proxy/auth/TODO router/UserAccount SQLite DO. Only broker
 // connector inventory is synthetic; any external provider call fails the test.

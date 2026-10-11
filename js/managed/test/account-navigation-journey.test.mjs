@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { connectActions } from "../../nanocodex/cloud/Decorator.mjs";
 import { http } from "../../nanocodex/cloud/Transport.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 test("public account navigation through managed HTTP and account proxy", { timeout: 90000 }, async () => {
   const trace = [];

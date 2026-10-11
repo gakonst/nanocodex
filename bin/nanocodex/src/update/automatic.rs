@@ -606,8 +606,13 @@ mod linux {
 
         #[test]
         fn malformed_explicit_bus_is_an_error_not_an_offline_manager() {
+            // systemctl --user tries $XDG_RUNTIME_DIR/systemd/private before the
+            // session bus, so a live user manager (as on CI runners) would mask
+            // the malformed address. Point it at an absent runtime directory.
+            let directory = tempfile::tempdir().unwrap();
             let output = Command::new("systemctl")
                 .args(["--user", "daemon-reload"])
+                .env("XDG_RUNTIME_DIR", directory.path().join("absent"))
                 .env("DBUS_SESSION_BUS_ADDRESS", "not-a-valid-dbus-address")
                 .env("LC_ALL", "C")
                 .output()

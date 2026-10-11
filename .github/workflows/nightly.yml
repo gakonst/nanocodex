@@ -304,7 +304,12 @@ jobs:
             # Artifact downloads do not preserve executable permissions.
             chmod +x "$binary"
             if [[ -z "$PR_NUMBER" ]]; then
+              # Publication ships executables compressed; publish restores the
+              # raw compatibility file from these verified bytes, so the
+              # artifact carries each executable once.
               gzip -n -9 -c "$binary" > "$binary.gz"
+              gzip -dc "$binary.gz" | cmp - "$binary"
+              rm "$binary"
             fi
           done
           test -s "nanocodex-voice-$TARGET.tar.gz"
@@ -327,6 +332,8 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: ${{ inputs.pr && 7 || 1 }}
+          # PR artifacts stay raw executables; publication bundles are already gzip.
+          compression-level: ${{ inputs.pr && 6 || 0 }}
 
   build-windows-hand:
     if: github.repository == 'gakonst/nanocodex'
@@ -554,6 +561,7 @@ jobs:
   publish:
     if: >-
       github.repository == 'gakonst/nanocodex' &&
+      github.ref == 'refs/heads/master' &&
       (github.event_name != 'workflow_dispatch' || inputs.pr == '')
     name: publish immutable and rolling nightlies
     # Publication waits for the read-only Hand reuse test and comparison, so a
@@ -572,6 +580,22 @@ jobs:
           pattern: nanocodex-*
           path: dist
           merge-multiple: true
+      - name: Restore raw executables
+        shell: bash
+        run: |
+          cd dist
+          shopt -s nullglob
+          # Bundles carry CLI and Hand executables only as NAME.gz. gzip checks
+          # each stream's CRC and length; an artifact that also carries NAME
+          # must match exactly. Hand reuse refreshes a restored raw file.
+          for compressed in nanocodex-*.gz nanocodex2-*.gz; do
+            case "$compressed" in *.tar.gz) continue ;; esac
+            if [[ -e "${compressed%.gz}" ]]; then
+              gzip -dc "$compressed" | cmp - "${compressed%.gz}"
+            else
+              gzip -dc "$compressed" > "${compressed%.gz}"
+            fi
+          done
       - name: Republish an unchanged Hand
         env:
           GH_TOKEN: ${{ github.token }}
@@ -590,7 +614,18 @@ jobs:
           cd dist
           # Hand reuse keys exist only for CLIs that report a Hand Identity.
           shopt -s nullglob
-          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe nanocodex2-*.identity > SHA256SUMS
+          # The immutable release attaches executables only compressed. Also
+          # list each one's raw digest so installers and updaters can verify
+          # decompressed (or already running) bytes against this release.
+          raw=()
+          for compressed in nanocodex-*.gz nanocodex2-*.gz; do
+            case "$compressed" in *.tar.gz) continue ;; esac
+            # Fail closed unless the raw file is exactly these bytes, decompressed.
+            gzip -dc "$compressed" | cmp - "${compressed%.gz}"
+            raw+=("${compressed%.gz}")
+          done
+          sha256sum nanocodex-*.gz nanocodex2-*.gz nanocodex-*.exe nanocodex2-*.exe nanocodex2-*.identity \
+            "${raw[@]}" > SHA256SUMS
       - name: Publish immutable and rolling releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -617,13 +652,24 @@ jobs:
             rm -rf dist
             mkdir dist
             gh release download "$immutable_tag" --repo "$GITHUB_REPOSITORY" --dir dist
-            (cd dist && sha256sum --check --strict SHA256SUMS)
+            # Its manifest may also list the raw digest of an executable that is
+            # attached only as NAME.gz. Verify every attached asset, decompress,
+            # then verify those raw digests, so every line is still checked.
+            manifest_parts=$(mktemp -d)
+            awk -v attached="$manifest_parts/attached" -v raw="$manifest_parts/raw" '
+              { name = $2; sub(/^\*/, "", name); listed[name] = 1; line[NR] = $0; asset[NR] = name }
+              END { for (i = 1; i <= NR; i++) print line[i] > (((asset[i] ".gz") in listed) ? raw : attached) }
+            ' dist/SHA256SUMS
+            (cd dist && sha256sum --check --strict "$manifest_parts/attached")
             for compressed in dist/nanocodex-*.gz dist/nanocodex2-*.gz; do
               case "$compressed" in
                 *.tar.gz) ;;
                 *) gzip -dc "$compressed" > "${compressed%.gz}" ;;
               esac
             done
+            if [[ -s "$manifest_parts/raw" ]]; then
+              (cd dist && sha256sum --check --strict "$manifest_parts/raw")
+            fi
           else
             if [[ -z "$immutable_draft" ]]; then
               gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \

@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {build} from 'esbuild';
 import {Miniflare,Log,LogLevel} from 'miniflare';
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 export async function encryptedVaultFixture() {
  const root=fileURLToPath(new URL('../../../',import.meta.url));

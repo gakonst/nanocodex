@@ -295,8 +295,15 @@ async fn file_edit_compaction_journey(model: Model) -> Result<()> {
     let tools = Tools::builder()
         .exposure(ToolExposure::CodeModeOnly)
         .build()?;
-    let (agent, mut events) = Nanocodex::builder(provider)
+    let unsupported = Nanocodex::builder(provider.clone())
         .service_tier(ServiceTier::Ultrafast)
+        .build();
+    assert!(matches!(
+        unsupported,
+        Err(nanocodex_muse::NanocodexError::InvalidRequest(_))
+    ));
+    let (agent, mut events) = Nanocodex::builder(provider)
+        .service_tier(ServiceTier::Standard)
         .workspace(workspace.path())
         .instructions("Complete the user's file task.")
         .tools(tools)
@@ -394,14 +401,17 @@ async fn invalid_summary_leaves_history_available_for_retry() -> Result<()> {
         .build()?;
     let (agent, _events) = Nanocodex::builder(provider).tools(tools).build()?;
     turn(&agent, "Remember 42").await?;
-    let before = serde_json::to_value(agent.snapshot().await?)?;
+    let before = serde_json::to_value(agent.checkpoint().await?)?;
     assert!(
         timeout(Duration::from_secs(10), agent.compact())
             .await?
             .is_err()
     );
-    let after = serde_json::to_value(agent.snapshot().await?)?;
-    assert_eq!(before["history"], after["history"]);
+    let after = serde_json::to_value(agent.checkpoint().await?)?;
+    assert_eq!(
+        before["payload"]["conversation"]["history"],
+        after["payload"]["conversation"]["history"]
+    );
     timeout(Duration::from_secs(10), agent.compact()).await??;
     assert_eq!(turn(&agent, "What number?").await?, "42");
     agent.shutdown().await?;

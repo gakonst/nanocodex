@@ -813,14 +813,16 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       const document=sent.find(block=>block.type==='document');
       assert.deepEqual(document?.source,{type:'base64',media_type:'application/pdf',data:pdf.split(',')[1]});
       assert.equal(document.title,'proof.pdf');
-      assert.deepEqual(sent.filter(block=>block.type==='image').map(block=>block.source.media_type), ['image/png','image/jpeg','image/gif','image/webp']);
+      assert.deepEqual(sent.filter(block=>block.type==='image').map(block=>block.source.media_type), ['image/png','image/jpeg','image/png','image/webp']); // GIF prompt images become PNG (876d83ea1)
       assert.deepEqual(sent.find(block=>block.title==='notes.txt')?.source,{type:'text',media_type:'text/plain',data:notes});
       await mf.dispose(); mf=new Miniflare(options);
       await turn(media,'MULTIMODAL_PROOF recall all attached documents','journey-media-reopen');
       const replay=mediaRequests.at(-1).messages.flatMap(message=>Array.isArray(message.content)?message.content:[]);
-      for(const mime of ['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain']) {
+      for(const mime of ['image/png','image/jpeg','image/webp','application/pdf','text/plain']) {
         assert.ok(replay.some(block=>block.source?.media_type===mime), `reopened history retains ${mime}`);
       }
+      // The GIF was sent as a PNG (876d83ea1): history keeps both PNG images.
+      assert.ok(replay.filter(block=>block.type==='image'&&block.source?.media_type==='image/png').length>=2,'reopened history retains the PNG and the converted GIF');
       // Exercise the same multipart upload + descriptor sent by iOS/macOS.
       const attachmentId='01234567-89ab-4def-8123-456789abcdef';
       const original=Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
@@ -831,7 +833,10 @@ test('Managed Code Mode Claude and mixed-family public delegation, account gates
       await call(attachmentPath+'/complete','POST');
       const descriptor='Attached original image file.\n[Image attachment]\n'+JSON.stringify({path:upload.path,media_type:'image/gif',preview_path:`/brain/attachments/${attachmentId}/preview.jpg`});
       await turn(media,[{type:'text',text:'MULTIMODAL_PROOF original upload'},{type:'text',text:descriptor}],'journey-original');
-      assert.deepEqual(mediaRequests.at(-1).latest.content.find(block=>block.type==='image')?.source,{type:'base64',media_type:'image/gif',data:original.toString('base64')});
+      // The frozen GIF original is prepared like any prompt image and sent as PNG (876d83ea1), not as the JPEG preview.
+      const frozen=mediaRequests.at(-1).latest.content.find(block=>block.type==='image')?.source;
+      assert.equal(frozen?.type,'base64'); assert.equal(frozen?.media_type,'image/png');
+      assert.ok(Buffer.from(frozen.data,'base64').subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])),'frozen original is a PNG');
       const missing=descriptor.replaceAll(attachmentId,'01234567-89ab-4def-8123-456789abcdee');
       await turn(media,[{type:'text',text:'MULTIMODAL_PROOF missing upload'},{type:'text',text:missing}],'journey-missing');
       assert.match(JSON.stringify(mediaRequests.at(-1).latest.content),/Image attachment unavailable to Claude/);

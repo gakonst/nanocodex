@@ -1,6 +1,8 @@
 //! Caller-owned skill catalog and invocation. Skill metadata never grants tools,
 //! executes commands or installs hooks. Fork/model metadata requires a host child executor.
-use crate::context::{FILE_BYTES, authorized_root, frontmatter, local_directory, read_local};
+use crate::context::{
+    FILE_BYTES, authorized_root, frontmatter, local_directory, read_local, read_user_file,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -59,12 +61,24 @@ pub struct SkillExpansion {
 #[derive(Clone, Debug)]
 pub struct ClaudeSkills {
     root: PathBuf,
+    user: Vec<nanocodex_home::SkillRoot>,
 }
 impl ClaudeSkills {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, String> {
         Ok(Self {
             root: authorized_root(root.as_ref())?,
+            user: Vec::new(),
         })
+    }
+    /// Adds host-resolved user skill roots in precedence order (for example
+    /// `nanocodex_home::AgentHome::skill_roots`: `~/.codex/skills`,
+    /// `~/.claude/skills`, `~/.agents/skills`). Personal skills win over
+    /// same-named project skills, as in Claude Code. Symlinked user skill
+    /// folders are followed; workspace skills still reject symlinks.
+    #[must_use]
+    pub fn with_user_roots(mut self, roots: Vec<nanocodex_home::SkillRoot>) -> Self {
+        self.user = roots;
+        self
     }
     /// A catalog for the requested caller: model-disabled skills are omitted
     /// entirely from model discovery; user-hidden skills stay model-invocable.
@@ -109,6 +123,22 @@ impl ClaudeSkills {
                     Err(error) => catalog
                         .diagnostics
                         .push(format!("{}: {error}", path.display())),
+                }
+            }
+        }
+        if !self.user.is_empty() {
+            let resolved = nanocodex_home::resolve_skills(&self.user);
+            for diagnostic in resolved.diagnostics {
+                catalog.diagnostics.push(diagnostic.to_string());
+            }
+            for entry in resolved.skills {
+                match self.read(&entry.skill_md) {
+                    Ok((skill, _)) => {
+                        by_name.insert(skill.name.clone(), skill);
+                    }
+                    Err(error) => catalog
+                        .diagnostics
+                        .push(format!("{}: {error}", entry.skill_md.display())),
                 }
             }
         }
@@ -310,8 +340,17 @@ impl ClaudeSkills {
         }
         Ok(())
     }
+    /// Workspace skills are workspace-relative and read without following
+    /// symlinks; user skills are absolute paths discovered from user roots.
     fn read(&self, path: &Path) -> Result<(SkillDefinition, String), String> {
-        let (text, truncated) = read_local(&self.root, path, FILE_BYTES)?;
+        let (text, truncated) = if path.is_absolute() {
+            if !self.user.iter().any(|root| path.starts_with(&root.path)) {
+                return Err("skill path is outside the configured skill roots".into());
+            }
+            read_user_file(path, FILE_BYTES)?
+        } else {
+            read_local(&self.root, path, FILE_BYTES)?
+        };
         if truncated {
             return Err("skill exceeds 32 KiB".into());
         }

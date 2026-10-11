@@ -2,6 +2,109 @@ import type { Options as ClaudeOptions } from './runtime/claude.mjs';
 export type Thinking = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningMode = "standard" | "pro";
 export type Model = "gpt-6.1-sol" | "gpt-6-luna" | "gpt-6-astra" | "@cf/zai-org/glm-5.3" | "kimi-k3" | "mimo-v2.6-pro";
+/** Native agent-loop family that owns a session's conversation. */
+export type HarnessFamily = "codex" | "claude";
+/** Cataloged models of the native Claude Messages harness. */
+export type ClaudeModel =
+  | "claude-opus-5-5"
+  | "claude-sonnet-5-5"
+  | "claude-haiku-5-5"
+  | "claude-fable-5-1"
+  | "claude-opus-4-6"
+  | "claude-sonnet-4-6"
+  | "claude-haiku-4-5";
+/** A cataloged model id of either harness family. */
+export type HarnessModel = Model | ClaudeModel;
+
+/** How a session was created. */
+export type SessionOrigin = "root" | "fork" | "side_conversation" | "subagent" | "branch";
+
+/** How a session relates to the conversation tree it belongs to. */
+export type SessionLineage = Readonly<{
+  /** Root session of this conversation tree; equal to the session for a root. */
+  rootSessionId: string;
+  /** Directly preceding session, or null for a root. */
+  parentSessionId: string | null;
+  origin: SessionOrigin;
+  /** Distance from the root session. */
+  depth: number;
+}>;
+
+/** Stable identity and provenance of one session, shared by every harness. */
+export type SessionInfo = Readonly<{
+  sessionId: string;
+  harness: HarnessFamily;
+  lineage: SessionLineage;
+}>;
+
+/** Processing tier for model requests. */
+export type ServiceTier = "standard" | "priority" | "fast" | "ultrafast";
+/** Transport a model is served on: an in-process native harness or the managed control plane. */
+export type ModelTransport = "native" | "managed";
+/** Settings one model accepts on one transport, from the shared Rust capability source. */
+export type ModelCapabilityEntry = Readonly<{
+  model: string;
+  family: HarnessFamily;
+  transport: ModelTransport;
+  /** Accepted thinking levels, ascending. */
+  thinking: readonly Thinking[];
+  defaultThinking: Thinking;
+  fastMode: boolean;
+  /** Accepted processing tiers, slowest first; "priority" is the compatibility name of "fast". */
+  serviceTiers: readonly Exclude<ServiceTier, "priority">[];
+  reasoningModes: readonly ReasoningMode[];
+}>;
+
+/** When a session setting may change. */
+export type Mutability = "fixed" | "before_first_prompt" | "anytime";
+
+/**
+ * Lifecycle operations a session's backend supports. Unsupported operations
+ * reject with an Error whose `code` is `unsupported_capability` and whose
+ * `capability` names the operation.
+ */
+export type SessionCapabilities = Readonly<{
+  checkpoint: boolean;
+  /** Checkpoints can be resumed in a new runtime, keeping the session identity. */
+  resume: boolean;
+  fork: boolean;
+  /** Forking from a completed TurnResult or a SessionCheckpoint. */
+  forkAt: boolean;
+  sideConversation: boolean;
+  spawn: boolean;
+  steering: boolean;
+  identifiedSteering: boolean;
+  compaction: boolean;
+  developerMessages: boolean;
+  context: boolean;
+  model: Mutability;
+  thinking: Mutability;
+  serviceTier: Mutability;
+  /** Whether the "ultrafast" service tier is accepted, subject to serviceTier. */
+  ultrafastServiceTier: boolean;
+}>;
+
+/** Where a session is persisted. */
+export type SessionPersistence = Readonly<{
+  /** Durable store state that is the session's source of truth, when any. */
+  durableStateId: string | null;
+  /** Server-side session that durably owns the conversation (managed hosts). */
+  serverSessionId: string | null;
+  /** Whether another process can resume this session. */
+  resumable: boolean;
+}>;
+
+declare const sessionCheckpointBrand: unique symbol;
+/**
+ * Portable, versioned, family-tagged conversation boundary for any harness.
+ * It is JSON-safe: `JSON.stringify` it to store it, and `JSON.parse` the
+ * stored text to pass it back as `resume` or `fork({ at })`. It contains the
+ * complete unredacted model-visible conversation; protect it accordingly.
+ * Its contents are opaque and decoded only by the harness family that produced it.
+ */
+export type SessionCheckpoint = Readonly<{
+  readonly [sessionCheckpointBrand]: "NanocodexSessionCheckpoint";
+}>;
 
 export type PromptItem =
   | { type: "text"; text: string }
@@ -40,6 +143,7 @@ export type CompactionReceipt = Readonly<{
 }>;
 
 export type AgentOptions = {
+  /** Native agent-loop family. Pass `harness: "claude"` with Claude options (auth, model) for the Messages harness; both return the same Agent. */
   harness?: "codex" | undefined;
   /** Explicit alternate-family credentials and native tools; children remain in the shared task tree. */
   harnesses?: Readonly<{ claude?: ClaudeOptions }> | undefined;
@@ -64,7 +168,14 @@ export type AgentOptions = {
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
   workspace?: string | undefined;
-  resume?: SessionSnapshot | undefined;
+  /**
+   * Reopens this checkpointed session in a new runtime, keeping its session
+   * identity, lineage, model, thinking level and committed conversation.
+   * Passing a different `sessionId` instead starts a new root session that
+   * continues the checkpoint's conversation. Use `session.fork` to branch a
+   * live session.
+   */
+  resume?: SessionCheckpoint | undefined;
 };
 
 /** Model-visible facts for tools executing outside the embedding process. */
@@ -308,24 +419,13 @@ export type EstimatedUsdCost = Readonly<{
   cached_input_usd: string;
   cache_write_input_usd: string;
   output_usd: string;
-  service_tier: "standard" | "priority" | "fast" | "ultrafast";
+  service_tier: ServiceTier;
 }>;
 
 export type CostStatus =
   | "estimated_from_usage"
   | "usage_not_reported"
   | "other";
-
-export type SessionSnapshot = Readonly<{
-  version: number;
-  model: string;
-  lineage_id: string;
-  prompt_cache_key: string;
-  workspace: string;
-  request_prefix?: readonly Record<string, unknown>[] | undefined;
-  canonical_context: Record<string, unknown>;
-  history: readonly Record<string, unknown>[];
-}>;
 
 export type TurnUsage = Readonly<{
   input_tokens: number;
@@ -338,7 +438,12 @@ export type TurnUsage = Readonly<{
   cost_status: CostStatus;
 }>;
 
-export type ForkOptions = Readonly<{ at?: TurnResult | undefined }>;
+export type ForkOptions = Readonly<{
+  /** Boundary to fork from; defaults to the latest committed safe boundary. */
+  at?: TurnResult | SessionCheckpoint | undefined;
+  /** Provenance recorded on the child's lineage. Defaults to `"fork"`. */
+  origin?: "fork" | "side_conversation" | undefined;
+}>;
 export type WatchEventsOptions = { includeAllSessions?: boolean | undefined };
 
 /** Read-only model context captured at the latest safe agent boundary. */
@@ -363,12 +468,26 @@ export type AgentActions = {
     watch(options?: WatchEventsOptions): EventWatcher;
   };
   session: {
+    /** This session's identity, harness family, and lineage. */
+    info(): SessionInfo;
+    /** Lifecycle operations this session's backend supports. */
+    capabilities(): SessionCapabilities;
+    /** Where this session is persisted, or null when it lives only in memory. */
+    persistence(): SessionPersistence | null;
+    /** Exports the latest committed safe boundary without mutating this session. */
+    checkpoint(): Promise<SessionCheckpoint>;
     appendDeveloperMessage(text: string): Promise<AgentSessionContext>;
+    /** Cancels every nonterminal turn issued through this Agent. */
+    cancel(): Promise<void>;
     compact(): Promise<void>;
     context(): Promise<AgentSessionContext>;
     fork(options?: ForkOptions): Promise<DefaultAgent>;
-    setModel(model: Model): Promise<void>;
+    /** Changes the model to another model id of this session's harness family. */
+    setModel(model: HarnessModel): Promise<void>;
+    /** Shorthand for `setServiceTier(enabled ? "priority" : "standard")`. */
     setFastMode(enabled: boolean): Promise<void>;
+    /** Selects the processing tier; governed by `capabilities().serviceTier`. */
+    setServiceTier(serviceTier: ServiceTier): Promise<void>;
     setThinking(thinking: Thinking): Promise<void>;
     shutdown(): Promise<void>;
     spawn(): Promise<DefaultAgent>;
@@ -484,7 +603,8 @@ declare const turnResultBrand: unique symbol;
 export type TurnResult = Readonly<{
   readonly [turnResultBrand]: "NanocodexTurnResult";
   finalMessage: string;
-  snapshot(): Promise<SessionSnapshot>;
+  /** Materializes the portable checkpoint this turn committed. */
+  checkpoint(): Promise<SessionCheckpoint>;
   usage(): Promise<TurnUsage>;
   dispose(): void;
 }>;

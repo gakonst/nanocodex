@@ -121,7 +121,7 @@ impl Service<ResponsesAttempt> for HostContextProvider {
             ResponsesAttemptKind::Generation => {
                 assert!(request.input_items().any(|item| {
                     serde_json::to_value(item).is_ok_and(|item| {
-                        item["type"] == "function_call_output"
+                        item["type"] == "custom_tool_call_output"
                             && item["call_id"] == "call-host-context"
                     })
                 }));
@@ -148,14 +148,17 @@ impl Service<ResponsesAttempt> for HostContextProvider {
     }
 }
 
+// Agents require Code Mode since eda4a21e3; the probe runs as a nested tool.
+const HOST_CONTEXT_PROBE_CELL: &str = "text(await tools.host_context_probe({}));";
+
 fn host_context_tool_generation() -> ResponsesOutput {
     let item = serde_json::from_value(json!({
-        "type": "function_call",
+        "type": "custom_tool_call",
         "call_id": "call-host-context",
-        "name": "host_context_probe",
-        "arguments": "{}"
+        "name": "exec",
+        "input": HOST_CONTEXT_PROBE_CELL
     }))
-    .expect("function call item decodes");
+    .expect("exec call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-host-context-tool".to_owned(),
         reported_model: None,
@@ -165,10 +168,10 @@ fn host_context_tool_generation() -> ResponsesOutput {
         output_items: vec![item],
         code_calls: vec![CodeCall {
             call_id: "call-host-context".to_owned(),
-            name: "host_context_probe".to_owned(),
+            name: "exec".to_owned(),
             namespace: None,
-            input: "{}".to_owned(),
-            kind: CodeCallKind::Function,
+            input: HOST_CONTEXT_PROBE_CELL.to_owned(),
+            kind: CodeCallKind::Custom,
         }],
         usage: None,
         time_to_first_event_ns: 0,
@@ -624,8 +627,8 @@ impl Service<ResponsesAttempt> for RevisionRecoveryProvider {
                 generation.code_calls[0].call_id = format!("revision-call-{index}");
                 generation.output_items = vec![
                     serde_json::from_value(json!({
-                        "type": "function_call", "call_id": format!("revision-call-{index}"),
-                        "name": "host_context_probe", "arguments": "{}"
+                        "type": "custom_tool_call", "call_id": format!("revision-call-{index}"),
+                        "name": "exec", "input": HOST_CONTEXT_PROBE_CELL
                     }))
                     .unwrap(),
                 ];

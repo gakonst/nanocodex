@@ -4,12 +4,14 @@
 // Only account enrollment, DO eviction and create-race delays are injected.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { startPlaybackFixture, SyntheticHost, makeSegments, redact, ownerA, ownerB, root } from "./screen-playback-fixture.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const command = "corepack pnpm --filter nanocodex-managed-service exec node --test test/screen-playback-journey.test.mjs (Node 24)";
 const run = promisify(execFile);
@@ -128,6 +130,27 @@ test("screen playback links: create, decode, bounds, eviction/restart recovery, 
       const text = await response.text(); let value; try { value = JSON.parse(text); } catch { value = text; }
       return { status: response.status, body: value };
     });
+    // An oversized upload is refused from its declared length, before any body is read. Offer
+    // the body only after "100 Continue", as a careful HTTP/1.1 client does: workerd can answer
+    // 413 and close while a plain fetch is still writing 4 MiB, which surfaces as ECONNRESET.
+    const putOversized = (file, bytes, contentType = "video/mp2t", token = uploadToken) => new Promise((resolve, reject) => {
+      const request = httpRequest(new URL(file, upload), { method: "PUT", signal: AbortSignal.timeout(20_000), headers: {
+        authorization: `Bearer ${token}`, "content-type": contentType, "content-length": String(bytes.length), expect: "100-continue" } });
+      request.on("continue", () => request.end(bytes));
+      request.on("response", response => {
+        const chunks = [];
+        response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString(); let value; try { value = JSON.parse(text); } catch { value = text; }
+          request.destroy();
+          resolve({ status: response.statusCode, body: value });
+        });
+        response.on("error", fail);
+      });
+      // Only an observed status resolves; a reset, timeout or other socket error fails the journey.
+      const fail = error => { request.destroy(); reject(error); };
+      request.on("error", fail);
+    });
     const wrongView = "nsv_" + "A".repeat(43);
     observed.credentials = {
       wrong_view_token: (await view(withQuery(url.pathname, `?token=${wrongView}`))).status,
@@ -157,7 +180,7 @@ test("screen playback links: create, decode, bounds, eviction/restart recovery, 
       playlist_too_large: (await put("index.m3u8", "#EXTM3U\n" + "#".repeat(17 * 1024), "application/vnd.apple.mpegurl")).status,
       not_ts: (await put(`s${latest + 1000}.ts`, Buffer.from("not mpeg-ts"))).status,
       wrong_type: (await put(`s${latest + 1000}.ts`, ts, "application/octet-stream")).status,
-      segment_too_large: (await put(`s${latest + 1000}.ts`, Buffer.alloc(4 * 1024 * 1024 + 188, 0x47))).status,
+      segment_too_large: (await putOversized(`s${latest + 1000}.ts`, Buffer.alloc(4 * 1024 * 1024 + 188, 0x47))).status,
       outside_refill_window: (await put("s0.ts", ts)).body.error,
     };
     assert.deepEqual(observed.bounds, { evicted_old_segment: 404, external_uri: 400, byte_range: 400, key_tag: 400, future_segment: 400,

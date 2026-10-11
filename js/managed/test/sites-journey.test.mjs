@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Actual HTTP -> shipped account proxy -> shipped managed router/auth ->
 // thread SQLite + R2 publish, then curl -> shipped Sites Worker by hostname.

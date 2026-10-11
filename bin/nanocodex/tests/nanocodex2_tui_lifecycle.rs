@@ -367,10 +367,14 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
         assert_eq!(restarted["active_turns"][AGENT], json!([turn]));
         assert_eq!(restarted["active_turns"][child], json!([]));
 
-        if keyboard_stop {
+        let cancelled = if keyboard_stop {
             fixture.terminal.input("\x1b");
             fixture.terminal.wait_text("Interrupt").await;
             fixture.terminal.input("\x1b");
+            fixture
+                .cancellation(TIMEOUT)
+                .await
+                .expect("confirmed Stop never reached the service")
         } else {
             let request = json!({"id":"cancel-discovered-local-root","method":"cancel","params":{
             "expected_instance_id":restarted["instance_id"],
@@ -381,6 +385,16 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
                 .write_all(format!("{request}\n").as_bytes())
                 .await
                 .unwrap();
+            // The backend holds its reply: the receipt cannot precede admission.
+            let (cancelled, ack) = tokio::time::timeout(TIMEOUT, async {
+                tokio::select! {
+                    command = fixture.cancellations.recv() => command.unwrap(),
+                    response = lines.next_line() => panic!("control cancel was resolved before backend admission: {response:?}"),
+                }
+            })
+            .await
+            .expect("confirmed Stop never reached the service");
+            ack.send(true).unwrap();
             let response: Value = serde_json::from_str(
                 &tokio::time::timeout(TIMEOUT, lines.next_line())
                     .await
@@ -393,11 +407,8 @@ async fn terminal_control_keeps_local_root_discoverable_and_stops_it_after_runti
             assert_eq!(response["result"]["status"], "accepted");
             assert_eq!(response["result"]["result"]["turn_id"], turn);
             assert_eq!(response["result"]["result"]["state"], "cancelling");
-        }
-        let cancelled = tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .expect("confirmed Stop never reached the service")
-            .unwrap();
+            cancelled
+        };
         eprintln!(
             "Stop HTTP cancellation target: {cancelled}; expected durable root: {turn}; keyboard={keyboard_stop}"
         );
@@ -536,15 +547,14 @@ async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
         .write_all(format!("{cancel}\n").as_bytes())
         .await
         .unwrap();
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, async {
-            tokio::select! {
-                command = fixture.cancellations.recv() => command.unwrap(),
-                response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
-            }
-        }).await.unwrap(),
-        turn
-    );
+    let (cancelled, ack) = tokio::time::timeout(TIMEOUT, async {
+        tokio::select! {
+            command = fixture.cancellations.recv() => command.unwrap(),
+            response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
+        }
+    }).await.unwrap();
+    assert_eq!(cancelled, turn);
+    ack.send(true).unwrap();
     let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
     assert_eq!(reply["result"]["status"], "accepted");
     write
@@ -1539,14 +1549,44 @@ impl Terminal {
         let screen = Arc::new(Mutex::new(vt100::Parser::new(32, 160, 0)));
         let parsed = screen.clone();
         std::thread::spawn(move || {
+            // The TUI wraps each frame in synchronized output (DEC mode 2026).
+            // Publish whole frames only, as a supporting terminal displays
+            // them, so screen waits never observe a partially redrawn frame.
+            const BEGIN: &[u8] = b"\x1b[?2026h";
+            const END: &[u8] = b"\x1b[?2026l";
             let mut bytes = [0; 8192];
+            let mut pending = Vec::new();
+            let mut synchronized = false;
             while let Ok(count) = reader.read(&mut bytes) {
                 if count == 0 {
                     break;
                 }
                 captured.lock().unwrap().extend_from_slice(&bytes[..count]);
-                parsed.lock().unwrap().process(&bytes[..count]);
+                pending.extend_from_slice(&bytes[..count]);
+                loop {
+                    let marker = if synchronized { END } else { BEGIN };
+                    if let Some(index) = pending
+                        .windows(marker.len())
+                        .position(|window| window == marker)
+                    {
+                        let ready: Vec<u8> = pending.drain(..index + marker.len()).collect();
+                        parsed.lock().unwrap().process(&ready);
+                        synchronized = !synchronized;
+                        continue;
+                    }
+                    if !synchronized {
+                        // Hold back only a possible partial frame marker.
+                        let keep = (1..BEGIN.len())
+                            .rev()
+                            .find(|&len| pending.ends_with(&BEGIN[..len]))
+                            .unwrap_or(0);
+                        let ready: Vec<u8> = pending.drain(..pending.len() - keep).collect();
+                        parsed.lock().unwrap().process(&ready);
+                    }
+                    break;
+                }
             }
+            parsed.lock().unwrap().process(&pending);
         });
         Self {
             child,
@@ -1671,6 +1711,7 @@ struct Service {
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
+    routing_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
     state_available: Arc<AtomicBool>,
     settings: Arc<Mutex<Value>>,
@@ -1682,7 +1723,7 @@ struct Service {
     submitted: mpsc::UnboundedSender<Value>,
     steered: mpsc::UnboundedSender<(Value, oneshot::Sender<bool>)>,
     rejected: mpsc::UnboundedSender<Value>,
-    cancelled: mpsc::UnboundedSender<String>,
+    cancelled: mpsc::UnboundedSender<(String, oneshot::Sender<bool>)>,
 }
 
 impl Service {
@@ -1926,6 +1967,7 @@ async fn enable_routing(
     axum::extract::Path(agent): axum::extract::Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let _permit = service.routing_gate.acquire().await.unwrap();
     let body: Value = if body.is_empty() {
         json!({})
     } else {
@@ -2068,12 +2110,23 @@ async fn steer(
     Ok(Json(json!({"turn_id": turn, "state": "steering"})))
 }
 
+/// Held until the test acknowledges admission, like steer, so a client reply
+/// can never be observed before the backend has seen the cancellation.
 async fn cancel(
     State(service): State<Service>,
     axum::extract::Path((_, turn)): axum::extract::Path<(String, String)>,
-) -> Json<Value> {
-    service.cancelled.send(turn.clone()).unwrap();
-    Json(json!({"turn_id": turn, "state": "cancelling"}))
+) -> Result<Json<Value>, (axum::http::StatusCode, Json<Value>)> {
+    let (ack, acknowledged) = oneshot::channel();
+    service.cancelled.send((turn.clone(), ack)).unwrap();
+    if !acknowledged.await.unwrap_or(false) {
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(
+                json!({"error": "upstream_failure", "message": "cancellation acknowledgement was lost"}),
+            ),
+        ));
+    }
+    Ok(Json(json!({"turn_id": turn, "state": "cancelling"})))
 }
 
 struct Fixture {
@@ -2090,6 +2143,7 @@ struct Fixture {
     listed_agent: Arc<Mutex<String>>,
     listed_title: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
+    routing_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
     terminal: Terminal,
     state_available: Arc<AtomicBool>,
@@ -2103,12 +2157,22 @@ struct Fixture {
     submissions: mpsc::UnboundedReceiver<Value>,
     steers: mpsc::UnboundedReceiver<(Value, oneshot::Sender<bool>)>,
     rejections: mpsc::UnboundedReceiver<Value>,
-    cancellations: mpsc::UnboundedReceiver<String>,
+    cancellations: mpsc::UnboundedReceiver<(String, oneshot::Sender<bool>)>,
     server: tokio::task::JoinHandle<()>,
     cursor: u64,
 }
 
 impl Fixture {
+    /// The next backend cancellation, acknowledged so its held reply returns.
+    async fn cancellation(&mut self, timeout: Duration) -> Option<String> {
+        let (turn, ack) = tokio::time::timeout(timeout, self.cancellations.recv())
+            .await
+            .ok()
+            .flatten()?;
+        let _ = ack.send(true);
+        Some(turn)
+    }
+
     async fn start() -> Self {
         Self::start_with_active(false).await
     }
@@ -2208,6 +2272,7 @@ impl Fixture {
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let listed_title = Arc::new(Mutex::new("RETAINED_REMOTE_WORK".to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let routing_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let native_writes = Arc::new(Mutex::new(Vec::new()));
@@ -2294,6 +2359,7 @@ impl Fixture {
                 listed_agent: listed_agent.clone(),
                 listed_title: listed_title.clone(),
                 resume_gate: resume_gate.clone(),
+                routing_gate: routing_gate.clone(),
                 active,
                 state_available: state_available.clone(),
                 settings: settings.clone(),
@@ -2341,6 +2407,7 @@ impl Fixture {
             listed_agent,
             listed_title,
             resume_gate,
+            routing_gate,
             origin,
             terminal,
             state_available,
@@ -2407,6 +2474,19 @@ impl Fixture {
                 "type": kind, "payload": payload
             }}),
         );
+    }
+
+    /// Start a routing change and wait until the root accepts input again.
+    /// While it runs the root is non-interactive and drops typed input, yet a
+    /// lagging screen can still show the previous composer, "Enter send" and
+    /// a model label the status itself names. Hold the routing request until
+    /// the change's status is on screen, then wait for that status to clear.
+    async fn routing_change(&mut self, keys: impl FnOnce(&mut Terminal), status: &str) {
+        let pause = self.routing_gate.clone().acquire_owned().await.unwrap();
+        keys(&mut self.terminal);
+        self.terminal.wait_text(status).await;
+        drop(pause);
+        self.terminal.wait_no_text(status).await;
     }
 
     async fn submission(&mut self, expected: &str) -> String {
@@ -3219,13 +3299,7 @@ async fn terminal_fresh_session_can_cancel_an_external_turn_without_capabilities
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        REMOTE_TURN
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
     fixture.emit(
         REMOTE_TURN,
         json!({"type": "turn_cancelled", "id": REMOTE_TURN}),
@@ -3251,13 +3325,7 @@ async fn terminal_cancels_during_a_steer_ack_without_repeating_applied_input() {
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        REMOTE_TURN
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
     fixture.terminal.wait_text("Interrupted response").await;
     fixture.emit(
         REMOTE_TURN,
@@ -3666,10 +3734,7 @@ async fn terminal_cancellation_remains_usable_with_unknown_steering_delivery() {
     fixture.terminal.input("\x1b");
     tokio::time::sleep(Duration::from_millis(100)).await;
     fixture.terminal.input("\x1b");
-    let cancelled = tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let cancelled = fixture.cancellation(TIMEOUT).await.unwrap();
     assert_eq!(cancelled, REMOTE_TURN);
     fixture.terminal.wait_text("Interrupted response").await;
     fixture.nested(
@@ -3891,10 +3956,7 @@ async fn terminal_recovers_local_activity_and_controls_after_a_fatal_disconnect(
     fixture
         .terminal
         .prompt("FOLLOWUP_AFTER_LOCAL_RECOVERY", "\t");
-    fixture
-        .terminal
-        .wait_text("FOLLOWUP_AFTER_LOCAL_RECOVERY")
-        .await;
+    wait_queued(&fixture.terminal, "FOLLOWUP_AFTER_LOCAL_RECOVERY").await;
     fixture.break_stream();
     fixture.replacement_connection().await;
     fixture.terminal.wait_text("Reconnected").await;
@@ -3945,7 +4007,7 @@ async fn terminal_can_edit_its_draft_and_retry_a_failed_reconnection() {
 async fn terminal_stops_repeated_fatal_reconnects_until_the_user_retries() {
     let mut fixture = Fixture::start_with_active(true).await;
     fixture.terminal.prompt("AFTER_REPEATED_FAILURE", "\t");
-    fixture.terminal.wait_text("AFTER_REPEATED_FAILURE").await;
+    wait_queued(&fixture.terminal, "AFTER_REPEATED_FAILURE").await;
     fixture.break_stream();
     fixture.replacement_connection().await;
     fixture.terminal.wait_text("Reconnected").await;
@@ -4032,7 +4094,7 @@ async fn terminal_keeps_an_unacknowledged_prompt_available_after_reconnecting() 
         .unwrap()
         .unwrap();
     fixture.terminal.prompt("KNOWN_UNSENT_FOLLOWUP", "\t");
-    fixture.terminal.wait_text("KNOWN_UNSENT_FOLLOWUP").await;
+    wait_queued(&fixture.terminal, "KNOWN_UNSENT_FOLLOWUP").await;
     fixture.break_stream();
     fixture.replacement_connection().await;
     fixture.terminal.wait_text("Reconnected").await;
@@ -4054,12 +4116,13 @@ async fn terminal_keeps_uncertain_steering_ordered_across_a_replacement_connecti
         .unwrap()
         .unwrap();
     fixture.terminal.prompt("BEFORE_FAILURE", "\r");
-    fixture.terminal.wait_text("BEFORE_FAILURE").await;
+    // The pasted draft is visible before Enter is handled; break the stream only once it is queued.
+    wait_queued(&fixture.terminal, "BEFORE_FAILURE").await;
     fixture.break_stream();
     fixture.replacement_connection().await;
     fixture.terminal.wait_text("Reconnected").await;
     fixture.terminal.prompt("AFTER_RECOVERY", "\r");
-    fixture.terminal.wait_text("AFTER_RECOVERY").await;
+    wait_queued(&fixture.terminal, "AFTER_RECOVERY").await;
     assert!(
         tokio::time::timeout(Duration::from_millis(200), fixture.steers.recv())
             .await
@@ -4415,6 +4478,32 @@ async fn terminal_marks_receiptless_tools_unknown_and_accepts_their_late_result(
     fixture.terminal.wait_text("Enter send").await;
 }
 
+/// Waits until the text has left the composer draft and is shown above it (in the queue), so
+/// its Enter has been handled. A pasted draft is visible before the TUI reads the Enter.
+async fn wait_queued(terminal: &Terminal, text: &str) {
+    let queued = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let screen = terminal.screen.lock().unwrap().screen().contents();
+            let lines: Vec<&str> = screen.lines().collect();
+            // The composer is the last box whose top border carries the context gauge.
+            if let Some(top) = lines
+                .iter()
+                .rposition(|line| line.starts_with("╭─") && line.contains("%/"))
+                && lines[..top].iter().any(|line| line.contains(text))
+                && !lines[top..].iter().any(|line| line.contains(text))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if queued.is_err() {
+        let screen = terminal.screen.lock().unwrap().screen().contents();
+        panic!("{text:?} never left the composer for the queue:\n{screen}");
+    }
+}
+
 /// Waits until one rendered row contains every needle.
 async fn wait_line(terminal: &Terminal, needles: &[&str]) {
     let found = tokio::time::timeout(TIMEOUT, async {
@@ -4718,7 +4807,13 @@ async fn terminal_resumes_by_generated_title() {
         "Resume title search (query=cobalt):\n{}",
         fixture.terminal.screen.lock().unwrap().screen().contents()
     );
+    // Hold the switch until its status is on screen. Otherwise a lagging PTY
+    // screen can lack "Resuming session" while the switch is still running,
+    // and the prompt typed into the non-interactive composer is dropped.
+    let pause = fixture.resume_gate.clone().acquire_owned().await.unwrap();
     fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Resuming session").await;
+    drop(pause);
     fixture.replacement_connection().await;
     fixture.terminal.wait_no_text("Resuming session").await;
     fixture
@@ -4898,6 +4993,11 @@ async fn terminal_keeps_local_shell_context_scoped_to_the_session_after_resume()
         fixture.terminal.input("\r");
         if succeeds {
             fixture.replacement_connection().await;
+            // The picker overlay truncates the old shell output, so wait for
+            // it to close first. Its closing frame also shows the resume
+            // status; the old output then disappears only when the restored
+            // session (which accepts input) replaces the transcript.
+            fixture.terminal.wait_no_text("Recent threads").await;
             fixture
                 .terminal
                 .wait_no_text("OLD_SESSION_SHELL_OUTPUT")
@@ -5121,13 +5221,7 @@ async fn assert_terminal_durable_stop(cancelled: bool) {
         fixture.terminal.input("\x1b");
         fixture.terminal.wait_text("Interrupt").await;
         fixture.terminal.input("\x1b");
-        assert_eq!(
-            tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-            REMOTE_TURN
-        );
+        assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), REMOTE_TURN);
         fixture.terminal.wait_text("Interrupted response").await;
     }
     fixture.terminal.prompt("DRAFT_AFTER_DURABLE_STOP", "");
@@ -5293,6 +5387,11 @@ async fn terminal_computer_activity_keeps_observations_in_disclosed_details() {
         .terminal
         .wait_text("Used computer · 4 actions · 1 failed")
         .await;
+    // The summary already renders while the turn is still active. Completion
+    // then adds the "done" row and moves the transcript up two rows, so a click
+    // row computed before that render lands on the wrong item. The turn was
+    // active since start ("Enter steer"), so "Enter send" marks completion.
+    fixture.terminal.wait_text("Enter send").await;
     fixture.terminal.wait_text("CONTROL_DISAPPEARED").await;
     fixture.terminal.wait_text("Captured screenshot").await;
     fixture.terminal.wait_no_text("SNAPSHOT_CONTROL").await;
@@ -6218,7 +6317,12 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
     {
         fixture.terminal.prompt("/model", "\r");
         fixture.terminal.wait_text("Select model").await;
-        fixture.terminal.input("\x1b[B\r");
+        fixture
+            .routing_change(
+                |terminal| terminal.input("\x1b[B\r"),
+                &format!("Starting {model} session"),
+            )
+            .await;
         fixture.terminal.wait_no_text("Select model").await;
         tokio::time::timeout(TIMEOUT, async {
             while fixture.routing_bodies.lock().unwrap().len() <= index {
@@ -6267,14 +6371,24 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
         fixture.routing_bodies.lock().unwrap().last().unwrap(),
         &json!({"model": "mimo-v2.6-pro", "thinking": "high"})
     );
-    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/autoroute", "\r"),
+            "Enabling automatic routing",
+        )
+        .await;
     fixture.terminal.wait_text("Auto · choosing").await;
     fixture.terminal.prompt("/thinking high", "\r");
     fixture
         .terminal
         .wait_text("Automatic routing controls the model and effort")
         .await;
-    fixture.terminal.prompt("/model gpt-6-astra", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/model gpt-6-astra", "\r"),
+            "Starting Astra session",
+        )
+        .await;
     fixture.terminal.wait_no_text("Auto · choosing").await;
     fixture.terminal.wait_text("gpt-6-astra").await;
     fixture.terminal.wait_text("Enter send").await;
@@ -6285,7 +6399,12 @@ async fn terminal_gateway_model_picker_routes_manual_selection_and_keeps_prompt_
     })
     .await
     .unwrap();
-    fixture.terminal.prompt("/model kimi-k3", "\r");
+    fixture
+        .routing_change(
+            |terminal| terminal.prompt("/model kimi-k3", "\r"),
+            "Starting kimi-k3 session",
+        )
+        .await;
     fixture.terminal.wait_text("kimi-k3").await;
     fixture.terminal.wait_text("Enter send").await;
     fixture
@@ -6569,7 +6688,15 @@ async fn copy_journey_expect(fixture: &mut Fixture, command: &str, key: &str, ex
 }
 
 async fn copy_journey_error(fixture: &mut Fixture, command: &str, expected: &str) {
-    fixture.terminal.prompt(command, "\r");
+    // Rejections reuse one persistent toast, so an earlier identical error can
+    // satisfy the wait before this command is read. Submitting clears the
+    // composer in the same render that shows the error, so wait for this
+    // command to appear in the composer and then disappear.
+    fixture.terminal.wait_no_text(command).await;
+    fixture.terminal.prompt(command, "");
+    fixture.terminal.wait_text(command).await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_no_text(command).await;
     fixture.terminal.wait_text(expected).await;
     eprintln!(
         "PTY rejected {command:?}: {}",
@@ -6639,17 +6766,29 @@ async fn terminal_copy_keeps_raw_markdown_and_skips_unfinished_messages() {
     fixture.terminal.input("/copy response");
     fixture.terminal.wait_text("copy response").await;
     fixture.terminal.input("\r");
+    fixture.terminal.wait_no_text("copy response").await;
     fixture.terminal.wait_text("Usage: /copy [N]").await;
 
     // A successful copy is a terminal-input barrier after all rejected commands.
     copy_journey_expect(&mut fixture, "/copy", "\r", second).await;
     let output = fixture.terminal.output.lock().unwrap().clone();
+    let copies = String::from_utf8_lossy(&output)
+        .split("\x1b]52;c;")
+        .skip(1)
+        .map(|rest| {
+            let encoded = rest.split_once('\x07').map_or(rest, |(encoded, _)| encoded);
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|error| format!("<undecodable: {error}>"));
+            decoded.lines().next().unwrap_or_default().to_owned()
+        })
+        .collect::<Vec<_>>();
+    eprintln!("COPY journey OSC52 sequence: {copies:?}");
     assert_eq!(
-        String::from_utf8_lossy(&output)
-            .matches("\x1b]52;c;")
-            .count(),
+        copies.len(),
         6,
-        "errors must not copy and a streamed item must not count"
+        "errors must not copy and a streamed item must not count: {copies:?}"
     );
     // The next real prompt must be the next submission: no copy command may have
     // escaped as input, a queued follow-up, or a live steering request.
@@ -7170,7 +7309,9 @@ async fn terminal_review_branch_picker_navigates_filters_and_refreshes() {
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Uncommitted").await;
     fixture.terminal.input("\x1b");
-    fixture.terminal.wait_no_text("Search branches").await;
+    // "Search branches" is already gone after the first Esc; wait for the scope
+    // menu itself to close so the next paste cannot race the second Esc.
+    fixture.terminal.wait_no_text("Base branch").await;
     review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_NO_MATCH_ENTER").await;
 
     review_journey_branches(&mut fixture).await;
@@ -7249,7 +7390,8 @@ async fn terminal_review_branch_picker_empty_and_nonrepo_recover_without_submitt
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Uncommitted").await;
     fixture.terminal.input("\x1b");
-    fixture.terminal.wait_no_text("Search branches").await;
+    // As above: wait for the scope menu, not the already-closed branch search.
+    fixture.terminal.wait_no_text("Base branch").await;
     review_journey_normal_turn(&mut fixture, "AFTER_BRANCH_EMPTY_REPO").await;
 
     review_journey_commit(&fixture);
@@ -7371,13 +7513,7 @@ async fn terminal_review_interrupts_and_returns_to_normal_chat() {
     fixture.terminal.input("\x1b");
     fixture.terminal.wait_text("Interrupt").await;
     fixture.terminal.input("\x1b");
-    assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        turn
-    );
+    assert_eq!(fixture.cancellation(TIMEOUT).await.unwrap(), turn);
     fixture.emit(&turn, json!({"type":"turn_cancelled","id":turn}));
     fixture.terminal.wait_text("Enter send").await;
     review_journey_snapshot(&fixture, "Esc twice cancels the streamed review turn");
@@ -8654,10 +8790,9 @@ async fn terminal_perf_input_stays_responsive_while_an_agent_streams_large_tool_
     tokio::time::sleep(Duration::from_millis(50)).await;
     let start = std::time::Instant::now();
     fixture.terminal.input("\x1b");
-    let cancelled = tokio::time::timeout(Duration::from_secs(5), fixture.cancellations.recv())
+    let cancelled = fixture
+        .cancellation(Duration::from_secs(5))
         .await
-        .ok()
-        .flatten()
         .map(|turn| {
             assert_eq!(turn, REMOTE_TURN);
             start.elapsed()
@@ -8766,6 +8901,23 @@ async fn wait_bytes(terminal: &Terminal, needle: &[u8]) {
     });
 }
 
+/// Terminal output once it holds `count` Kitty PNG uploads, or at the deadline.
+/// Formulas render on background workers and each upload is written with the
+/// next frame, which may change nothing visible.
+async fn wait_kitty_pngs(terminal: &Terminal, count: usize) -> Vec<u8> {
+    let _ = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let output = terminal.output.lock().unwrap().clone();
+            if kitty_pngs(&output).len() >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    terminal.output.lock().unwrap().clone()
+}
+
 /// PNG payloads of Kitty graphics uploads: APC "ESC _ G keys ; base64 ESC \",
 /// chunked while a chunk carries m=1.
 fn kitty_pngs(output: &[u8]) -> Vec<Vec<u8>> {
@@ -8823,13 +8975,12 @@ async fn terminal_math_renders_kitty_images_and_falls_back_to_source() {
     kitty.terminal.wait_no_text("frac").await;
     // Inline formulas that need more than one row keep their source in line.
     kitty.terminal.wait_text("beside text.").await;
-    let output = kitty.terminal.output.lock().unwrap().clone();
+    // That inline formula still renders and uploads, but its source looks the
+    // same before and after, so no screen state proves its upload was written.
+    let output = wait_kitty_pngs(&kitty.terminal, 3).await;
     let pngs = kitty_pngs(&output);
-    assert!(
-        pngs.len() >= 3,
-        "expected three formula uploads, got {}",
-        pngs.len()
-    );
+    // Keep the raw stream and screen, and log each upload's pixel size, even
+    // when the count assertion fails.
     renderer_evidence("math-kitty.raw", &output);
     renderer_evidence(
         "math-kitty.screen.txt",
@@ -8841,6 +8992,21 @@ async fn terminal_math_renders_kitty_images_and_falls_back_to_source() {
             .screen()
             .contents()
             .as_bytes(),
+    );
+    let sizes = pngs
+        .iter()
+        .filter_map(|png| png.get(16..24))
+        .map(|ihdr| {
+            let width = u32::from_be_bytes([ihdr[0], ihdr[1], ihdr[2], ihdr[3]]);
+            let height = u32::from_be_bytes([ihdr[4], ihdr[5], ihdr[6], ihdr[7]]);
+            format!("{width}x{height}")
+        })
+        .collect::<Vec<_>>();
+    eprintln!("MATH kitty uploads in order: {sizes:?}");
+    assert!(
+        pngs.len() >= 3,
+        "expected three formula uploads, got {}",
+        pngs.len()
     );
     for (index, png) in pngs.iter().enumerate() {
         renderer_evidence(&format!("math-kitty-formula-{index}.png"), png);

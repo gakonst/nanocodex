@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import { existsSync, writeFileSync, readFileSync, statSync, mkdtempSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DeploymentLedgerError } from './deployment-ledger.mjs';
 import { releaseWorkers, releasePhases, prepareReleasePhase, guardedCommand, accountHealth, AccountHealthError, localWrangler } from './release-workers.mjs';
@@ -38,7 +38,10 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
   }
   assert.equal(f.events.filter(row => row[0] === 'health').length, releasePhases.length);
   assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 3);
-  assert.equal(f.calls.find(({ options }) => options.directory === 'js/media').command.slice(0, 6).join(' '), 'npx wrangler deploy --config wrangler.jsonc --message');
+  // The installed Wrangler replaces npx when the package has one (see localWrangler).
+  const media = f.calls.find(({ options }) => options.directory === 'js/media').command;
+  assert.deepEqual(media.slice(0, media.indexOf('--message') + 1),
+    [...localWrangler(['npx', 'wrangler'], resolve('js/media')), 'deploy', '--config', 'wrangler.jsonc', '--message']);
   assert.equal(f.calls.at(-1).options.directory, 'js/account');
   const account = f.calls.at(-1).command;
   assert.equal(account[account.indexOf('--config') + 1], 'dist/nanocodex/wrangler.ci.json');

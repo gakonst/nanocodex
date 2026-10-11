@@ -47,8 +47,6 @@ jobs:
           # BuildKit treats a missing/private registry cache as a cache miss.
           cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
       - name: Exercise offline toolkit
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
         run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template
         run: bash crates/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"
@@ -108,8 +106,6 @@ jobs:
             echo "::notice::Registry cache manifest unavailable: $CACHE_REF. Build succeeded; check cache export logs and GHCR package write access."
           fi
       - name: Exercise offline toolkit
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
         run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template
         run: bash crates/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"

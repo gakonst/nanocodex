@@ -957,6 +957,7 @@ fn portable_pty_on_time_only_runtime_retains_output_status_and_session() -> Resu
         let workspace = tempfile::tempdir()?;
         let tools = nanocodex_oai_tools::workspace_runtime::WorkspaceToolRuntime::new(
             workspace.path().to_path_buf(),
+            &nanocodex_oai_tools::SessionEnvironment::root("synthetic-session"),
         );
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../output/native-shell-latency");

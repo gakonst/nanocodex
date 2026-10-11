@@ -8,7 +8,10 @@ import { GoalRuntime } from "../src/goal-runtime";
 
 async function withGoals(test: (goals: Goals, state: DurableObjectState) => void | Promise<void>) {
   const ns = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
-  await runInDurableObject(ns.get(ns.newUniqueId()), async (_instance, state) => test(new Goals(state.storage, () => "thread", () => 1000), state));
+  await runInDurableObject(ns.get(ns.newUniqueId()), async (instance, state) => {
+    await instance.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
+    await test(new Goals(state.storage, () => "thread", () => 1000), state);
+  });
 }
 const context = { callId: "goal-call", parentCallId: "cell", sessionId: "thread", model: "test", signal: new AbortController().signal } satisfies ToolContext;
 

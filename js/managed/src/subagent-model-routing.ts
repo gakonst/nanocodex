@@ -39,14 +39,14 @@ export interface ChildRouteStore {
   commit(sessionId: string, value: RetainedChildRoute): void;
 }
 
-/** Efforts each native Claude model accepts, mirroring `ClaudeModel::supports_thinking`. */
-function claudeEfforts(model: string): readonly string[] {
+/** Efforts each native Claude model accepts, mirroring `ClaudeModel::supports_thinking`; cross-checked against the canonical WASM catalog in test/subagent-model-routing.test.ts. */
+export function claudeEfforts(model: string): readonly string[] {
   if (model === "claude-haiku-4-5") return ["none"];
   if (model === "claude-opus-4-6" || model === "claude-sonnet-4-6") return ["low", "medium", "high", "max"];
   return ["low", "medium", "high", "xhigh", "max"];
 }
 /** Default child effort: the cheapest supported level. */
-function defaultClaudeEffort(model: string): "none" | "low" {
+export function defaultClaudeEffort(model: string): "none" | "low" {
   return model === "claude-haiku-4-5" ? "none" : "low";
 }
 

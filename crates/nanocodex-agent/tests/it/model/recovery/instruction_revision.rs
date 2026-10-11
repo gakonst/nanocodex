@@ -60,7 +60,7 @@ impl Service<ResponsesAttempt> for RevisionProvider {
             ResponsesAttemptKind::Generation => {
                 assert!(request.input_items().any(|item| {
                     serde_json::to_value(item).is_ok_and(|item| {
-                        item["type"] == "function_call_output"
+                        item["type"] == "custom_tool_call_output"
                             && item["call_id"] == "call-revision-2"
                     })
                 }));
@@ -87,14 +87,17 @@ impl Service<ResponsesAttempt> for RevisionProvider {
     }
 }
 
+// Agents require Code Mode since eda4a21e3; the probe runs as a nested tool.
+const REVISION_PROBE_CELL: &str = "text(await tools.revision_probe({}));";
+
 fn revision_tool_generation(index: u32) -> ResponsesOutput {
     let item = serde_json::from_value(json!({
-        "type": "function_call",
+        "type": "custom_tool_call",
         "call_id": format!("call-revision-{index}"),
-        "name": "revision_probe",
-        "arguments": "{}"
+        "name": "exec",
+        "input": REVISION_PROBE_CELL
     }))
-    .expect("function call item decodes");
+    .expect("exec call item decodes");
     ResponsesOutput::Generation(GenerationOutput {
         id: "resp-revision-tool".to_owned(),
         reported_model: None,
@@ -104,10 +107,10 @@ fn revision_tool_generation(index: u32) -> ResponsesOutput {
         output_items: vec![item],
         code_calls: vec![CodeCall {
             call_id: format!("call-revision-{index}"),
-            name: "revision_probe".to_owned(),
+            name: "exec".to_owned(),
             namespace: None,
-            input: "{}".to_owned(),
-            kind: CodeCallKind::Function,
+            input: REVISION_PROBE_CELL.to_owned(),
+            kind: CodeCallKind::Custom,
         }],
         usage: None,
         time_to_first_event_ns: 0,

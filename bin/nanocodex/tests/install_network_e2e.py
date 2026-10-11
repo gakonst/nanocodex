@@ -333,7 +333,9 @@ def main():
                 if nightly:
                     payloads[GUEST] = guest
                     manifest[GUEST] = hashlib.sha256(guest).hexdigest()
-                assets = ['SHA256SUMS', CLI, HAND, *payloads]
+                # Like a published nightly, the immutable release attaches the CLI
+                # and Hand only compressed; SHA256SUMS still lists their raw digests.
+                assets = ['SHA256SUMS', *payloads] if nightly else ['SHA256SUMS', CLI, HAND, *payloads]
                 server.fixture = {'case': case, 'tag': tag, 'installer': installer,
                                   'payloads': payloads,
                                   'manifest': ''.join(f'{sha}  {name}\n' for name, sha in manifest.items()).encode(),

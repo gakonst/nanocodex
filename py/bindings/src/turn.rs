@@ -12,8 +12,8 @@ use pyo3::{
 use tokio::runtime::Runtime;
 
 use crate::{
+    checkpoint::SessionCheckpoint,
     error::{lock_error, runtime_error},
-    snapshot::SessionSnapshot,
     usage::usage_dict,
 };
 
@@ -130,12 +130,12 @@ impl TurnResult {
         usage_dict(py, usage)
     }
 
-    /// Copy this completed boundary into a caller-owned session snapshot.
-    fn snapshot(&self) -> PyResult<SessionSnapshot> {
+    /// Copy this completed boundary into a caller-owned portable checkpoint.
+    fn checkpoint(&self) -> PyResult<SessionCheckpoint> {
         self.inner
-            .snapshot()
-            .map(SessionSnapshot::new)
-            .ok_or_else(|| PyRuntimeError::new_err("the local agent did not retain a snapshot"))
+            .checkpoint()
+            .map(SessionCheckpoint::new)
+            .ok_or_else(|| PyRuntimeError::new_err("the local agent did not retain a checkpoint"))
     }
 
     fn __repr__(&self) -> String {

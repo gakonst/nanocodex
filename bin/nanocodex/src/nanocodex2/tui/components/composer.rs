@@ -2434,17 +2434,40 @@ mod tests {
             assert_eq!(composer.effort(), ReasoningEffort::Low);
         }
 
+        // A manually pinned gateway route (automatic routing off) still names
+        // the provider and model the thread is locked to.
         composer.update(ComposerEvent::RoutingHydrated {
             enabled: false,
             provider: Some("Vercel".into()),
             model: Some(Model::Oai(nanocodex::Model::Glm53)),
             effort: Some(ReasoningEffort::Low),
         });
+        let manual = rows(&render(&mut composer, 100, 5))[0].clone();
+        assert!(manual.contains("glm-5.3 · Vercel"), "{manual}");
+        assert!(manual.contains("low"));
+        assert!(!manual.contains("choosing"));
+        assert!(!composer.auto_routing());
+        assert_eq!(composer.model(), Model::Oai(nanocodex::Model::Glm53));
+        assert_eq!(composer.effort(), ReasoningEffort::Low);
+
+        // Leaving routing for native settings clears the route and restores
+        // the user's own selection without a stale provider.
+        composer.update(ComposerEvent::RoutingHydrated {
+            enabled: false,
+            provider: None,
+            model: None,
+            effort: None,
+        });
         let disabled = rows(&render(&mut composer, 100, 5))[0].clone();
-        assert!(disabled.contains(Model::Oai(nanocodex::Model::Astra).as_str()));
+        assert!(
+            disabled.contains(Model::Oai(nanocodex::Model::Astra).as_str()),
+            "{disabled}"
+        );
         assert!(disabled.contains("high"));
         assert!(!disabled.contains("Vercel"));
         assert!(!composer.auto_routing());
+        assert_eq!(composer.model(), Model::Oai(nanocodex::Model::Astra));
+        assert_eq!(composer.effort(), ReasoningEffort::High);
     }
 
     #[test]

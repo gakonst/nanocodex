@@ -59,7 +59,9 @@ def launch(command, env, cwd, registration_dir, transcript_path, barrier=None):
                         identity = {"pid": child.pid, "session_id": registration["active_session_id"]}
                         if barrier is not None:
                             # Neither TUI exits until both are alive and initialized.
-                            barrier.wait(timeout=10)
+                            # Wait as long as this TUI's own readiness deadline: the
+                            # sibling launched at the same time and may start slower.
+                            barrier.wait(timeout=max(1, deadline - time.monotonic()))
                         os.write(master, b"\x03\x03")
                         break
             if child.poll() is not None:

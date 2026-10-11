@@ -9,6 +9,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import WebSocket from "ws";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Observable journey: a synthetic Greek contact is found from the phone's HTTP
 // endpoint and real managed tools with Latin/Greek queries. Pagination, literal

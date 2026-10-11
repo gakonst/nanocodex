@@ -259,8 +259,12 @@ The Cloudflare adapter exposes this protocol directly as
 `CloudflareAgent.importDurabilityState(owner, archive)`. Export requires an
 inactive Agent. Import requires a pristine Durable Object and is exactly
 idempotent for a byte-identical archive, so a lost success response can be
-retried. A fresh runtime session ID is created at the destination while the
-archive's stable state ID remains unchanged.
+retried. A session-shaped state ID remains the imported session's ID at the
+destination. A durable root's task tree is a companion state,
+`<stateId>:subagents`, which journals each child's checkpoint; the archive
+carries it as a nested `subagents` archive and import restores both together,
+so children reappear (interrupted ones resumable) at the destination. Paged
+exports select that journal with `{ subagents: true }`.
 
 Archives can contain conversation and tool state and are not encrypted by this
 API. Applications own transport encryption, access control, retention, and

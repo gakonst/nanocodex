@@ -10,6 +10,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import WebSocket from "ws";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real account ingress, managed HTTP/WS, Code Mode, D1 receipts and /brain
 // storage. Only the model, account enrollment and OpenRouter are synthetic.

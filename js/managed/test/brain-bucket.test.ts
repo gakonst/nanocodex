@@ -116,7 +116,9 @@ describe("brain storage local to its agent", () => {
 
   it("routes the trusted native brain mount to its owning actor and rejects forged bindings", async () => {
     const id = crypto.randomUUID();
-    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(id), async (_instance, state) => {
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(id), async (session, state) => {
+      // Since 9d8b63102 a fresh session creates its schema on its first request.
+      await session.fetch(new Request("https://session.internal/sites"));
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
         public_origin, runtime_profile, completed_turns, last_active

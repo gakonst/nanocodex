@@ -2048,6 +2048,10 @@ mod native_screen_lifecycle;
 // fixed hosted default or an explicit model. Authentication still gates admission.
 #[tokio::test]
 async fn startup_uses_hosted_defaults_without_reading_catalog() {
+    // Since #872 (398726862) an omitted-settings `new` lets the service pick
+    // its default without any catalog read, while an omitted-settings `run`
+    // resolves the account catalog default before admitting anything. Every
+    // explicit or pinned startup still never reads the catalog.
     for catalog_mode in ["held", "unavailable", "available"] {
         for explicit in [true, false] {
             for command in ["run", "new"] {
@@ -2078,9 +2082,17 @@ async fn startup_catalog_journey(
     let catalog_reads = reads.clone();
     let prompt_count = prompts.clone();
     let admission_count = admissions.clone();
+    // Only an omitted-settings run consults the account catalog default.
+    let reads_catalog = command_name == "run" && !explicit && !pinned;
     let creation = post(
-        move |headers: HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| async move {
+        move |headers: HeaderMap, body: axum::body::Bytes| async move {
             admission_count.fetch_add(1, Ordering::SeqCst);
+            // An omitted-settings `new` posts no body at all.
+            let body: serde_json::Value = if body.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_slice(&body).unwrap()
+            };
             assert_eq!(headers["authorization"], authorization);
             if revoked {
                 return unauthorized();
@@ -2089,14 +2101,19 @@ async fn startup_catalog_journey(
                 assert_eq!(body["configuration"]["chatgpt_account_id"], "synthetic-pin");
             }
             assert!(body.get("settings_selection").is_none());
-            assert_eq!(
-                body["settings"],
-                serde_json::json!({
-                    "model": if explicit { "gpt-6.1-sol" } else { "gpt-6-astra" },
-                    "thinking": if pinned && !explicit { "high" } else { "low" },
-                    "reasoning_mode": "standard", "fast_mode": false,
-                })
-            );
+            if command_name == "new" && !explicit && !pinned {
+                // The service chooses its own default; nothing is guessed locally.
+                assert!(body.get("settings").is_none(), "{body}");
+            } else {
+                assert_eq!(
+                    body["settings"],
+                    serde_json::json!({
+                        "model": if explicit { "gpt-6.1-sol" } else { "gpt-6-astra" },
+                        "thinking": if pinned && !explicit { "high" } else { "low" },
+                        "reasoning_mode": "standard", "fast_mode": false,
+                    })
+                );
+            }
             if command_name == "new" {
                 assert!(body.get("input").is_none());
                 return json_response(
@@ -2155,8 +2172,18 @@ async fn startup_catalog_journey(
             command.args(["--thinking", "high", "--fast-mode=false"]);
         }
     }
-    let result = tokio::time::timeout(std::time::Duration::from_secs(8), command.output()).await;
-    {
+    if reads_catalog && catalog_mode == "held" {
+        // The account default is unknown until the catalog answers, so the run
+        // must wait rather than admit a locally guessed model.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), command.output()).await;
+        assert!(
+            result.is_err(),
+            "run admitted before the held catalog answered"
+        );
+    } else {
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(8), command.output()).await;
         let output = result.expect("CLI journey timed out").unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2170,6 +2197,8 @@ async fn startup_catalog_journey(
                 stderr.contains("401") || stderr.contains("Unauthorized"),
                 "{stderr}"
             );
+        } else if reads_catalog && catalog_mode == "unavailable" {
+            assert!(!output.status.success(), "{stderr}");
         } else {
             assert!(output.status.success(), "{stderr}");
             let expected = if command_name == "new" {
@@ -2180,12 +2209,23 @@ async fn startup_catalog_journey(
             assert!(stdout.contains(expected), "{stdout}");
         }
     }
-    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let catalog_reads = reads.load(Ordering::SeqCst);
+    if reads_catalog && catalog_mode == "unavailable" {
+        // Managed reads retry a transient 503 before surfacing it.
+        assert!(catalog_reads >= 1, "{catalog_reads}");
+    } else {
+        assert_eq!(catalog_reads, usize::from(reads_catalog));
+    }
+    let admitted = !reads_catalog || catalog_mode == "available";
     assert_eq!(
         prompts.load(Ordering::SeqCst),
-        usize::from(!revoked && command_name == "run")
+        usize::from(admitted && !revoked && command_name == "run")
     );
-    assert_eq!(admissions.load(Ordering::SeqCst), 1, "one startup POST");
+    assert_eq!(
+        admissions.load(Ordering::SeqCst),
+        usize::from(admitted),
+        "one startup POST"
+    );
     server.abort();
 }
 
@@ -2220,7 +2260,8 @@ async fn explicit_model_rejects_invalid_options_before_network() {
         assert!(
             stderr.contains("cannot be pinned")
                 || stderr.contains("not offered")
-                || stderr.contains("supported managed model"),
+                || stderr.contains("supported managed model")
+                || stderr.contains("on the managed service; supported"),
             "{flags:?}: {stderr}"
         );
         eprintln!("invalid flags={flags:?}: {stderr}");

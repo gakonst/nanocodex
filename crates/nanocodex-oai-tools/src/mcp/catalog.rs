@@ -18,7 +18,6 @@ use super::{
 };
 
 const DEFAULT_SEARCH_LIMIT: usize = 8;
-const MAX_SEARCH_LIMIT: usize = 32;
 const MAX_MODEL_TOOL_NAME_BYTES: usize = 128;
 const NAME_HASH_BYTES: usize = 12;
 const NAME_HASH_SUFFIX_BYTES: usize = NAME_HASH_BYTES + 1;
@@ -266,7 +265,7 @@ impl ProviderState {
         let failed_servers = catalog.failures.clone();
         drop(catalog);
 
-        let selected = index.search(query, limit.min(MAX_SEARCH_LIMIT));
+        let selected = index.search(query, limit);
         let tools = selected.iter().map(|entry| entry.summary()).collect();
         let loadable_tools = coalesce_loadable_tools(&selected);
         let mut catalog = self.catalog();

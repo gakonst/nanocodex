@@ -889,7 +889,8 @@ mod tests {
             .tool_with_exposure(LocalPrivate, ToolExposure::Hidden)
             .build()
             .unwrap();
-        let code_tools = bind_host(tools.clone(), EchoHost).for_session("session-1");
+        let code_tools = bind_host(tools.clone(), EchoHost)
+            .for_session(&crate::SessionEnvironment::root("session-1"));
         let direct_tools = bind_host(tools, DirectHost);
         let code_runtime = EmbeddedToolRuntime::new_with_tools(".", None, None, &code_tools);
         let direct_runtime = EmbeddedToolRuntime::new_with_tools(".", None, None, &direct_tools);
@@ -967,7 +968,7 @@ mod tests {
             ready: Arc::clone(&ready),
             definition_reads: Arc::clone(&definition_reads),
         })
-        .for_session("session-1");
+        .for_session(&crate::SessionEnvironment::root("session-1"));
         let runtime = EmbeddedToolRuntime::new_with_tools(".", None, None, &tools);
         let specs = runtime.model_specs("session-1");
         assert_eq!(
@@ -1014,11 +1015,11 @@ mod tests {
         let first_tools = bound_tools(CancelHost {
             cancelled_sessions: Arc::clone(&cancelled_sessions),
         })
-        .for_session("session-1");
+        .for_session(&crate::SessionEnvironment::root("session-1"));
         let second_tools = bound_tools(CancelHost {
             cancelled_sessions: Arc::clone(&cancelled_sessions),
         })
-        .for_session("session-2");
+        .for_session(&crate::SessionEnvironment::root("session-2"));
         let first = EmbeddedToolRuntime::new_with_tools(".", None, None, &first_tools);
         let second = EmbeddedToolRuntime::new_with_tools(".", None, None, &second_tools);
 

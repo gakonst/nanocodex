@@ -5,7 +5,7 @@ import type {
   AgentEvent,
   DefaultAgent,
   ToolConfiguration,
-  SessionSnapshot,
+  SessionCheckpoint,
 } from "../types.mjs";
 import type { CloudflareDurableObjectStorage } from "../runtime/cloudflare-durability-store.mjs";
 import type { Tool as SubagentTool } from "../runtime/subagents.mjs";
@@ -39,10 +39,7 @@ type CloudflareAgentActions = Omit<AgentActions, "events" | "turn"> & Readonly<{
     /** Accepts a read-only hibernatable event socket; reconnect from the last event or replay pause cursor. */
     connect(request: Request): Response;
   }>;
-  turn: AgentActions["turn"] & Readonly<{
-    /** Atomically steers the active turn or starts a new independently awaitable turn. */
-    route(options: { input: string }): Promise<import("../types.mjs").Turn | undefined>;
-  }>;
+  turn: AgentActions["turn"];
 }>;
 
 /** A durable Agent whose Cloudflare event socket survives typed extensions. */
@@ -54,29 +51,43 @@ export type Agent<extended extends object = {}> =
   }>;
 
 /** Copies the exact latest committed model boundary; rejects before the first safe boundary. */
-export function checkpoint(agent: Agent): Promise<SessionSnapshot>;
+export function checkpoint(agent: Agent): Promise<SessionCheckpoint>;
 
 /** Removes the package-owned durable history for one Cloudflare Agent. */
 export function destroy(owner: DurableObjectOwner): void;
 
-/** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
-/** Execution head for a host that transfers its immutable records separately. */
-export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableStateArchive>;
+/**
+ * One Cloudflare Agent's portable durable session: its root state and, when
+ * the root has a durable task tree, the complete `<stateId>:subagents`
+ * task-tree journal state. Importing restores both atomically.
+ */
+export type DurabilityPortableSessionArchive = DurabilityPortableStateArchive & Readonly<{
+  subagents?: DurabilityPortableStateArchive | undefined;
+}>;
 
+/** Selects the root state, or with `subagents: true` its task-tree journal state. */
+export type CloudflareDurabilityExportPageRequest = DurabilityExportPageRequest & Readonly<{
+  subagents?: true | undefined;
+}>;
+
+/** Execution heads of the root and its task-tree journal, for a host that transfers both immutable record sets separately. */
+export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableSessionArchive>;
+
+/** Fences and exports this inactive Cloudflare Agent's provider-neutral session, including its task tree. */
 export function exportDurabilityState(
   owner: DurableObjectOwner,
-): Promise<DurabilityPortableStateArchive>;
+): Promise<DurabilityPortableSessionArchive>;
 
-/** Fences once and exports one resumable page of an exact revision range. */
+/** Fences once and exports one resumable page of an exact revision range of the root or its task-tree journal. */
 export function exportDurabilityState(
   owner: DurableObjectOwner,
-  request: DurabilityExportPageRequest,
+  request: CloudflareDurabilityExportPageRequest,
 ): Promise<DurabilityPortableStatePage>;
 
-/** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
+/** Imports a provider-neutral session, including any task-tree journal, into a pristine Cloudflare Agent owner. */
 export function importDurabilityState(
   owner: DurableObjectOwner,
-  archive: DurabilityPortableStateArchive,
+  archive: DurabilityPortableSessionArchive,
 ): Promise<DurabilityStoredState>;
 
 /** Prunes old terminal receipts before constructing the full Agent runtime. */
@@ -91,7 +102,11 @@ export function pruneDurableReceipts(
  */
 export function prepareTransport(agent: Agent): boolean;
 
-/** Atomically steers an active Cloudflare Agent turn or starts a new turn. */
+/**
+ * @internal Live-input seam for realtime voice hosts: atomically steers the
+ * active turn or starts a new one, for either harness. Applications use the
+ * shared agent.turn.prompt() and turn.steer() actions.
+ */
 export function route(
   agent: Agent,
   options: { input: string },

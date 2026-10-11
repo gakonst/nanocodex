@@ -156,7 +156,9 @@ describe("MemoryScope to Session invalidation", () => {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> };
     const memory = bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID());
     const session = bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID());
-    await runInDurableObject(session, async (_obj, ctx) => {
+    await runInDurableObject(session, async (obj, ctx) => {
+      // A fresh Session creates its schema on its first real request (9d8b63102).
+      await obj.fetch(new Request("https://session.internal/sites"));
       ctx.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
         authorization_epoch,public_origin,runtime_profile,accepted_turns,last_active)
         VALUES(1,?,'user','org','team',1,'https://test.example','managed',0,?)`, crypto.randomUUID(), Date.now());

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fetch } from "./support/miniflare-fetch.mjs";
 const execute = promisify(execFile);
 const cliKeys = { owner: "ncx_live_" + "a".repeat(12) + "_" + "b".repeat(43), recipient: "ncx_live_" + "c".repeat(12) + "_" + "d".repeat(43) };
 import { mkdir, readFile, writeFile } from "node:fs/promises";

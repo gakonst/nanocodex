@@ -5804,6 +5804,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "iana-time-zone",
+ "nanocodex-home",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "reqwest",
@@ -5865,6 +5866,7 @@ dependencies = [
  "nanocodex-egress",
  "nanocodex-eval",
  "nanocodex-eval-adapters",
+ "nanocodex-home",
  "nanocodex-managed",
  "nanocodex-oai-tools",
  "nanocodex-observability",
@@ -5995,6 +5997,7 @@ dependencies = [
  "libc",
  "nanocodex-agent",
  "nanocodex-claude-tools",
+ "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "regex",
  "reqwest",
@@ -6021,6 +6024,7 @@ dependencies = [
  "globset",
  "ignore",
  "image",
+ "nanocodex-home",
  "nix 0.31.3",
  "regex",
  "schemars 0.8.22",
@@ -6320,6 +6324,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-home"
+version = "0.6.7"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nanocodex-managed"
 version = "0.6.7"
 dependencies = [
@@ -6364,6 +6378,7 @@ dependencies = [
  "iana-time-zone",
  "image",
  "nanocodex-agent",
+ "nanocodex-home",
  "nanocodex-oai-api",
  "nanocodex-oai-tools",
  "reqwest",
@@ -6433,6 +6448,7 @@ dependencies = [
  "http",
  "httpdate",
  "image",
+ "nanocodex-home",
  "nanocodex-oai-api",
  "nanocodex-oai-tools-macros",
  "nix 0.31.3",

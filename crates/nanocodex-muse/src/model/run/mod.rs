@@ -429,7 +429,7 @@ impl<S> ModelRun<S> {
             self.session = Some(self.empty_session(requested_workspace)?);
         }
         let session = self.session.as_mut().ok_or_else(|| {
-            NanocodexError::InvalidSessionSnapshot(
+            NanocodexError::InvalidCheckpoint(
                 "developer context did not establish a model session".to_owned(),
             )
         })?;
@@ -689,9 +689,14 @@ mod context_accounting_snapshot_tests {
                 ..Usage::default()
             }));
         checkpoint.conversation.observe_server_reasoning(true);
-        let snapshot =
-            CommittedSession::new(Arc::from("synthetic-lineage"), Model::Astra, checkpoint)
-                .snapshot();
+        let snapshot = CommittedSession::new(
+            Arc::from("synthetic-lineage"),
+            Model::Astra,
+            crate::Thinking::default(),
+            crate::ServiceTier::default(),
+            checkpoint,
+        )
+        .snapshot();
         let encoded = serde_json::to_value(snapshot).unwrap();
         let restored: SessionSnapshot = serde_json::from_value(encoded.clone()).unwrap();
         let restored = restored.into_resume().unwrap().checkpoint.unwrap();
@@ -719,9 +724,14 @@ mod context_accounting_snapshot_tests {
                 ),
             ]);
         let expected = estimated.conversation.active_context_tokens();
-        let snapshot =
-            CommittedSession::new(Arc::from("synthetic-lineage"), Model::Astra, estimated)
-                .snapshot();
+        let snapshot = CommittedSession::new(
+            Arc::from("synthetic-lineage"),
+            Model::Astra,
+            crate::Thinking::default(),
+            crate::ServiceTier::default(),
+            estimated,
+        )
+        .snapshot();
         let decoded: SessionSnapshot =
             serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
         let restored = decoded.into_resume().unwrap().checkpoint.unwrap();

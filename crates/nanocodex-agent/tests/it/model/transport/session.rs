@@ -242,7 +242,11 @@ async fn https_restored_configuration_update_is_retained_but_not_sent() -> Resul
         .build()?;
     let first = agent.prompt("original user prompt").await?.result().await?;
     assert_eq!(first.final_message(), "done");
-    let snapshot = first.snapshot().expect("completed local snapshot");
+    let snapshot = first
+        .checkpoint()
+        .as_ref()
+        .map(conversation)
+        .expect("completed local snapshot");
     let (head, mut history, prefix) = snapshot.into_context_parts();
     // Simulate a saved session from a client that emitted effort overrides.
     // Developer history must survive the same outgoing-only filter.
@@ -266,11 +270,17 @@ async fn https_restored_configuration_update_is_retained_but_not_sent() -> Resul
         .thinking(Thinking::High)
         .fast_mode(false)
         .instructions("Keep these developer instructions unchanged.")
-        .resume(saved)
+        .resume_native_snapshot(saved)
         .build()?;
     let result = resumed.prompt("resume user prompt").await?.result().await?;
     assert_eq!(result.final_message(), "done");
-    let retained = serde_json::to_value(result.snapshot().expect("resumed local snapshot"))?;
+    let retained = serde_json::to_value(
+        result
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
+            .expect("resumed local snapshot"),
+    )?;
     let saved_history = saved_json["history"].as_array().unwrap();
     let retained_history = retained["history"].as_array().unwrap();
     assert_eq!(&retained_history[..saved_history.len()], saved_history);
@@ -282,7 +292,12 @@ async fn https_restored_configuration_update_is_retained_but_not_sent() -> Resul
         1
     );
     resumed.compact().await?;
-    let compacted = serde_json::to_value(resumed.snapshot().await?)?;
+    let compacted = serde_json::to_value(
+        resumed
+            .checkpoint()
+            .await
+            .map(|checkpoint| conversation(&checkpoint))?,
+    )?;
     assert!(compacted["history"].as_array().unwrap().iter().any(|item| {
         item["type"] == "compaction" && item["encrypted_content"] == "opaque-http-summary"
     }));
@@ -387,7 +402,7 @@ async fn https_stored_fork_uses_the_historical_response_checkpoint() -> Result<(
         .session_id(test_session_id())
         .build()?;
     let root = agent.prompt("root prompt").await?.result().await?;
-    let (fork, fork_events) = agent.fork_from(&root).await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::at_turn(&root)).await?;
     assert_eq!(
         fork.prompt("branch prompt")
             .await?
@@ -635,7 +650,12 @@ async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Resul
     agent.prompt("changed high").await?.result().await?;
     // Serialize and deserialize the public snapshot to exercise persistence,
     // rather than reusing live transport state from the original agent.
-    let saved_json = serde_json::to_value(agent.snapshot().await?)?;
+    let saved_json = serde_json::to_value(
+        agent
+            .checkpoint()
+            .await
+            .map(|checkpoint| conversation(&checkpoint))?,
+    )?;
     let saved: SessionSnapshot = serde_json::from_value(saved_json.clone())?;
     agent.shutdown().await?;
     drop((agent, events));
@@ -649,8 +669,10 @@ async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Resul
     });
     let invalid = head.with_context(edited_history, prefix);
     assert!(matches!(
-        Nanocodex::builder(openai.clone()).resume(invalid).build(),
-        Err(NanocodexError::InvalidSessionSnapshot(_))
+        Nanocodex::builder(openai.clone())
+            .resume_native_snapshot(invalid)
+            .build(),
+        Err(NanocodexError::InvalidCheckpoint(_))
     ));
     let saved = if durable_resume {
         let durable = RolloutConfig::new(&rollout_home).load_session(TEST_SESSION_ID)?;
@@ -666,7 +688,7 @@ async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Resul
         .thinking(Thinking::High)
         .fast_mode(false)
         .instructions("Keep the saved developer instructions unchanged.")
-        .resume(saved)
+        .resume_native_snapshot(saved)
         .build()?;
     assert_eq!(
         resumed
@@ -687,7 +709,12 @@ async fn supported_reasoning_resume_preserves_pin(durable_resume: bool) -> Resul
             .final_message(),
         "done"
     );
-    let restored_json = serde_json::to_value(resumed.snapshot().await?)?;
+    let restored_json = serde_json::to_value(
+        resumed
+            .checkpoint()
+            .await
+            .map(|checkpoint| conversation(&checkpoint))?,
+    )?;
     resumed.shutdown().await?;
     drop((resumed, events));
     let requests = timeout(std::time::Duration::from_secs(5), server)

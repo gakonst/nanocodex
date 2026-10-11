@@ -202,18 +202,10 @@ pub(super) struct TurnKey(pub(super) u64);
 #[non_exhaustive]
 pub struct TurnResult {
     pub(super) request_id: Option<String>,
+    pub(super) turn_id: Option<String>,
     pub(super) final_message: String,
     pub(super) usage: Option<TurnUsage>,
-    #[cfg(feature = "openai")]
-    pub(super) checkpoint: TurnCheckpoint,
-}
-
-#[derive(Clone)]
-#[cfg(feature = "openai")]
-pub(super) enum TurnCheckpoint {
-    Live(Arc<CommittedSession>),
-    Replayed(SessionSnapshot),
-    Unavailable,
+    pub(super) boundary: Option<TurnBoundary>,
 }
 
 impl TurnResult {
@@ -241,40 +233,62 @@ impl TurnResult {
         self.usage.as_ref()
     }
 
-    /// Returns a serializable, caller-owned session snapshot when retained by the backend.
-    ///
-    /// The snapshot contains the complete unredacted model-visible conversation,
-    /// including reasoning payloads and tool inputs and outputs. Applications are
-    /// responsible for protecting and retaining serialized snapshots appropriately.
+    /// Canonical identity of the turn that produced this result, when known.
     #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn snapshot(&self) -> Option<SessionSnapshot> {
-        #[cfg(feature = "openai")]
-        match &self.checkpoint {
-            TurnCheckpoint::Live(checkpoint) => Some(checkpoint.snapshot()),
-            TurnCheckpoint::Replayed(snapshot) => Some(snapshot.clone()),
-            TurnCheckpoint::Unavailable => None,
-        }
-        #[cfg(not(feature = "openai"))]
-        None
+    pub fn turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
     }
 
-    /// Constructs a completed result for a backend without a transferable
-    /// local session checkpoint.
+    /// Materializes the portable boundary this turn committed, when the
+    /// backend retained one.
+    ///
+    /// The checkpoint contains the complete unredacted model-visible
+    /// conversation, including reasoning payloads and tool inputs and outputs.
+    /// Applications are responsible for protecting and retaining serialized
+    /// checkpoints appropriately. Use [`crate::ForkRequest::at_turn`] to fork
+    /// from this boundary without materializing it.
+    #[must_use]
+    pub fn checkpoint(&self) -> Option<SessionCheckpoint> {
+        let checkpoint = self.boundary.as_ref()?.checkpoint().ok()?;
+        Some(if checkpoint.turn_id().is_none() {
+            checkpoint.with_turn_id(self.turn_id.clone())
+        } else {
+            checkpoint
+        })
+    }
+
+    /// Backend-retained boundary used to fork at this turn.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn boundary(&self) -> Option<&TurnBoundary> {
+        self.boundary.as_ref()
+    }
+
+    /// Constructs a completed result for a backend, optionally retaining the
+    /// boundary that [`Self::checkpoint`] and turn forks use.
     #[doc(hidden)]
     #[must_use]
     pub const fn from_backend(
         request_id: Option<String>,
         final_message: String,
         usage: Option<TurnUsage>,
+        boundary: Option<TurnBoundary>,
     ) -> Self {
         Self {
             request_id,
+            turn_id: None,
             final_message,
             usage,
-            #[cfg(feature = "openai")]
-            checkpoint: TurnCheckpoint::Unavailable,
+            boundary,
         }
+    }
+
+    /// Records the canonical turn identity assigned by the common handle.
+    pub(super) fn with_turn_id(mut self, turn_id: String) -> Self {
+        if self.turn_id.is_none() {
+            self.turn_id = Some(turn_id);
+        }
+        self
     }
 }
 
@@ -427,12 +441,11 @@ impl SpawnOptions {
                 "model does not belong to selected harness".into(),
             ));
         }
-        if let (Some(model), Some(thinking)) = (self.harness_model, self.thinking)
-            && !model.supports_thinking(thinking)
-        {
-            return Err(NanocodexError::InvalidRequest(
-                "model does not support selected thinking".into(),
-            ));
+        if let (Some(model), Some(thinking)) = (self.harness_model, self.thinking) {
+            model
+                .capabilities(crate::ModelTransport::Native)
+                .check_thinking(thinking)
+                .map_err(crate::error::model_capability_error)?;
         }
         Ok(())
     }
@@ -495,79 +508,6 @@ impl SpawnOptions {
     }
 }
 
-/// Native in-memory checkpoint for residency eviction, without host credentials.
-#[derive(Clone, Debug)]
-pub enum ChildSnapshot {
-    /// Existing Responses checkpoint, preserving its public representation.
-    Codex(ChildRuntimeSnapshot),
-    /// Versioned native checkpoint decoded only by its owning backend family.
-    Native {
-        /// Backend family and pinned model.
-        model: crate::HarnessModel,
-        /// Stable child identity.
-        session_id: String,
-        /// Pinned effort.
-        thinking: Thinking,
-        /// Backend-native serialized state, never a translated Responses transcript.
-        payload: String,
-        /// Whether an assignment reached a committed conversation boundary.
-        has_conversation: bool,
-    },
-}
-
-impl ChildSnapshot {
-    /// Whether restoration can resume an already committed assignment.
-    pub fn has_conversation(&self) -> bool {
-        match self {
-            Self::Codex(snapshot) => snapshot.conversation.is_some(),
-            Self::Native {
-                has_conversation, ..
-            } => *has_conversation,
-        }
-    }
-    /// Pinned family-scoped model selected when the child was constructed.
-    pub fn model(&self) -> crate::HarnessModel {
-        match self {
-            Self::Codex(snapshot) => crate::HarnessModel::Codex(snapshot.model),
-            Self::Native { model, .. } => *model,
-        }
-    }
-}
-
-/// In-memory idle child state, rehydrated within the same parent runtime.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ChildRuntimeSnapshot {
-    /// Stable child session identity.
-    pub session_id: String,
-    /// Pinned model.
-    pub model: Model,
-    /// Pinned reasoning effort.
-    pub thinking: Thinking,
-    /// Requested processing tier.
-    #[serde(flatten, with = "crate::service_tier_serde")]
-    pub service_tier: ServiceTier,
-    /// Whether this child uses full-history HTTP independently of its parent.
-    #[serde(default)]
-    pub stateless_http: bool,
-    /// Last safe conversation boundary; absent before the first model turn.
-    pub conversation: Option<SessionSnapshot>,
-}
-
-#[cfg(feature = "openai")]
-impl ChildRuntimeSnapshot {
-    /// Validates stored identity, model policy, and the versioned conversation.
-    pub fn validate(&self) -> Result<()> {
-        self.session_id.parse::<SessionId>().map_err(|error| {
-            NanocodexError::InvalidSessionSnapshot(format!("invalid child session ID: {error}"))
-        })?;
-        super::spawn::validate_model_thinking(self.model, self.thinking)?;
-        if let Some(conversation) = &self.conversation {
-            conversation.clone().into_resume()?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(feature = "openai")]
 pub(super) enum Command {
     Prompt {
@@ -611,19 +551,19 @@ pub(super) enum Command {
         result: oneshot::Sender<Result<()>>,
     },
     Fork {
-        side_conversation: bool,
-        checkpoint: Option<Arc<CommittedSession>>,
+        origin: crate::Origin,
+        point: ForkFrom,
+        session_id: SessionId,
+        policy: Option<Arc<dyn execution::ExecutionPolicy>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
-    /// Captures the latest committed, resumable model boundary without mutating the driver.
-    Snapshot {
-        result: oneshot::Sender<Result<SessionSnapshot>>,
-    },
+    /// Captures this driver's identity and latest committed boundary without
+    /// waiting for an active turn.
     ChildSnapshot {
-        result: oneshot::Sender<Result<ChildRuntimeSnapshot>>,
+        result: oneshot::Sender<Result<ChildState>>,
     },
     Spawn {
-        restore: Option<ChildRuntimeSnapshot>,
+        restore: Option<ChildState>,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
@@ -658,6 +598,17 @@ pub(super) enum Command {
         result: oneshot::Sender<Result<AgentSessionContext>>,
     },
     Shutdown,
+}
+
+/// Driver-resolved boundary a fork starts from.
+#[cfg(feature = "openai")]
+pub(super) enum ForkFrom {
+    /// The latest committed boundary held by the driver.
+    Latest,
+    /// A live boundary retained by a completed turn of this conversation.
+    Live(Arc<CommittedSession>),
+    /// A decoded portable checkpoint of this conversation tree.
+    Snapshot(Box<SessionSnapshot>),
 }
 
 #[cfg(feature = "openai")]

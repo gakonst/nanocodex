@@ -4073,6 +4073,12 @@ async fn run_inner(
                             })?;
                             updates.push(app.update(AppEvent::Transcript { pane, record }));
                             updates.push(app.update(AppEvent::WorkerTurnFinished { pane, terminal_expected: false }));
+                            // No run follows a rejected admission, so its transcript
+                            // error never reaches a run terminal. Show it now (#968).
+                            updates.push(app.update(AppEvent::NotifyError {
+                                pane,
+                                error: format!("Prompt was not started: {error}"),
+                            }));
                             for (pane, id) in
                                 take_waiting_steer_failures(&mut runtime.waiting_steers)
                             {
@@ -4392,6 +4398,11 @@ async fn run_inner(
             }
             () = wait_until(render_deadline), if render_deadline.is_some() => {}
             () = wait_until(animation_deadline), if animation_deadline.is_some() => {
+                let update = app.update(AppEvent::AnimationFrame(Instant::now()));
+                stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+            }
+            // A formula finished after its upload was queued: lay it out and draw.
+            () = components::math::changed() => {
                 let update = app.update(AppEvent::AnimationFrame(Instant::now()));
                 stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
             }
@@ -5898,7 +5909,9 @@ async fn apply_update(
                             continue;
                         };
                         let thinking = thinking_from_effort(root.composer().effort());
-                        let thinking = if entry.thinking.contains(&thinking) { thinking } else {
+                        let thinking = if entry.thinking.contains(&thinking) { thinking } else if runtime.local.is_some() {
+                            model.harness().default_thinking()
+                        } else {
                             model.default_thinking()
                         };
                         let preferred_mode = managed_reasoning_mode(root.preferred_reasoning_mode());

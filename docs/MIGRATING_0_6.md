@@ -231,6 +231,34 @@ still applies; this is not a promise that arbitrary modified snapshots work.
 `into_context_parts()` and `SessionSnapshotHead::with_context(...)` let stores
 separate metadata from conversation records and reassemble the snapshot.
 
+### Artificial limits removed (current source)
+
+Several hardcoded caps that no provider contract, memory bound or security
+boundary required were removed. No public signature changed; behavior visible
+to embedders and models changed as follows:
+
+- Project `AGENTS.md` files are loaded whole. The former shared 32 KiB budget
+  that truncated (and then skipped) deeper project documents is gone.
+- Claude nested `WebSearch` no longer sends `max_uses: 3`, follows
+  `pause_turn` continuations until `end_turn` instead of failing after four
+  requests, and returns its complete answer and sources instead of 32 KiB /
+  8 KiB slices (an oversized source list no longer fails the search). A paused
+  response with no content fails as no progress. Claude `WebFetch` returns the
+  whole auxiliary summary. The per-receipt history bound still applies.
+- Claude client `ToolSearch` accepts any positive `max_results` (formerly
+  1–8); the CLI MCP `ToolSearch` (formerly 1–32) and the Rust and JavaScript
+  MCP `tool_search` limit (formerly clamped to 32) return the requested number
+  of matches. Omitted values keep their defaults (5 and 8).
+- `wait_agent` honors any positive `timeout_ms`; the one-hour ceiling is
+  gone. The 30-second default for an omitted timeout is unchanged.
+- An encoded `submit_result` string larger than 1 MiB is decoded like any
+  other.
+- Claude prompts accept any number of documents within the existing 20 MiB
+  combined inline-media bound (formerly at most five).
+
+Callers who relied on any of these caps should enforce them in their own tool
+hooks or prompts.
+
 ### Accounting and transport changes
 
 - Removed `RunMetrics::billing_uncertain_response_attempts`,

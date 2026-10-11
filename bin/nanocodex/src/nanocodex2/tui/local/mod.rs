@@ -173,10 +173,9 @@ impl LocalState {
                 session_id: backend.handle.session_id().to_string(),
                 workspace: backend.workspace.clone(),
                 settings: settings_from_launch(&backend.launch)?,
-                // A resumed Claude session is not new: its replayed history
-                // must be restored rather than discarded as a fresh creation.
-                created: backend.launch.resume.is_none()
-                    && backend.launch.args.claude_resume.is_none(),
+                // A resumed session is not new: its replayed history must be
+                // restored rather than discarded as a fresh creation.
+                created: backend.launch.resume.is_none() && backend.launch.args.resumed().is_none(),
                 history: sessions::history_window(&backend.transcript, backend.handle.session_id()),
             };
             let replaced = slot
@@ -320,7 +319,7 @@ pub(crate) fn settings_from_launch(launch: &LocalLaunch) -> Result<AgentSettings
 }
 
 pub(crate) fn model_catalog(launch: &LocalLaunch) -> Vec<nanocodex_managed::AvailableModel> {
-    use nanocodex::{HarnessFamily, ReasoningMode, Thinking};
+    use nanocodex::{HarnessFamily, ModelTransport, ReasoningMode};
     HarnessModel::for_family(HarnessFamily::Codex)
         .chain(
             HarnessModel::for_family(HarnessFamily::Claude)
@@ -328,16 +327,23 @@ pub(crate) fn model_catalog(launch: &LocalLaunch) -> Vec<nanocodex_managed::Avai
         )
         .filter_map(|model| {
             let id: ManagedModel = model.as_str().parse().ok()?;
+            let capabilities = model.capabilities(ModelTransport::Native);
+            // The local runtime fixes its reasoning mode at launch, so only
+            // Standard and a supported launch mode are offered.
+            let mut reasoning_modes = vec![ReasoningMode::Standard];
+            let launch_mode = launch.args.tui_reasoning_mode();
+            if launch_mode != ReasoningMode::Standard
+                && capabilities.supports_reasoning_mode(launch_mode)
+            {
+                reasoning_modes.push(launch_mode);
+            }
             Some(nanocodex_managed::AvailableModel {
                 id,
                 name: model.to_string(),
                 provider: model.family().to_string(),
-                thinking: Thinking::ALL
-                    .into_iter()
-                    .filter(|effort| model.supports_thinking(*effort))
-                    .collect(),
-                fast_mode: model.supports_fast_mode(),
-                reasoning_modes: vec![ReasoningMode::Standard],
+                thinking: capabilities.thinking().collect(),
+                fast_mode: capabilities.fast_mode(),
+                reasoning_modes,
             })
         })
         .collect()

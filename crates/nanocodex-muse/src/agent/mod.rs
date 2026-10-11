@@ -41,7 +41,16 @@ use tracing::{Instrument, info, info_span};
 
 #[cfg(feature = "openai")]
 use crate::prompt_cache::{ModelPromptCache, SharedPromptCache};
-use crate::{NanocodexError, Result, session::SessionSnapshot, usage::TurnUsage};
+#[cfg(feature = "openai")]
+use crate::session::SessionSnapshot;
+use crate::{
+    NanocodexError, Result,
+    session::{
+        Capabilities, ForkRequest, Lineage, Persistence, SessionCheckpoint, SessionInfo,
+        TurnBoundary,
+    },
+    usage::TurnUsage,
+};
 #[cfg(feature = "openai")]
 use crate::{
     model::run::{
@@ -72,6 +81,35 @@ enum InitialResume {
 
 #[cfg(feature = "openai")]
 impl InitialResume {
+    /// Prefers the exact retained model boundary and falls back to typed history.
+    fn from_resume(resume: SessionResume) -> Self {
+        let SessionResume {
+            lineage_id,
+            prompt_cache_key,
+            workspace,
+            canonical_context,
+            history,
+            client_authored,
+            context_baseline,
+            checkpoint,
+            ..
+        } = resume;
+        checkpoint.map_or_else(
+            || {
+                Self::History(Box::new(HistoryCheckpoint {
+                    workspace,
+                    provider_session_id: lineage_id,
+                    canonical_context,
+                    history,
+                    client_authored,
+                    prompt_cache_key,
+                    context_baseline,
+                }))
+            },
+            |checkpoint| Self::Exact(Box::new(checkpoint)),
+        )
+    }
+
     fn workspace(&self) -> &str {
         match self {
             Self::Exact(checkpoint) => checkpoint.workspace(),
@@ -108,6 +146,8 @@ pub mod backend;
 #[cfg(feature = "openai")]
 mod builder;
 #[cfg(feature = "openai")]
+mod checkpoint;
+#[cfg(feature = "openai")]
 mod context_source;
 #[cfg(feature = "openai")]
 mod driver;
@@ -129,17 +169,14 @@ pub use context_source::ExecutionEnvironment;
 pub use handle::AgentHandle;
 pub use handle::Nanocodex;
 pub use session_context::AgentSessionContext;
-#[cfg(feature = "openai")]
-use turn::TurnCheckpoint;
-pub use turn::{
-    ChildRuntimeSnapshot, ChildSnapshot, PromptRequest, PromptRoute, SpawnOptions, Turn,
-    TurnControl, TurnResult,
-};
+pub use turn::{PromptRequest, PromptRoute, SpawnOptions, Turn, TurnControl, TurnResult};
 
 #[cfg(feature = "openai")]
 use backend::{BackendRuntime, LocalLifecycle};
 #[cfg(feature = "openai")]
 use builder::{CodexCompatibility, PromptCacheConfig};
+#[cfg(feature = "openai")]
+use checkpoint::{CheckpointSource, ChildState, is_stateless_http};
 #[cfg(feature = "openai")]
 pub(crate) use context_source::ContextSource;
 #[cfg(feature = "openai")]
@@ -159,4 +196,4 @@ use handle::request_command;
 #[cfg(feature = "openai")]
 use spawn::{build_agent, spawn_agent_driver, validate};
 #[cfg(feature = "openai")]
-use turn::{Command, ExecutionOperation, PromptRouteKind, QueuedTurn, TurnKey};
+use turn::{Command, ExecutionOperation, ForkFrom, PromptRouteKind, QueuedTurn, TurnKey};

@@ -12,6 +12,7 @@ import { createTools } from "nanocodex/tools";
 import { createAttachment } from "nanocodex-tools/attachment";
 import { createNodeProcessTools } from "nanocodex-tools/node";
 import { createAttachment as createLegacyAttachment } from "./fixtures/hand-publisher-546bec456.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real public JS publisher, ToolRouter, workerd WebSockets, broker, SQLite and
 // native /bin/sh. Only admission credentials and clocks are fixture inputs.

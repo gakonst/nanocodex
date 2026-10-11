@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use eyre::{Result, eyre};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use nanocodex_muse::{
-    Muse, Nanocodex, Tools,
+    ForkRequest, Muse, Nanocodex, Tools,
     input::{ImageDetail, Prompt, UserInput},
     tools::ToolExposure,
 };
@@ -394,8 +394,8 @@ async fn muse_image_failures_return_text_without_creating_artifacts() -> Result<
 }
 
 #[tokio::test]
-async fn muse_image_inputs_match_the_documented_responses_payload_and_survive_resume() -> Result<()>
-{
+async fn muse_image_inputs_match_the_documented_responses_payload_and_survive_resume_and_fork()
+-> Result<()> {
     let workspace = tempfile::tempdir()?;
     let png = image(ImageFormat::Png);
     let jpeg = image(ImageFormat::Jpeg);
@@ -408,7 +408,7 @@ async fn muse_image_inputs_match_the_documented_responses_payload_and_survive_re
     let endpoint = format!("http://{}/v1", listener.local_addr()?);
     let expected_inline = inline.clone();
     let server = tokio::spawn(async move {
-        for id in ["first", "resumed"] {
+        for id in ["first", "resumed", "forked"] {
             let (stream, path, headers, body) = request(&listener).await?;
             assert_eq!(path, "/v1/responses");
             assert!(headers.to_lowercase().contains("x-api-version: 1.0.0"));
@@ -473,19 +473,28 @@ async fn muse_image_inputs_match_the_documented_responses_payload_and_survive_re
         },
     ]);
     assert_eq!(turn(&agent, prompt).await?, "red left, blue right");
-    let snapshot = serde_json::from_slice(&serde_json::to_vec(&agent.snapshot().await?)?)?;
+    let snapshot = serde_json::from_slice(&serde_json::to_vec(&agent.checkpoint().await?)?)?;
     agent.shutdown().await?;
     let provider = Muse::builder("synthetic-key")
         .api_base_url(endpoint)
         .build()?;
     let (resumed, _) = Nanocodex::builder(provider)
-        .resume(snapshot)
+        .resume(snapshot)?
         .tools(tools(false, ToolExposure::CodeModeOnly)?)
         .build()?;
     assert_eq!(
         turn(&resumed, "Describe the images again").await?,
         "red left, blue right"
     );
+    let (forked, _) = resumed
+        .fork(ForkRequest::at(resumed.checkpoint().await?))
+        .await?;
+    assert_ne!(forked.session_id(), resumed.session_id());
+    assert_eq!(
+        turn(&forked, "Compare the original images in this fork").await?,
+        "red left, blue right"
+    );
+    forked.shutdown().await?;
     resumed.shutdown().await?;
     server.await??;
     Ok(())

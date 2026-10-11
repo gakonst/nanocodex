@@ -190,7 +190,9 @@ async fn agent_repairs_unmatched_tool_calls_before_continuing_and_restores_delta
 
     let snapshot = serde_json::to_value(
         second
-            .snapshot()
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
             .expect("local turns always retain a snapshot"),
     )?;
     let repaired_outputs = snapshot["history"]

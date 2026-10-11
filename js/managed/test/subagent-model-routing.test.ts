@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { availableClaudeChildModels } from "../src/model-catalog";
-import { CHILD_ROUTE_TICKET_TTL_MS, createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "../src/subagent-model-routing";
+import { CHILD_ROUTE_TICKET_TTL_MS, claudeEfforts, createSubagentRouteController, defaultClaudeEffort, subagentRoutingPolicy, type RetainedChildRoute } from "../src/subagent-model-routing";
+import { modelCapabilities } from "../../nanocodex/node/index.mjs";
 import { ROUTING_CANDIDATES, routingPolicySchema } from "../src/thread-model-routing";
 
 const request = { parentSessionId: "root", hostContextRef: "account-turn", role: "worker", task: "Inspect fixtures" };
@@ -267,3 +268,15 @@ describe("hosted child routing", () => {
 function requestBinding(routeId: string) {
   return { parentSessionId: request.parentSessionId, hostContextRef: request.hostContextRef, routeId };
 }
+
+describe("native Claude child efforts", () => {
+  it("match the canonical native capability catalog exactly", () => {
+    const claude = modelCapabilities().filter(entry => entry.transport === "native" && entry.model.startsWith("claude-"));
+    expect(claude.length).toBeGreaterThan(0);
+    for (const entry of claude) {
+      expect([...claudeEfforts(entry.model)], entry.model).toEqual([...entry.thinking]);
+      // The default child effort is the cheapest canonical level.
+      expect(defaultClaudeEffort(entry.model), entry.model).toBe(entry.thinking[0]);
+    }
+  });
+});

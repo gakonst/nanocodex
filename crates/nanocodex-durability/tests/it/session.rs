@@ -7,6 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 #[derive(Deserialize, Serialize)]
 struct PromptInput {
@@ -936,8 +937,15 @@ async fn dropping_a_direct_claimant_releases_its_exact_pending_operation() {
         .unwrap();
 }
 
+/// Bounds commands that must not be starved while clone/drop churn runs in
+/// parallel on another worker. On a multi-thread runtime the test body is
+/// polled on the `block_on` thread, so yielding there grants the driver's
+/// worker no CPU; only elapsed time can bound its progress. Starvation never
+/// completes, so a bound far above OS scheduling jitter still detects it.
+const CHURN_LIVENESS_BOUND: Duration = Duration::from_secs(10);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clone_drop_churn_and_claim_release_bursts_do_not_starve_commands() {
+async fn clone_drop_churn_does_not_starve_commands() {
     let store = MemoryStore::new().unwrap();
     let root = DurableSession::open(store, "clone-drop-liveness")
         .await
@@ -956,26 +964,27 @@ async fn clone_drop_churn_and_claim_release_bursts_do_not_starve_commands() {
         })
     };
 
-    let state = root.state();
-    tokio::pin!(state);
-    tokio::select! {
-        outcome = &mut state => {
-            outcome.unwrap();
-        }
-        () = scheduler_budget() => panic!("idle clone/drop churn starved state"),
-    }
-    let admission = root.admit("live-turn", &"prompt");
-    tokio::pin!(admission);
-    tokio::select! {
-        outcome = &mut admission => {
-            assert!(matches!(outcome, Ok(Admission::Accepted)));
-        }
-        () = scheduler_budget() => panic!("idle clone/drop churn starved admission"),
-    }
+    tokio::time::timeout(CHURN_LIVENESS_BOUND, root.state())
+        .await
+        .expect("idle clone/drop churn starved state")
+        .unwrap();
+    let admission = tokio::time::timeout(CHURN_LIVENESS_BOUND, root.admit("live-turn", &"prompt"))
+        .await
+        .expect("idle clone/drop churn starved admission");
+    assert!(matches!(admission, Ok(Admission::Accepted)));
     stop.store(true, Ordering::Release);
     churn.await.unwrap();
     root.release("live-turn").await.unwrap();
+}
 
+// A single-threaded runtime makes every yield below a scheduler turn for the
+// driver, so the budget bounds driver turns rather than OS thread scheduling.
+#[tokio::test(flavor = "current_thread")]
+async fn claim_release_burst_does_not_starve_state() {
+    let store = MemoryStore::new().unwrap();
+    let root = DurableSession::open(store, "claim-release-burst")
+        .await
+        .unwrap();
     let mut claimants = Vec::new();
     for index in 0..(RELEASE_BURST_TEST_SIZE) {
         let claimant = root.clone();

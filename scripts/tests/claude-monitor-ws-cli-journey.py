@@ -92,7 +92,7 @@ def main():
   raise AssertionError(message)
  def visible(label,text): return text in screens[label].text()
  def finish(proc,fd,drain):
-  os.write(fd,b'\x03')
+  os.write(fd,b'\x03\x03')
   wait(lambda:proc.poll() is not None,drain,'TUI exit stuck',timeout=10)
   drain(); os.close(fd)
  def monitor(path,**extra): return {'ws':{'url':origin+path},'description':'Synthetic WebSocket',**extra}

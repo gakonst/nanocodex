@@ -210,12 +210,11 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        # Temporarily disabled; re-enable when CI test coverage resumes.
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
+      # Release, preview and image policy tests use Wrangler and esbuild.
+      - name: Test Cloudflare release, preview and image boundaries
+        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install Astra trial package
         run: npm ci --prefix examples/astra-mpp-trial
       - name: Prepare managed evaluator asset
@@ -353,12 +352,11 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        # Temporarily disabled; re-enable when CI test coverage resumes.
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
+      # Release, preview and image policy tests use Wrangler and esbuild.
+      - name: Test Cloudflare release, preview and image boundaries
+        run: node --test scripts/cloudflare/*.test.mjs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: cloudflare-worker-build
@@ -404,7 +402,7 @@ jobs:
         run: npx wrangler deploy --dry-run --env="" --outdir dist
       - name: Validate Chief of Staff Worker
         working-directory: js/chief-of-staff
-        run: npm run typecheck && npm run build
+        run: npm run typecheck && npm test && npm run build
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
@@ -597,7 +595,6 @@ jobs:
       matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
@@ -608,8 +605,18 @@ jobs:
         with:
           node-version: 24
       - name: Test image publication boundaries
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
+        # Synthetic fixtures only; never expose production credentials to tests.
+        env:
+          GH_TOKEN: ""
+          CLOUDFLARE_ACCOUNT_ID: ""
+          CLOUDFLARE_API_TOKEN: ""
+        run: >-
+          node --test
+          scripts/cloudflare/image-receipts.test.mjs scripts/cloudflare/managed-images.test.mjs
+          scripts/cloudflare/managed-images-preview.test.mjs scripts/cloudflare/plan-images.test.mjs
+          scripts/cloudflare/preview-images.test.mjs scripts/cloudflare/recover-images.test.mjs
+          scripts/cloudflare/released-images.test.mjs scripts/cloudflare/released-account-image.test.mjs
+          scripts/cloudflare/account-relay-image.test.mjs scripts/cloudflare/wrangler-docker.test.mjs
       - name: Fingerprint committed image inputs
         id: image-input
         env:
@@ -705,7 +712,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -740,7 +746,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -788,7 +793,6 @@ jobs:
       deployments: write
       actions: read
     env:
-      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}

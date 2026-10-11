@@ -312,8 +312,16 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
     let target = client.account_attachment_target()?;
     // Display readiness must not delay shell/filesystem publication. Keep the
     // NativeState lock until both the attachment and screen have shut down.
+    let desktop = super::screen_native::DesktopSlot::default();
     super::screen_supervisor::while_attached_observed(
-        || super::screen_native::NativeScreen::start(&target, &state.machine, &directory),
+        || {
+            super::screen_native::NativeScreen::start_retaining(
+                &target,
+                &state.machine,
+                &directory,
+                &desktop,
+            )
+        },
         run(target.clone(), &state, super::service::shutdown_signal()),
         |error| {
             if state.publish_screen_status(error.is_none()).is_err() {

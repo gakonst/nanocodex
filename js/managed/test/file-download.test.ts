@@ -1,6 +1,6 @@
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
-import worker, { type DurableAgentSession } from "../src/index";
+import worker, { type AccountHostedTools, type DurableAgentSession } from "../src/index";
 import { downloadPath, downloadHandFile, fileReadCommand } from "../src/file-download";
 import type { Principal } from "../src/account-auth";
 
@@ -13,6 +13,8 @@ it("authenticates file reads and streams the exact brain bytes from the owning c
   const principal: Principal = { kind: "api_key", userId: crypto.randomUUID(), organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(),
     role: "owner", subjectId: "api_key:file-test", credentialId: "file-test", authorizationEpoch: 1, capabilities: ["agents:read", "tools:use"] };
   await runInDurableObject(sessions.getByName(id), async (session, ctx) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
     id, principal.userId, principal.organizationId, principal.teamId, Date.now());
@@ -45,7 +47,11 @@ it("authenticates file reads and streams the exact brain bytes from the owning c
     ctx.storage.sql.exec("INSERT INTO managed_hand_paths(machine_id, root) VALUES (?, ?)", "offline-box", "/offline-box");
   });
   // The account registry no longer knows this identity, so its path is released;
-  // offline registered Hands stay mapped (hand-paths-journey).
+  // offline registered Hands stay mapped (hand-paths-journey). Since 84e6db5ca
+  // only an owned account's complete registry reclaims roots; this owner's
+  // account object is claimed through its real Hand inventory read.
+  const accountTools = (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
+  await accountTools.getByName(principal.userId).handInventory(principal.userId);
   const released = await call(principal, "/offline-box/output.zip");
   expect(released.status).toBe(404);
   expect(await released.json()).toMatchObject({ error: "file_path_unmapped" });
@@ -94,7 +100,9 @@ it("downloads from the account Hand while the conversation has no active model t
   const id = crypto.randomUUID(), owner = crypto.randomUUID();
   const principal: Principal = { kind: "api_key", userId: owner, organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(),
     role: "owner", subjectId: "api_key:file-hand-test", credentialId: "file-hand-test", authorizationEpoch: 1, capabilities: ["agents:read", "tools:use"] };
-  await runInDurableObject(sessions.getByName(id), async (_session, ctx) => {
+  await runInDurableObject(sessions.getByName(id), async (session, ctx) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`,
     id, owner, principal.organizationId, principal.teamId, Date.now());

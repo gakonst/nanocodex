@@ -4,6 +4,7 @@ import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { build } from 'esbuild';
+import { fetch } from "./support/miniflare-fetch.mjs";
 const require = createRequire(import.meta.url);
 const { Miniflare, convertV4MiniflareOptions, Log, LogLevel } = createRequire(require.resolve('wrangler/package.json'))('miniflare');
 const root = new URL('../', import.meta.url).pathname;

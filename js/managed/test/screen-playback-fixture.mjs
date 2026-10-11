@@ -17,6 +17,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import WebSocket from "ws";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 export const root = fileURLToPath(new URL("..", import.meta.url));
 export const ownerA = "22222222-2222-4222-8222-222222222201";

@@ -6,10 +6,11 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use nanocodex_agent::NanocodexBuilder;
 pub use nanocodex_agent::{
-    AgentEvents, AgentSessionContext, ClaudeModel, CostStatus, EstimatedUsdCost,
-    ExecutionPolicyDisposition, HarnessFamily, HarnessModel, Nanocodex, NanocodexError,
-    PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, Turn, TurnControl, TurnResult,
-    TurnUsage, UsdAmount,
+    AgentEvents, AgentSessionContext, Capabilities, ClaudeModel, CostStatus, EstimatedUsdCost,
+    ExecutionPolicyDisposition, ForkPoint, ForkRequest, HarnessFamily, HarnessModel, Lineage,
+    ModelCapabilities, ModelTransport, Mutability, Nanocodex, NanocodexError, Origin, Persistence,
+    PromptRequest, PromptRoute, ReportedTurnUsage, ServiceTier, SessionCheckpoint, SessionInfo,
+    Turn, TurnControl, TurnResult, TurnUsage, UsdAmount,
 };
 mod harness;
 pub use harness::{Harness, HarnessBuilder, HarnessRequest};
@@ -60,7 +61,7 @@ pub use nanocodex_oai_tools::Tools;
 )]
 pub use nanocodex_oai_tools::tool;
 
-/// Owned agent lifecycle, builders, turns, branching, and snapshots.
+/// Owned agent lifecycle, builders, turns, branching, and checkpoints.
 ///
 /// Provider and tool-runtime APIs keep their canonical detailed paths under
 /// [`crate::oai`] and [`crate::tools`].
@@ -77,7 +78,10 @@ pub mod agent {
         ReportedTurnUsage, Result, ServiceTier, SpawnOptions, Turn, TurnControl, TurnResult,
         TurnUsage, UsdAmount, events, input, session, usage,
     };
-    pub use nanocodex_agent::{AgentHandle, ChildSnapshot};
+    pub use nanocodex_agent::{
+        AgentHandle, Capabilities, ForkPoint, ForkRequest, Lineage, Mutability, Origin,
+        Persistence, SessionCheckpoint, SessionInfo,
+    };
     #[cfg(feature = "openai")]
     #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
     pub use nanocodex_agent::{ExecutionEnvironment, NanocodexBuilder, execution};

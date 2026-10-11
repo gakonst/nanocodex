@@ -118,8 +118,8 @@ Enable `claude` alongside `openai` to compose both families:
 # #[cfg(all(feature = "claude", feature = "openai"))]
 # async fn mixed() -> Result<(), Box<dyn std::error::Error>> {
 use nanocodex::{
-    Claude, ClaudeModel, Harness, HarnessFamily, HarnessModel, Model,
-    Nanocodex, OpenAi,
+    Claude, ClaudeModel, DurableAgentExt as _, Harness, HarnessFamily, HarnessModel,
+    Model, Nanocodex, OpenAi,
     agent::SpawnOptions,
     claude::ClaudeClient,
 };
@@ -137,8 +137,11 @@ let harness = Harness::builder()
                 .model(model).thinking(request.thinking)
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);
-            if let Some(snapshot) = request.snapshot {
-                builder = builder.restore_runtime(snapshot)?;
+            if let Some(checkpoint) = request.checkpoint {
+                builder = builder.resume(checkpoint)?;
+            }
+            if let Some(state) = request.durable_state {
+                builder = builder.durability(state).await?;
             }
             builder.build()
         }
@@ -150,8 +153,11 @@ let harness = Harness::builder()
                 .thinking(request.thinking)?
                 .host_context(request.host_context)
                 .spawn_factory(request.spawn_factory);
-            if let Some(snapshot) = request.snapshot {
-                builder = builder.restore_runtime(snapshot)?;
+            if let Some(checkpoint) = request.checkpoint {
+                builder = builder.resume(checkpoint)?;
+            }
+            if let Some(state) = request.durable_state {
+                builder = builder.durability(state).await?;
             }
             builder.build()
         }
@@ -169,6 +175,12 @@ codex.shutdown().await?;
 # Ok(())
 # }
 ```
+
+The same router reopens sessions of either family. `harness.resume(checkpoint)`
+reopens a portable `SessionCheckpoint` and `harness.open(&store, id)` reopens a
+session stored in a durable `SessionStore` catalog; both keep the session's
+identity, lineage, model, thinking level and history. Use `fork` or a catalog
+`branch` to continue a conversation under a new identity.
 
 Install host capabilities through each concrete builder's `.tools_factory(...)`.
 The callback receives a weak `AgentHandle` for that particular root or child;

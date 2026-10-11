@@ -168,7 +168,7 @@ async fn fork_replaces_or_removes_changed_agents_md_once() -> Result<()> {
     let first = agent.prompt("root prompt").await?.result().await?;
 
     std::fs::write(workspace.join("AGENTS.md"), "replacement agents\n")?;
-    let (replacement, replacement_events) = agent.fork_from(&first).await?;
+    let (replacement, replacement_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     assert_eq!(
         replacement
             .prompt("replacement branch")
@@ -180,7 +180,7 @@ async fn fork_replaces_or_removes_changed_agents_md_once() -> Result<()> {
     );
 
     std::fs::remove_file(workspace.join("AGENTS.md"))?;
-    let (removal, removal_events) = agent.fork_from(&first).await?;
+    let (removal, removal_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     assert_eq!(
         removal
             .prompt("removal branch")
@@ -248,7 +248,7 @@ async fn fork_reloads_a_changed_global_agents_source_once() -> Result<()> {
     let first = agent.prompt("root prompt").await?.result().await?;
 
     std::fs::write(codex_home.join("AGENTS.md"), "replacement global agents\n")?;
-    let (fork, fork_events) = agent.fork_from(&first).await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     assert_eq!(
         fork.prompt("fork prompt")
             .await?
@@ -307,7 +307,9 @@ async fn legacy_snapshot_reconstructs_agents_md_before_diffing() -> Result<()> {
     let first = agent.prompt("first prompt").await?.result().await?;
     let mut legacy = serde_json::to_value(
         first
-            .snapshot()
+            .checkpoint()
+            .as_ref()
+            .map(conversation)
             .expect("local turns always retain a snapshot"),
     )?;
     legacy
@@ -321,7 +323,7 @@ async fn legacy_snapshot_reconstructs_agents_md_before_diffing() -> Result<()> {
     std::fs::write(workspace.join("AGENTS.md"), "legacy replacement agents\n")?;
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
         .thinking(Thinking::Low)
-        .resume(legacy)
+        .resume_native_snapshot(legacy)
         .build()?;
     assert_eq!(
         resumed

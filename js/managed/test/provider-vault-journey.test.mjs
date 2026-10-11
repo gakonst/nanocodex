@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import WebSocket from "ws";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real account ingress, managed HTTP/WS, Code Mode, session ownership and
 // encrypted Vault broker. Only enrollment, the external model and merchant are

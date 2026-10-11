@@ -1415,7 +1415,9 @@ tool_timeout_sec = 9.5
         .unwrap();
         let encoded = String::from_utf8(with_defaults.clone()).unwrap();
 
-        assert!(encoded.contains("\"type\":\"tool_search\""));
+        // Mandatory Code Mode (eda4a21e3) keeps discovery nested inside exec.
+        assert!(!encoded.contains("\"type\":\"tool_search\""));
+        assert!(encoded.contains("### `tool_search`"));
         assert!(encoded.contains("Some deferred nested tools may be omitted"));
         assert!(!encoded.contains("mcp__openaiDeveloperDocs__"));
         assert!(!encoded.contains("mcp__tempo__"));

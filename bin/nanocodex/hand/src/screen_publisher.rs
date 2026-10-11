@@ -15,6 +15,9 @@ impl ScreenPublisher {
     pub(crate) fn is_finished(&self) -> bool {
         self.0.is_finished()
     }
+    pub(crate) fn is_connected(&self) -> bool {
+        self.0.is_connected()
+    }
     pub(crate) async fn start(
         target: &AttachmentTarget,
         machine: &AttachmentMachine,

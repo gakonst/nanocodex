@@ -55,7 +55,9 @@ async function account() {
   const newSession = async () => {
     const id = crypto.randomUUID();
     await attachAgent(runtime, owner.userId, id, undefined, false);
-    await runInDurableObject(runtime.NANOCODEX_SESSIONS.getByName(id), async (_session, state) => {
+    await runInDurableObject(runtime.NANOCODEX_SESSIONS.getByName(id), async (session, state) => {
+      // A fresh Session creates its schema on its first real request (9d8b63102).
+      await session.fetch(new Request("https://session.internal/sites"));
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active
       ) VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example', 'managed', ?)`, id, owner.userId, owner.organizationId, owner.teamId, Date.now());

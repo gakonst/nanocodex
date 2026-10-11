@@ -100,6 +100,17 @@ pub struct ExecutionOutput {
     pub usage: TurnUsage,
 }
 
+/// Model, reasoning effort and processing tier a just-created child starts with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InitialSettings {
+    /// Model the child runs.
+    pub model: crate::Model,
+    /// Reasoning effort of the child's turns.
+    pub thinking: crate::Thinking,
+    /// Processing tier of the child's turns.
+    pub service_tier: ServiceTier,
+}
+
 /// Optional higher-layer policy for admitting executions and intercepting effects.
 ///
 /// The core agent invokes this interface at its existing transactional
@@ -108,6 +119,27 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Identity of the durable state this policy persists the session to,
+    /// reported by [`crate::Nanocodex::persistence`]. Defaults to none.
+    fn durable_state_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Supplies the policy that persists a fork, side conversation, subagent
+    /// or restored subagent of this session as its own resumable state. The
+    /// default `None` rejects every child of a policy-owned session with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`] instead of
+    /// starting an unsaved one. Called before the child starts; the child
+    /// policy is owned by that child alone, and a restored subagent receives
+    /// the policy for its existing session ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error to reject the child.
+    fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        Ok(None)
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// A pending operation must return a retry/reopen disposition, even when
     /// its original failure was not a transport or storage error.
@@ -139,6 +171,28 @@ pub trait ExecutionPolicy: Send + Sync {
                 capability: "commit_checkpoint",
             })
         })
+    }
+
+    /// Persists the first checkpoint of a just-created fork, side
+    /// conversation, subagent or restored subagent, so the child is listed
+    /// and resumable before its first turn. A state that already holds a
+    /// checkpoint keeps it: restoring a child never replaces its history.
+    /// A fresh subagent has no conversation yet (`None`): its state records
+    /// only its catalog identity and the settings it was created with. The
+    /// default persists nothing.
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        _snapshot: Option<SessionSnapshot>,
+        _settings: InitialSettings,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Retracts state written only by [`Self::commit_initial_checkpoint`]
+    /// when the child's creation is abandoned, such as a failed atomic batch.
+    /// Never removes history the state held before. The default does nothing.
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Admits a caller-identified operation.
@@ -324,6 +378,27 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Identity of the durable state this policy persists the session to,
+    /// reported by [`crate::Nanocodex::persistence`]. Defaults to none.
+    fn durable_state_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Supplies the policy that persists a fork, side conversation, subagent
+    /// or restored subagent of this session as its own resumable state. The
+    /// default `None` rejects every child of a policy-owned session with
+    /// [`NanocodexError::ExecutionPolicyBranchUnsupported`] instead of
+    /// starting an unsaved one. Called before the child starts; the child
+    /// policy is owned by that child alone, and a restored subagent receives
+    /// the policy for its existing session ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error to reject the child.
+    fn branch(&self, _child: &crate::SessionInfo) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        Ok(None)
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// Pending work must remain recoverable regardless of the original error.
     fn recover_failure<'a>(
@@ -353,6 +428,28 @@ pub trait ExecutionPolicy: Send + Sync {
                 capability: "commit_checkpoint",
             })
         })
+    }
+
+    /// Persists the first checkpoint of a just-created fork, side
+    /// conversation, subagent or restored subagent, so the child is listed
+    /// and resumable before its first turn. A state that already holds a
+    /// checkpoint keeps it: restoring a child never replaces its history.
+    /// A fresh subagent has no conversation yet (`None`): its state records
+    /// only its catalog identity and the settings it was created with. The
+    /// default persists nothing.
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        _snapshot: Option<SessionSnapshot>,
+        _settings: InitialSettings,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Retracts state written only by [`Self::commit_initial_checkpoint`]
+    /// when the child's creation is abandoned, such as a failed atomic batch.
+    /// Never removes history the state held before. The default does nothing.
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Admits a caller-identified operation.
@@ -555,15 +652,26 @@ impl ExecutionConfig {
         self.policy = Some(ExecutionPolicyRecipe::PerAgent(factory));
     }
 
-    // Root execution policies never propagate into ephemeral children.
-    #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
-    pub(crate) fn for_new_thread(&self, operation: &'static str) -> Result<Self> {
-        if self.policy.is_some() && !matches!(operation, "spawn" | "restore") {
+    // Root execution policies never propagate into children: every fork, side
+    // conversation, subagent and restored subagent of a policy-owned session
+    // runs under its own policy from [`ExecutionPolicy::branch`], and records
+    // its own rollout beside the parent's.
+    pub(crate) fn for_new_thread(
+        &self,
+        operation: &'static str,
+        branch_policy: Option<Arc<dyn ExecutionPolicy>>,
+        journal_backed: bool,
+    ) -> Result<Self> {
+        // A durable parent never silently creates an unsaved child. A durable
+        // root without a session catalog still saves the subagents it spawns
+        // or restores in its task-tree journal; a fork has no such home.
+        let saved_by_journal = journal_backed && operation != "fork";
+        if self.policy.is_some() && branch_policy.is_none() && !saved_by_journal {
             return Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation });
         }
         Ok(Self {
             platform: self.platform.for_new_thread(),
-            policy: None,
+            policy: branch_policy.map(ExecutionPolicyRecipe::Shared),
         })
     }
 
@@ -574,8 +682,10 @@ impl ExecutionConfig {
         prompt_cache_key: &str,
         workspace: Option<&str>,
         instructions: &str,
-        origin_kind: &'static str,
+        start: crate::session::SessionStart,
+        lineage_origin: crate::Origin,
         parent_session_id: Option<&str>,
+        root_session_id: &str,
         resume_history_len: Option<usize>,
     ) -> Result<Execution> {
         Ok(Execution {
@@ -584,8 +694,10 @@ impl ExecutionConfig {
                 prompt_cache_key,
                 workspace,
                 instructions,
-                origin_kind,
+                start,
+                lineage_origin,
                 parent_session_id,
+                root_session_id,
                 resume_history_len,
             )?,
             policy: self
@@ -693,6 +805,21 @@ impl Execution {
 
     pub(crate) const fn identifies_prompts(&self) -> bool {
         self.policy.is_some()
+    }
+
+    pub(crate) fn branch_policy(
+        &self,
+        child: &crate::SessionInfo,
+    ) -> Result<Option<Arc<dyn ExecutionPolicy>>> {
+        self.policy
+            .as_ref()
+            .map_or(Ok(None), |policy| policy.branch(child))
+    }
+
+    pub(crate) fn durable_state_id(&self) -> Option<String> {
+        self.policy
+            .as_ref()
+            .and_then(|policy| policy.durable_state_id())
     }
 
     pub(crate) async fn admit<T: Serialize + ?Sized>(
@@ -870,6 +997,31 @@ impl Execution {
     pub(crate) async fn commit_checkpoint(&self, checkpoint: &CommittedSession) -> Result<()> {
         if let Some(policy) = &self.policy {
             policy.commit_checkpoint(checkpoint.snapshot()).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether a durable policy owns this session's state.
+    pub(crate) fn has_policy(&self) -> bool {
+        self.policy.is_some()
+    }
+
+    pub(crate) async fn commit_initial_checkpoint(
+        &self,
+        checkpoint: Option<&CommittedSession>,
+        settings: InitialSettings,
+    ) -> Result<()> {
+        if let Some(policy) = &self.policy {
+            policy
+                .commit_initial_checkpoint(checkpoint.map(CommittedSession::snapshot), settings)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn discard_initial_checkpoint(&self) -> Result<()> {
+        if let Some(policy) = &self.policy {
+            policy.discard_initial_checkpoint().await?;
         }
         Ok(())
     }

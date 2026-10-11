@@ -71,14 +71,17 @@ impl Broadcast {
         }
         if let Some(stream) = self.hls.take() {
             let last = self.events.borrow().clone();
+            // The stream task reports its own terminal status after removing its
+            // scratch segments. Without one it was aborted (or panicked), so
+            // cleanup is only TempDir's best-effort drop: never claim a clean stop.
             if last["stream_id"] == stream.as_str()
                 && !matches!(last["status"].as_str(), Some("stopped" | "failed"))
             {
                 self.events.send_replace(super::screen_hls::result(
                     &last["request_id"],
                     &stream,
-                    "stopped",
-                    None,
+                    "failed",
+                    Some("broadcast_failed"),
                 ));
             }
         }
@@ -112,6 +115,14 @@ impl Broadcast {
             Some("stop") => {
                 if current {
                     self.stop().await;
+                    // A stream that failed, including one whose scratch
+                    // segments could not be removed, never reads as stopped.
+                    let last = self.events.borrow().clone();
+                    if last["stream_id"] == stream.as_str() && last["status"] == "failed" {
+                        let mut last = last;
+                        last["request_id"] = id.clone();
+                        return last;
+                    }
                 }
                 result(id, &stream, "stopped", None)
             }

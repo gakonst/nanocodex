@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare, Log, LogLevel } from "miniflare";
 import { chromium } from "../../connect-dialog/node_modules/@playwright/test/index.mjs";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real HTTPS browser, production account proxy, account routes and SQLite DOs.
 // Twilio Verify, wallet provisioning and the requesting app metadata are fixtures.

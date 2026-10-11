@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Only initial identity enrollment is synthetic. API-key issuance/validation,
 // account proxy, storage routing, SQLite, R2, and workerd restarts are real.

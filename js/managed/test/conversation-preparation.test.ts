@@ -6,6 +6,7 @@ it("preparation requires authority, acknowledges before discovery, and coalesces
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
     const owner = crypto.randomUUID(), organization = crypto.randomUUID(), team = crypto.randomUUID();
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     state.storage.sql.exec(`INSERT INTO session_state
       (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
       VALUES (1, ?, ?, ?, ?, 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), owner, organization, team, Date.now());
@@ -59,7 +60,9 @@ it("preparation requires authority, acknowledges before discovery, and coalesces
         method: "POST", headers, body: new ReadableStream({ start(controller) { controller.close(); } }),
       }))).status).toBe(202);
       await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
-      expect(broker.mock.calls.length).toBeGreaterThan(0);
+      // Credential binding and model transport now overlap discovery instead of
+      // preceding it (bef68f600, 9d8b63102); they still proceed while it is blocked.
+      await vi.waitFor(() => expect(broker.mock.calls.length).toBeGreaterThan(0));
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turns").one().count).toBe(0);
     } finally {
       for (const socket of sockets) socket.close(1000);

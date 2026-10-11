@@ -394,7 +394,11 @@ impl RolloutWriter {
         .await
     }
 
-    async fn write_turn_context(&mut self, turn: &RolloutTurn, model: Model) -> io::Result<()> {
+    async fn write_turn_context(
+        &mut self,
+        turn: &RolloutTurn,
+        model: &'static str,
+    ) -> io::Result<()> {
         write_async_line(
             &mut self.file,
             &RolloutLine {
@@ -405,7 +409,7 @@ impl RolloutWriter {
                     sandbox_policy: SandboxPolicy {
                         kind: "danger-full-access",
                     },
-                    model: model.as_str(),
+                    model,
                     effort: turn.effort.as_str(),
                     summary: "auto",
                 }),
@@ -445,7 +449,7 @@ struct PreparedAppend {
     len: usize,
     window: Option<WindowAdvance>,
     turn: RolloutTurn,
-    model: Model,
+    model: &'static str,
     context_baseline: ContextBaseline,
     client_authored: std::collections::BTreeSet<String>,
     write_state: bool,
@@ -453,7 +457,7 @@ struct PreparedAppend {
 
 enum PreparedRecords {
     Items {
-        history: ResponseHistory,
+        history: RolloutHistory,
         start: usize,
     },
     Compacted(CompactedItem),

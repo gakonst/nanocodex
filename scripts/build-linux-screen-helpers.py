@@ -72,6 +72,28 @@ def with_network_retries(description, operation):
             time.sleep(delay)
 
 
+# Zig verifies every build.zig.zon package against its pinned .hash, so a hash
+# mismatch, 404 or manifest error is final; only these transport failures retry.
+TRANSIENT_ZIG_FETCH = re.compile(r"bad HTTP response code: '(408|429|5[0-9][0-9])|unable to connect to server|"
+                                 r"HTTP request failed|ConnectionRefused|ConnectionResetByPeer|ConnectionTimedOut|"
+                                 r"NetworkUnreachable|NameServerFailure|HttpConnectionClosing")
+
+
+def fetch_zig_packages(zig, project, env):
+    """Fetch the pinned package tree before compiling, so a compile error is never retried."""
+    def fetch():
+        cmd = [str(zig), 'build', '--fetch']
+        print('+', shlex.join(cmd), flush=True)
+        result = subprocess.run(cmd, cwd=project, env=env, text=True, stderr=subprocess.PIPE)
+        sys.stderr.write(result.stderr)
+        if result.returncode == 0:
+            return
+        if TRANSIENT_ZIG_FETCH.search(result.stderr):
+            raise subprocess.CalledProcessError(result.returncode, cmd)
+        raise RuntimeError(f'{project.name}: Zig package fetch failed (not a transport error)')
+    with_network_retries(f'{project.name}: fetching pinned Zig packages', fetch)
+
+
 def checkout(root, name, url, revision, tag=None):
     dest = root / name
     if not dest.exists():
@@ -226,6 +248,7 @@ def main():
         raise RuntimeError('Pinned Waymote build shape changed')
     patched = original.replace(needle, needle + '\n    b.step("screen-helper", "Build only streamd").dependOn(&b.addInstallArtifact(streamd, .{}).step);')
     (waymote / 'build.zig').write_text(patched)
+    fetch_zig_packages(zig, waymote, env)
     run([zig, 'build', 'screen-helper', '-j2', '-Dcpu=baseline', '-Doptimize=ReleaseFast'], cwd=waymote, env=env)
     grim = checkout(root, 'grim', GRIM_URL, GRIM_REV, GRIM_TAG)
     protocols = checkout(root, 'protocols', PROTOCOLS_URL, PROTOCOLS_REV, 'refs/tags/1.49')

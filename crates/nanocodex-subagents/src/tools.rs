@@ -14,7 +14,9 @@ use super::{
 };
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use nanocodex_agent::{AgentHandle, HarnessFamily, HarnessModel, SpawnOptions, Thinking};
+use nanocodex_agent::{
+    AgentHandle, ForkRequest, HarnessFamily, HarnessModel, SpawnOptions, Thinking,
+};
 use nanocodex_oai_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, Tools,
     runtime::ToolsBuildError,
@@ -28,8 +30,9 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+/// Wait used when the caller omits timeout_ms. An explicit timeout is honored
+/// as requested, without a ceiling.
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_WAIT_TIMEOUT: Duration = Duration::from_secs(3600);
 const SPAWN_AGENT_TOOL: &str = "spawn_agent";
 const SUBMIT_RESULT_TOOL: &str = "submit_result";
 const SEND_AGENT_MESSAGE_TOOL: &str = "send_agent_message";
@@ -264,11 +267,13 @@ pub async fn start_agents_observed(
     observe_session: impl Fn(&str) + Send + Sync + 'static,
 ) -> AgentToolResult<Vec<AgentStartReport>> {
     registry.register_handle(parent.clone());
-    registry.await_restored(session_id).await?;
+    // Held until the batch's IDs are reserved, so concurrent spawns keep call order.
+    let admission = registry.admit_spawn(session_id).await?;
     let prepared = prepare_batch(tasks)?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
+    drop(admission);
     let host_context = registry.host_context_for_session(session_id).await;
     let children = if let Some(router) = registry.spawn_router() {
         // Resolve all choices before creating a child. No initial turn runs until
@@ -300,7 +305,7 @@ pub async fn start_agents_observed(
                 Ok(child) => child,
                 Err(error) => {
                     for (child, _) in &children {
-                        let _ = child.shutdown().await;
+                        child.abandon_created().await;
                     }
                     return Err(error.into());
                 }
@@ -312,9 +317,9 @@ pub async fn start_agents_observed(
                 route.reference(),
                 host_context.as_deref(),
             ) {
-                let _ = child.0.shutdown().await;
+                child.0.abandon_created().await;
                 for (child, _) in &children {
-                    let _ = child.shutdown().await;
+                    child.abandon_created().await;
                 }
                 return Err(error.into());
             }
@@ -486,7 +491,8 @@ async fn start_child(
         return Err("child caller identity must match its native parent handle".into());
     }
     registry.register_handle(parent.clone());
-    registry.await_restored(session_id).await?;
+    // Held until the ID is reserved, so concurrent spawns keep call order.
+    let admission = registry.admit_spawn(session_id).await?;
     let AgentTask {
         role,
         task,
@@ -495,6 +501,7 @@ async fn start_child(
     let contract = OutputContract::compile(&output_schema)?;
     let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
+    drop(admission);
     let id = reservation.id;
     let host_context = match host_context {
         Some(host_context) => Some(host_context),
@@ -511,7 +518,7 @@ async fn start_child(
         None
     };
     let (child, events) = if fork {
-        parent.fork().await?
+        parent.fork(ForkRequest::latest()).await?
     } else {
         parent
             .spawn_with_host_context(
@@ -953,8 +960,7 @@ impl Tool for WaitAgent {
                     "timeout_ms": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3600000,
-                        "description": "Bounded wait in milliseconds. Defaults to 30000."
+                        "description": "Wait in milliseconds. Defaults to 30000."
                     }
                 },
                 "required": ["agent_ids"],
@@ -975,8 +981,7 @@ impl Tool for WaitAgent {
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let duration = timeout_ms
             .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_WAIT_TIMEOUT)
-            .min(MAX_WAIT_TIMEOUT);
+            .unwrap_or(DEFAULT_WAIT_TIMEOUT);
         let (agents, timed_out) = registry
             .wait(context.session_id(), &agent_ids, duration)
             .await?;

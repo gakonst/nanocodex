@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Run with node --test test/hand-communication-journey.test.mjs from js/managed.
 // Only SOURCE_ROOT changes the implementation under measurement. LABEL names

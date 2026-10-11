@@ -25,7 +25,7 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await put('js/nanocodex/src/lib.rs', 'pub fn example() {}');
   await put('Cargo.toml', '[workspace]\nmembers=["js/nanocodex"]\n');
   await put('Cargo.lock', '# lock');
-  for (const path of ['js/nanocodex-vite/scripts/build-js-package.sh', 'js/nanocodex-vite/scripts/wasm-output-cache.mjs', 'js/nanocodex-vite/scripts/wasm-memory-views.mjs', 'js/nanocodex/scripts/deduplicate-wasm.mjs', 'js/nanocodex/scripts/write-package-types.mjs', 'js/nanocodex/scripts/write-wasm-attestation.mjs', 'js/nanocodex/scripts/check-managed-wasm.mjs']) await put(path, '// fixture');
+  for (const path of ['js/nanocodex-vite/scripts/build-js-package.sh', 'js/nanocodex-vite/scripts/wasm-output-cache.mjs', 'js/nanocodex-vite/scripts/wasm-memory-views.mjs', 'js/nanocodex-vite/scripts/native-binaryen.mjs', 'js/nanocodex/scripts/deduplicate-wasm.mjs', 'js/nanocodex/scripts/write-package-types.mjs', 'js/nanocodex/scripts/write-wasm-attestation.mjs', 'js/nanocodex/scripts/check-managed-wasm.mjs']) await put(path, '// fixture');
   await put('js/egress/src/shared.ts', 'export { value } from "../../shared.mjs";');
   await put('js/shared.mjs', 'export { value } from "./shared-inner.mjs";');
   await put('js/shared-inner.mjs', 'export const value = 1;');

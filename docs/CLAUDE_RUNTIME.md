@@ -607,7 +607,7 @@ The optional workspace adapters support bounded UTF-8 files, exact edits, globse
 
 `.host_tools(...)` installs only the explicitly enabled subset of eight `ClaudeHostTools` adapters: `Agent`, `TaskOutput`, `TaskStop`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree` and `ExitWorktree`. They pass validated inputs and real session/turn/call identity to an injected `ClaudeHost`. The host must actually own child/task execution, pending user answers, plan approval and workspace transitions; the adapters supply no default implementation or synthetic acknowledgement. Background agents require installed output and stop capabilities.
 
-Bash requires an injected sandbox executor; web tools require explicit provider/page-source capabilities. Nested WebSearch preserves bounded findings and complete, deduplicated source URLs across server pause/continuation responses. Auxiliary WebFetch accepts multiline prompts. WebSearch/WebFetch bound output while reserving source attribution; an oversized source set fails explicitly rather than silently dropping citations.
+Bash requires an injected sandbox executor; web tools require explicit provider/page-source capabilities. Nested WebSearch sends the server web search tool without a max_uses cap and follows provider pause_turn continuations until end_turn; a paused response with no content fails as no progress instead of being replayed. It returns the complete answer and every deduplicated source URL and title. Auxiliary WebFetch accepts multiline prompts and returns its whole summary with the source URL. Both results are subject only to the per-receipt history bound applied to every recorded tool result.
 
 ## Coverage and limits
 

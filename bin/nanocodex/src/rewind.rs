@@ -1,129 +1,261 @@
-//! Explicit user-only native restoration; never registered as an agent tool.
-use eyre::{Result, eyre};
-use nanocodex_durability::{CheckpointBranch, SqliteStore};
+//! One user-only branch/rewind verb for sessions of every harness family.
+//!
+//! A branch is a new session; the source session is never changed. `--before`
+//! keeps history before a user turn, dropping it and every later turn;
+//! `--through` keeps history through a completed turn. Restoring workspace
+//! files is a separate capability, available when the session recorded native
+//! file checkpoints. Never registered as an agent tool.
+use std::path::{Path, PathBuf};
+
+use clap::{Args, builder::NonEmptyStringValueParser};
+use eyre::{Result, WrapErr as _, eyre};
+use nanocodex_durability::{BranchPoint, StoredTurn, TurnStatus};
 use serde_json::{Value, json};
 
-pub(crate) async fn run(
-    session: &str,
-    checkpoint: Option<&str>,
+#[derive(Args)]
+pub(crate) struct Rewind {
+    /// Saved session to branch or restore. Omit it with --from.
+    #[arg(
+        value_parser = NonEmptyStringValueParser::new(),
+        required_unless_present = "from",
+        conflicts_with = "from"
+    )]
+    session: Option<String>,
+
+    /// Start a new session from this Codex-format rollout file.
+    ///
+    /// The file is copied, never changed. The new session's workspace is
+    /// --cwd, or the current directory, so rollouts recorded elsewhere work.
+    #[arg(long, value_name = "ROLLOUT")]
+    from: Option<PathBuf>,
+
+    /// Keep history before this user turn, dropping it and every later turn.
+    #[arg(long, value_name = "TURN", value_parser = NonEmptyStringValueParser::new(), conflicts_with = "through")]
+    before: Option<String>,
+
+    /// Keep history through this completed turn: a turn ID or a completed-turn
+    /// number counting from 1.
+    #[arg(long, value_name = "TURN", value_parser = NonEmptyStringValueParser::new())]
+    through: Option<String>,
+
+    /// Branch the conversation, restore workspace files, or do both. Defaults
+    /// to files for a saved session and to conversation with --from.
+    #[arg(long, value_parser = ["files", "conversation", "files-and-conversation"])]
+    mode: Option<String>,
+
+    /// Apply the selection. Without it, print a preview and change nothing.
+    #[arg(long)]
     restore: bool,
-    mode: &str,
-) -> Result<()> {
-    let home = crate::config::default_codex_home()?;
-    if mode == "files" {
-        let result = crate::config::rewind_files(&home, session, checkpoint, restore)
-            .map_err(|error| eyre!(error))?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
+
+    /// Workspace of a session started --from a rollout file.
+    #[arg(long, requires = "from")]
+    cwd: Option<PathBuf>,
+}
+
+const SCOPE: &str = "The branch is a new session; the original remains recoverable. Historical tools are never replayed, and Bash, MCP and other external effects are not undone. Retention limits may make older boundaries unavailable.";
+
+impl Rewind {
+    fn mode(&self) -> &str {
+        self.mode.as_deref().unwrap_or(if self.from.is_some() {
+            "conversation"
+        } else {
+            "files"
+        })
     }
-    if !matches!(mode, "conversation" | "files-and-conversation") {
-        return Err(eyre!("unknown rewind mode"));
-    }
-    if !restore {
-        let mut result = crate::native_sessions::rewind_preview(&home, session)?;
-        result["mode"] = json!(mode);
-        if let Some(turn) = checkpoint {
-            let turns: Vec<_> = result["checkpoints"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|value| value["checkpoint"].as_str())
-                .collect();
-            let selected = turns
-                .iter()
-                .position(|candidate| *candidate == turn)
-                .ok_or_else(|| {
-                    eyre!("unknown or expired user turn; choose a checkpoint from the preview")
-                })?;
-            let discarded = json!(turns[selected..]);
-            let files = if mode == "files-and-conversation" {
-                Some(file_selection(&home, session, &turns[selected..])?.1)
-            } else {
-                None
-            };
-            result["selected_checkpoint"] = json!(turn);
-            result["discarded_turns"] = discarded;
-            if let Some(files) = files {
-                result["files"] = files;
+
+    pub(crate) async fn run(self) -> Result<()> {
+        let home = crate::config::default_codex_home()?;
+        let result = match (&self.from, &self.session) {
+            (Some(source), _) => self.branch_rollout(&home, source)?,
+            (None, Some(session)) if self.mode() == "files" => {
+                if self.through.is_some() {
+                    return Err(eyre!(
+                        "file restore selects the workspace before a turn; use --before"
+                    ));
+                }
+                files(&home, session, self.before.as_deref(), self.restore)?
             }
-        }
+            (None, Some(session)) => self.conversation(&home, session).await?,
+            (None, None) => unreachable!("clap requires a session or --from"),
+        };
         println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
+        Ok(())
     }
-    let turn = checkpoint.ok_or_else(|| {
-        eyre!("--restore requires --checkpoint <turn-id>; preview the session first")
-    })?;
-    // Load routing metadata before acquiring ownership; SQL is read-only.
-    let original = crate::native_sessions::load(&home, session)?;
-    let store = SqliteStore::open(crate::native_sessions::store_path(&home))?;
-    let mut branch = CheckpointBranch::open(store, session).await?;
-    let turns: Vec<_> = branch
-        .turns()
-        .await?
-        .into_iter()
-        .filter(|turn| turn.input["provider"] == "claude" && turn.input["kind"] == "prompt")
-        .collect();
-    if !turns.iter().any(|candidate| candidate.id == turn) {
-        return Err(eyre!(
-            "unknown or expired user turn; choose a checkpoint from the preview"
-        ));
+
+    fn point(&self, turns: &[StoredTurn]) -> Result<Option<(BranchPoint, usize)>> {
+        let unknown =
+            || eyre!("unknown or expired user turn; choose a checkpoint from the preview");
+        if let Some(turn) = &self.before {
+            let index = turns
+                .iter()
+                .position(|t| t.id == *turn)
+                .ok_or_else(unknown)?;
+            return Ok(Some((BranchPoint::Before(turn.clone()), index)));
+        }
+        let Some(turn) = &self.through else {
+            return Ok(None);
+        };
+        let index = match turn.parse::<usize>() {
+            Ok(0) => return Err(eyre!("--through counts completed turns from 1")),
+            Ok(count) => turns
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.status == TurnStatus::Completed)
+                .nth(count - 1)
+                .map(|(index, _)| index)
+                .ok_or_else(|| eyre!("the session has fewer than {count} completed turns"))?,
+            Err(_) => turns
+                .iter()
+                .position(|t| t.id == *turn)
+                .ok_or_else(unknown)?,
+        };
+        if turns[index].status != TurnStatus::Completed {
+            return Err(eyre!("--through needs a completed turn"));
+        }
+        Ok(Some((
+            BranchPoint::Through(turns[index].id.clone()),
+            index + 1,
+        )))
     }
-    let latest: Value = branch.latest().await?.decode()?;
-    let previous = branch
-        .before(turn)
-        .await?
-        .map(|value| value.decode::<Value>())
-        .transpose()?;
-    let prepared = nanocodex::claude::rewind_checkpoint(previous, latest)?;
-    let mut files = json!({"restored":false,"changes":[]});
-    let mut file_turn = None;
-    if mode == "files-and-conversation" {
-        let selected = turns
-            .iter()
-            .position(|candidate| candidate.id == turn)
-            .ok_or_else(|| eyre!("unknown rewind turn"))?;
-        let suffix: Vec<_> = turns[selected..]
+
+    async fn conversation(&self, home: &Path, session: &str) -> Result<Value> {
+        let (store, turns) = match crate::sessions::turns(home, session).await {
+            Ok(found) => found,
+            // A rollout-only Codex thread branches by copying its rollout.
+            Err(_) if self.rollout_thread(home, session).is_some() => {
+                let source = self.rollout_thread(home, session).expect("rollout thread");
+                return self.branch_rollout(home, &source);
+            }
+            Err(error) => return Err(error),
+        };
+        let selection = self.point(&turns)?;
+        let mut result = json!({
+            "session": session,
+            "mode": self.mode(),
+            "checkpoints": turns.iter().map(|turn| json!({
+                "checkpoint": turn.id,
+                "input": turn.input,
+                "preview": turn.preview,
+                "status": turn.status,
+            })).collect::<Vec<_>>(),
+            "restored": false,
+            "scope": SCOPE,
+        });
+        let Some((point, first_discarded)) = selection else {
+            if self.restore {
+                return Err(eyre!(
+                    "--restore requires --before <turn-id> or --through <turn>; preview the session first"
+                ));
+            }
+            return Ok(result);
+        };
+        let selected = match &point {
+            BranchPoint::Before(turn) | BranchPoint::Through(turn) => turn.clone(),
+            BranchPoint::Latest => unreachable!("rewind always selects a turn"),
+        };
+        let discarded: Vec<&str> = turns[first_discarded..]
             .iter()
             .map(|turn| turn.id.as_str())
             .collect();
-        (file_turn, files) = file_selection(&home, session, &suffix)?;
+        let with_files = self.mode() == "files-and-conversation";
+        let (file_turn, mut files) = if with_files {
+            file_selection(home, session, &discarded)?
+        } else {
+            (None, json!({"restored": false, "changes": []}))
+        };
+        if !self.restore {
+            result["selected_checkpoint"] = json!(selected);
+            result["discarded_turns"] = json!(discarded);
+            if with_files {
+                result["files"] = files;
+            }
+            return Ok(result);
+        }
+        let branch = crate::sessions::branch(&store, session, point, None)
+            .await
+            .wrap_err("branch publication failed; the original session is unchanged")?;
+        let id = branch.id().to_owned();
+        crate::config::prepare_rewind_branch(home, session, &id).map_err(|error| {
+            eyre!("branch {id} was created but its host restrictions were not copied: {error}")
+        })?;
+        if let Some(turn) = file_turn {
+            files =
+                crate::config::rewind_files(home, session, Some(&turn), true).map_err(|error| {
+                    eyre!("branch {id} was created but file restoration failed: {error}")
+                })?;
+        }
+        Ok(json!({
+            "session": session,
+            "branch_session": id,
+            "selected_checkpoint": selected,
+            "mode": self.mode(),
+            "restored": true,
+            "files": files,
+            "resume_command": format!("nanocodex resume {id}"),
+            "scope": SCOPE,
+        }))
     }
-    branch.verify_source().await?;
-    crate::config::prepare_rewind_branch(&home, session, branch.branch_id())
-        .map_err(|error| eyre!(error))?;
-    if let Some(turn) = file_turn {
-        files = crate::config::rewind_files(&home, session, Some(&turn), true)
-            .map_err(|error| eyre!(error))?;
+
+    fn rollout_thread(&self, home: &Path, session: &str) -> Option<PathBuf> {
+        nanocodex::agent::rollout::RolloutConfig::new(home)
+            .load_session(session)
+            .ok()
+            .map(|thread| thread.rollout_path().to_path_buf())
     }
-    let id = branch.publish(&prepared).await.map_err(|error| eyre!("branch publication failed: {error}; original session retained; file restoration result: {files}. Inspect before retrying."))?;
-    let workspace = prepared["workspace"]
-        .as_str()
-        .map(std::path::Path::new)
-        .or(original.workspace.as_deref());
-    let model = prepared["model"]
-        .as_str()
-        .and_then(|v| v.parse().ok())
-        .or(original.model);
-    if let (Some(workspace), Some(model)) = (workspace, model) {
-        crate::native_sessions::register(&home, &id, workspace, model).map_err(|error| eyre!("branch {id} was created but routing metadata failed: {error}; resume this ID explicitly"))?;
+
+    /// Branches a Codex-format rollout by copying it into a new session.
+    fn branch_rollout(&self, home: &Path, source: &Path) -> Result<Value> {
+        if self.mode() != "conversation" {
+            return Err(eyre!(
+                "rollout branches carry no file checkpoints; use --mode conversation"
+            ));
+        }
+        if self.before.is_some() {
+            return Err(eyre!(
+                "rollout files branch only --through a completed turn"
+            ));
+        }
+        let point = crate::rollout_fork::Point::parse(self.through.as_deref())?;
+        if !self.restore {
+            return Ok(json!({
+                "from": source,
+                "through": self.through,
+                "restored": false,
+                "scope": SCOPE,
+            }));
+        }
+        let workspace = match &self.cwd {
+            Some(path) => path.clone(),
+            None => std::env::current_dir()?,
+        }
+        .canonicalize()
+        .wrap_err("failed to resolve the new session's workspace")?;
+        let id = crate::rollout_fork::fork(source, &point, home, &workspace)?;
+        Ok(json!({
+            "from": source,
+            "branch_session": id,
+            "through": self.through,
+            "restored": true,
+            "resume_command": format!("nanocodex resume {id}"),
+            "scope": SCOPE,
+        }))
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(
-            &json!({"session":session,"branch_session":id,"selected_checkpoint":turn,"mode":mode,"restored":true,"files":files,"resume_command":format!("nanocodex resume {id} --claude"),"scope":"Conversation branched before selected turn; original remains recoverable. Bash, MCP and other external effects are not undone or replayed."})
-        )?
-    );
-    Ok(())
+}
+
+/// Native file checkpoints are a capability of the session, not of its family.
+fn files(home: &Path, session: &str, turn: Option<&str>, restore: bool) -> Result<Value> {
+    if restore && turn.is_none() {
+        return Err(eyre!(
+            "--restore requires --before <turn-id>; preview the session first"
+        ));
+    }
+    crate::config::rewind_files(home, session, turn, restore).map_err(|error| eyre!(error))
 }
 
 // The selected user turn may have no file edits. Start at the first file-edit
 // checkpoint in its suffix, and validate the entire file chain before mutation.
-fn file_selection(
-    home: &std::path::Path,
-    session: &str,
-    suffix: &[&str],
-) -> Result<(Option<String>, Value)> {
-    let empty = || (None, json!({"restored":false,"changes":[]}));
+fn file_selection(home: &Path, session: &str, suffix: &[&str]) -> Result<(Option<String>, Value)> {
+    let empty = || (None, json!({"restored": false, "changes": []}));
     let preview = match crate::config::rewind_files(home, session, None, false) {
         Ok(preview) => preview,
         Err(error) if error.starts_with("no native file checkpoints found") => return Ok(empty()),

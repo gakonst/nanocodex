@@ -347,6 +347,23 @@ mod tests {
             .unwrap();
     }
 
+    /// A blocking registration result that reports when it has been dropped.
+    /// Tokio marks a task finished before its worker drops an unobserved output,
+    /// so `is_finished` cannot show that a late registration has been released.
+    struct Released {
+        result: Option<Result<Registration, String>>,
+        dropped: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl Drop for Released {
+        fn drop(&mut self) {
+            drop(self.result.take());
+            if let Some(dropped) = self.dropped.take() {
+                let _ = dropped.send(());
+            }
+        }
+    }
+
     #[tokio::test]
     async fn deferred_registration_survives_contention_and_cleans_up_after_cancellation() {
         for cancel in [false, true] {
@@ -354,10 +371,14 @@ mod tests {
             let guard = coordination_lock(directory.path()).unwrap();
             let path = directory.path().to_owned();
             let (entered, started) = tokio::sync::oneshot::channel();
+            let (dropped, released) = tokio::sync::oneshot::channel();
             let mut setup = tokio::task::JoinSet::new();
-            let task = setup.spawn_blocking(move || {
+            setup.spawn_blocking(move || {
                 let _ = entered.send(());
-                register_in(&path)
+                Released {
+                    result: Some(register_in(&path)),
+                    dropped: Some(dropped),
+                }
             });
             started.await.unwrap();
             // The runtime stays responsive while a real OS lock holds the worker.
@@ -368,13 +389,12 @@ mod tests {
                 // Like TUI teardown: no waiting for a blocking registration worker.
                 drop(setup);
                 drop(guard);
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    while !task.is_finished() {
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .unwrap();
+                // The blocking worker drops the late result; wait for that drop
+                // itself, which unlinks the lease, rather than task completion.
+                tokio::time::timeout(Duration::from_secs(1), released)
+                    .await
+                    .unwrap()
+                    .unwrap();
             } else {
                 drop(guard);
                 let mut registration =
@@ -382,6 +402,9 @@ mod tests {
                         .await
                         .unwrap()
                         .unwrap()
+                        .unwrap()
+                        .result
+                        .take()
                         .unwrap()
                         .unwrap();
                 assert_eq!(request_in(directory.path()).unwrap(), 1);

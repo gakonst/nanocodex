@@ -403,10 +403,12 @@ fn local_entries(text: &str) -> Vec<(u64, f64)> {
     }
     entries
 }
-/// Owner-private scratch directory; removed on drop, including task abort.
+/// Owner-private scratch directory, named for the owning process. A stream
+/// removes it before reporting `stopped`; drop is only a best-effort fallback
+/// when the task is aborted.
 fn scratch() -> std::io::Result<tempfile::TempDir> {
     let dir = tempfile::Builder::new()
-        .prefix("nanocodex-hls-")
+        .prefix(&format!("nanocodex-hls-{}-", std::process::id()))
         .tempdir()?;
     #[cfg(unix)]
     {
@@ -414,6 +416,25 @@ fn scratch() -> std::io::Result<tempfile::TempDir> {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(dir)
+}
+/// Windows refuses to delete a file that a just-terminated FFmpeg or a file
+/// scanner still holds open, and `TempDir`'s drop ignores that error; retry
+/// briefly, then return the last error so the caller never reports a clean stop
+/// while captured segments remain.
+async fn remove_scratch(dir: tempfile::TempDir) -> std::io::Result<()> {
+    let path = dir.path().to_owned();
+    let Err(mut last) = dir.close() else {
+        return Ok(());
+    };
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
 }
 /// One playback stream: FFmpeg -> local segments -> authenticated uploads.
 /// Status transitions are published on `events`; nothing here is logged.
@@ -505,23 +526,22 @@ pub(crate) async fn run(
             }
         }
     };
-    match outcome {
-        None => {
-            tokio::time::timeout(Duration::from_secs(2), uploader.finish())
-                .await
-                .ok();
-            emit("stopped", None);
-        }
-        Some(error) => {
-            if !matches!(error, "upload_rejected" | "expired") {
-                tokio::time::timeout(Duration::from_secs(2), uploader.finish())
-                    .await
-                    .ok();
-            }
-            emit("failed", Some(error));
-        }
+    // Rejected or expired credentials are never used again.
+    if !matches!(outcome, Some("upload_rejected" | "expired")) {
+        tokio::time::timeout(Duration::from_secs(2), uploader.finish())
+            .await
+            .ok();
     }
-    drop(dir);
+    // Every encoder was killed and reaped above. Only `stopped` promises that
+    // the local segments are gone: a cleanup failure turns a clean stop into
+    // broadcast_failed (the generic host failure every broker accepts), and an
+    // earlier failure keeps its own, primary code.
+    let cleaned = remove_scratch(dir).await.is_ok();
+    match outcome {
+        None if cleaned => emit("stopped", None),
+        None => emit("failed", Some("broadcast_failed")),
+        Some(error) => emit("failed", Some(error)),
+    }
 }
 
 #[cfg(test)]
@@ -749,7 +769,10 @@ mod tests {
             "stream_id":STREAM,"preset":"720p","upload":{"url":origin.join(&format!("/v1/screen-playback/{STREAM}/upload/")).unwrap().as_str(),
             "token":TOKEN,"expires_at":now_ms() + expires_in_ms}})
     }
+    /// This process's stream scratch directories. Test runners share the temp
+    /// directory across concurrent processes; `SERIAL` orders streams within one.
     fn scratch_dirs() -> Vec<PathBuf> {
+        let prefix = format!("nanocodex-hls-{}-", std::process::id());
         std::fs::read_dir(std::env::temp_dir())
             .unwrap()
             .flatten()
@@ -758,9 +781,22 @@ mod tests {
                 p.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("nanocodex-hls-")
+                    .starts_with(&prefix)
             })
             .collect()
+    }
+    /// These journeys encode, upload and decode real HLS. Without the tools
+    /// every encoder start fails, which would surface only as capture_failed.
+    fn require_ffmpeg() {
+        for tool in ["ffmpeg", "ffprobe"] {
+            let found = Command::new(tool)
+                .arg("-version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            assert!(found, "{tool} must be on PATH for the real HLS journeys");
+        }
     }
     /// Wait for a terminal or matching status; every observed result is checked for secrets.
     async fn wait(
@@ -818,6 +854,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn ffmpeg_hls_upload_decodes_recovers_and_stops_by_stream_id() {
         let _serial = SERIAL.lock().await;
+        require_ffmpeg();
         let state: Shared = Default::default();
         let origin = serve(state.clone()).await;
         let before = scratch_dirs();
@@ -1014,6 +1051,7 @@ mod tests {
         revoke_after_live: bool,
     ) -> (Vec<Value>, Shared) {
         let _serial = SERIAL.lock().await;
+        require_ffmpeg();
         let state: Shared = Default::default();
         configure(&mut state.lock().unwrap());
         let origin = serve(state.clone()).await;
@@ -1029,8 +1067,7 @@ mod tests {
         }
         let last = wait(&mut events, &mut seen, "never", 40).await;
         assert_eq!(last["status"], "failed");
-        // The slot is released: the task ended and no scratch directory remains.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The terminal status is reported only after the scratch directory is gone.
         assert!(scratch_dirs().iter().all(|d| before.contains(d)));
         assert_eq!(
             broadcast
@@ -1085,15 +1122,96 @@ mod tests {
         assert_eq!(state.lock().unwrap().missing_replies, 6);
     }
 
+    /// The upload credential's deadline ends a live stream. The deadline is
+    /// fixed when the stream starts, and a starved runner can take longer than
+    /// the window to encode and upload its first segment; that stream expires
+    /// too, but only a stream that went live proves this journey, so each
+    /// attempt that never went live doubles the window.
     #[tokio::test(flavor = "multi_thread")]
     async fn deadline_expires_stream() {
-        let (seen, state) = terminal(|_| {}, TOKEN, 6_000, false).await;
-        assert!(seen.iter().any(|v| v["status"] == "live"));
-        assert_eq!(last_error(&seen), "expired");
-        assert!(
-            !state.lock().unwrap().deleted,
-            "expired credentials are not used"
+        let mut attempts = Vec::new();
+        for window_ms in [6_000, 12_000, 24_000] {
+            let (seen, state) = terminal(|_| {}, TOKEN, window_ms, false).await;
+            assert_eq!(last_error(&seen), "expired", "{seen:?}");
+            assert!(
+                !state.lock().unwrap().deleted,
+                "expired credentials are not used"
+            );
+            let live = seen.iter().any(|v| v["status"] == "live");
+            attempts.push((window_ms, seen));
+            if live {
+                return;
+            }
+        }
+        panic!("no stream went live before its deadline: {attempts:?}");
+    }
+
+    /// A stop whose scratch directory cannot be removed is reported as a
+    /// failure, never as a clean stop, and the retained segments stay visible.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn undeletable_scratch_fails_the_stop_instead_of_reporting_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = SERIAL.lock().await;
+        require_ffmpeg();
+        let state: Shared = Default::default();
+        let origin = serve(state.clone()).await;
+        let before = scratch_dirs();
+        let mut broadcast = synthetic();
+        let mut events = broadcast.events();
+        let mut seen = vec![
+            broadcast
+                .hls_request(&start(&origin, 60_000), &origin.origin())
+                .await,
+        ];
+        assert_eq!(
+            wait(&mut events, &mut seen, "live", 20).await["status"],
+            "live"
         );
+        let created: Vec<_> = scratch_dirs()
+            .into_iter()
+            .filter(|d| !before.contains(d))
+            .collect();
+        assert_eq!(created.len(), 1);
+        // A read-only subdirectory holding a file: removal fails the same way a
+        // file still held open on Windows does, without disturbing the encoder.
+        let locked = created[0].join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("held.ts"), b"retained").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert_eq!(
+            std::fs::remove_file(locked.join("held.ts"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "this journey needs a user that directory permissions apply to"
+        );
+
+        let stopped = broadcast
+            .hls_request(
+                &json!({"action":"stop","request_id":"s","stream_id":STREAM}),
+                &origin.origin(),
+            )
+            .await;
+        seen.push(events.borrow().clone());
+        seen.push(stopped.clone());
+        assert_eq!(stopped["status"], "failed", "{seen:?}");
+        assert_eq!(stopped["error"], "broadcast_failed");
+        assert_eq!(stopped["request_id"], "s");
+        let last = events.borrow().clone();
+        assert_eq!(
+            (last["status"].as_str(), last["error"].as_str()),
+            (Some("failed"), Some("broadcast_failed"))
+        );
+        assert!(
+            locked.join("held.ts").exists(),
+            "retained segments are not hidden"
+        );
+        assert!(!seen.iter().any(|v| v["status"] == "stopped"), "{seen:?}");
+        assert_tokenless(&seen);
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&created[0]).unwrap();
     }
 
     #[tokio::test]

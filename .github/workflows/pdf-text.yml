@@ -22,5 +22,5 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter nanocodex-tools run test
+      - run: pnpm exec turbo run test --filter nanocodex-tools
       - run: pnpm --filter nanocodex-managed-service exec vitest run --config vitest.pdf.config.ts

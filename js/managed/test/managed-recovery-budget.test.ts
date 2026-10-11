@@ -40,6 +40,7 @@ it.each(["direct", "reopen-wrapper", "retryable-cause"])("bounds %s host interru
       if (mode === "transient") throw Object.assign(new Error("fixture temporary service outage"), { code: "retryable" });
       return Response.json({ tools: [], machines: [], connections: [] });
     } } } });
+    await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
     ctx.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id,
       authorization_epoch, public_origin, runtime_profile, last_active) VALUES (1, ?, 'fixture-owner', 'fixture-org',
       'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), Date.now());

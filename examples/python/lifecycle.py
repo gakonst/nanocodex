@@ -33,7 +33,7 @@ def main() -> None:
     parent = agent.prompt("Remember the token FORK_PY. Reply with OK.")
     parent_result = parent.result()
     print("parent:", parent_result.final_message)
-    branch, _ = agent.fork_from(parent_result)
+    branch, _ = agent.fork(parent_result)
     print(
         "forked:",
         branch.prompt("What token did I ask you to remember?").result().final_message,

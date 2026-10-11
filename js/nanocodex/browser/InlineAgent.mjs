@@ -10,7 +10,7 @@ import {
   CLOUDFLARE_SESSION_RESERVATION,
   createAgentClient,
   createEventChannel,
-  createSessionId,
+  defaultSessionId,
   defineRuntime,
   loadDurabilityRuntime,
   loadSubscriptionRuntime,
@@ -73,7 +73,7 @@ export async function create(options = {}) {
   const toolProviders = internalRuntime?.toolProviders;
   const subagentSessions = internalRuntime?.subagentSessions;
   const cloudflareReservation = internalRuntime?.[CLOUDFLARE_SESSION_RESERVATION];
-  const stableSessionId = sessionId ?? createSessionId();
+  const stableSessionId = sessionId ?? defaultSessionId(durabilityId);
   const {
     apiKey,
     hostAuth,

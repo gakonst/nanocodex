@@ -22,6 +22,7 @@ describe("cold managed observations", () => {
           throw new Error("observations must not construct the agent");
         } },
       } });
+      await session.fetch(new Request("https://session.internal/state")); // A fresh Session creates its schema on its first request (9d8b63102).
       state.storage.sql.exec(`INSERT INTO session_state
         (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
          public_origin, runtime_profile, last_active)

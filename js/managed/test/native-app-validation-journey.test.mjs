@@ -8,6 +8,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire, builtinModules } from "node:module";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const require = createRequire(import.meta.url);
 const { build } = require("esbuild");

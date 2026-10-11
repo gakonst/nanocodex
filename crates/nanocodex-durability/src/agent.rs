@@ -9,11 +9,14 @@ use nanocodex_agent::{
         ExecutionAdmission, ExecutionContinuation, ExecutionFuture, ExecutionOutput,
         ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission, IdentifiedExecutionSteer,
     },
-    session::SessionSnapshot,
+    session::{SessionId, SessionSnapshot},
 };
 use serde_json::value::RawValue;
 
-use crate::{Admission, BeginStep, DurableSession, Error, OperationStatus, session::DurableOwner};
+use crate::{
+    Admission, BeginStep, DurableSession, Error, OperationStatus, SessionRecord,
+    session::DurableOwner, shared_store::SharedStore,
+};
 
 /// Fluent builder extension that attaches portable durability to an agent.
 pub trait DurableAgentExt: Sized {
@@ -25,7 +28,34 @@ pub trait DurableAgentExt: Sized {
 impl<F> DurableAgentExt for NanocodexBuilder<F> {
     async fn durability(self, state: DurableSession) -> AgentResult<Self> {
         let state_id = state.state_id().to_owned();
+        let record = state.record().await.map_err(agent_error)?;
         let mut builder = self.child_journal(state.child_journal());
+        // A durable Codex session is identified by its state; events,
+        // persistence, and resume all report the same identity. A host that
+        // names the identity explicitly owns it: a Durable Object persisted
+        // before identities were unified keeps the runtime session ID its
+        // event log, task tree, effect journals and checkpoint lineage were
+        // recorded under, rather than being silently renamed to its state ID.
+        if builder.explicit_session_id().is_none()
+            && let Ok(session_id) = state_id.parse::<SessionId>()
+        {
+            builder = builder.session_id(session_id);
+        }
+        if let Some(record) = &record {
+            builder = builder.lineage(record.lineage.clone());
+        }
+        let initial = record
+            .as_ref()
+            .and_then(|record| match (record.model, record.initial) {
+                (nanocodex_agent::HarnessModel::Codex(model), Some(initial)) => {
+                    Some((model, initial))
+                }
+                _ => None,
+            });
+        let branches = Branches {
+            store: state.shared_store(),
+            record,
+        };
         let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
         let mut known_records = HashSet::new();
         if let Some(checkpoint) = checkpoint {
@@ -37,26 +67,30 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
             .map_err(agent_error)?;
             if let Some(configured) = builder.resume_snapshot()
                 && serde_json::to_string(configured)
-                    .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?
-                    != serde_json::to_string(&restored).map_err(|error| {
-                        NanocodexError::InvalidSessionSnapshot(error.to_string())
-                    })?
+                    .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?
+                    != serde_json::to_string(&restored)
+                        .map_err(|error| NanocodexError::InvalidCheckpoint(error.to_string()))?
             {
-                return Err(NanocodexError::InvalidSessionSnapshot(
+                return Err(NanocodexError::InvalidCheckpoint(
                     "configured resume snapshot does not match the durability state".to_owned(),
                 ));
             }
             known_records = keys;
-            builder = builder.resume(restored);
+            builder = builder.resume_native_snapshot(restored);
         } else if builder.resume_snapshot().is_none() {
+            // A child reopened before its first checkpoint keeps the model and
+            // settings it was created with.
+            if let Some((model, initial)) = initial {
+                builder = builder.initial_settings(model, initial.thinking, initial.service_tier);
+            }
             // A fork's explicitly supplied completed snapshot owns its cache
             // lineage. A fresh durable root alone defaults to its state ID.
-            builder = builder.default_prompt_cache_key(state_id);
+            builder = builder.default_prompt_cache_key(state_id.clone());
         }
-        let owner = Arc::new(Mutex::new(Some((owner, known_records))));
+        let owner = Arc::new(Mutex::new(Some((owner, known_records, branches))));
         Ok(builder
             .execution_policy_factory(move || {
-                let (owner, keys) = owner
+                let (owner, keys, branches) = owner
                     .lock()
                     .map_err(|_| {
                         NanocodexError::InvalidExecutionPolicy(
@@ -70,7 +104,7 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
                                 .to_owned(),
                         )
                     })?;
-                let policy = DurableExecution::ready(owner);
+                let policy = DurableExecution::ready(owner, state_id.clone(), Some(branches));
                 policy.remember(keys)?;
                 let policy: Arc<dyn ExecutionPolicy> = Arc::new(policy);
                 Ok(policy)
@@ -78,15 +112,44 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
     }
 }
 
+/// Where forks of a durable session persist their own resumable state.
+#[derive(Clone)]
+pub(crate) struct Branches {
+    pub(crate) store: SharedStore,
+    pub(crate) record: Option<SessionRecord>,
+}
+
+impl Branches {
+    /// Describes a child of this session; inherits model and workspace.
+    pub(crate) fn child_record(
+        &self,
+        child: &nanocodex_agent::SessionInfo,
+    ) -> AgentResult<SessionRecord> {
+        let parent = self.record.as_ref().ok_or_else(|| {
+            NanocodexError::InvalidExecutionPolicy(
+                "a durable session without a recorded model cannot persist forks; open it through SessionStore"
+                    .to_owned(),
+            )
+        })?;
+        Ok(parent
+            .derive(child.session_id.clone(), child.lineage.origin)
+            .with_lineage(child.lineage.clone()))
+    }
+}
+
 struct DurableExecution {
     owner: DurableOwner,
+    state_id: String,
+    branches: Option<Branches>,
     context_records: Mutex<HashSet<String>>,
 }
 
 impl DurableExecution {
-    fn ready(owner: DurableOwner) -> Self {
+    fn ready(owner: DurableOwner, state_id: String, branches: Option<Branches>) -> Self {
         Self {
             owner,
+            state_id,
+            branches,
             context_records: Mutex::new(HashSet::new()),
         }
     }
@@ -108,6 +171,31 @@ impl DurableExecution {
 }
 
 impl ExecutionPolicy for DurableExecution {
+    fn durable_state_id(&self) -> Option<String> {
+        Some(self.state_id.clone())
+    }
+
+    fn branch(
+        &self,
+        child: &nanocodex_agent::SessionInfo,
+    ) -> AgentResult<Option<Arc<dyn ExecutionPolicy>>> {
+        // A session opened without a catalog record has nowhere to describe a
+        // child; the caller reports ExecutionPolicyBranchUnsupported, exactly
+        // as for Claude.
+        let Some(branches) = self
+            .branches
+            .as_ref()
+            .filter(|branches| branches.record.is_some())
+        else {
+            return Ok(None);
+        };
+        let record = branches.child_record(child)?;
+        Ok(Some(Arc::new(LazyExecution::new(
+            branches.store.clone(),
+            record,
+        ))))
+    }
+
     fn recover_failure<'a>(
         &'a self,
         operation_id: String,
@@ -487,6 +575,361 @@ impl ExecutionPolicy for DurableExecution {
     }
 }
 
+/// A fork's own durable state, opened in the parent's store on first use.
+///
+/// [`ExecutionPolicy::branch`] runs synchronously before the child starts, so
+/// the child state is acquired lazily by the child's first policy call.
+struct LazyExecution {
+    store: SharedStore,
+    record: SessionRecord,
+    ready: tokio::sync::OnceCell<DurableExecution>,
+    /// The opened state already held a checkpoint, as for a restored child.
+    reopened: std::sync::atomic::AtomicBool,
+    /// This policy wrote the state's first checkpoint.
+    initialized: std::sync::atomic::AtomicBool,
+    /// Settings the child was created with, recorded when the state opens.
+    created_with: Mutex<Option<nanocodex_agent::execution::InitialSettings>>,
+}
+
+impl LazyExecution {
+    fn new(store: SharedStore, record: SessionRecord) -> Self {
+        Self {
+            store,
+            record,
+            ready: tokio::sync::OnceCell::new(),
+            reopened: std::sync::atomic::AtomicBool::new(false),
+            initialized: std::sync::atomic::AtomicBool::new(false),
+            created_with: Mutex::new(None),
+        }
+    }
+
+    async fn get(&self) -> AgentResult<&DurableExecution> {
+        self.ready
+            .get_or_try_init(|| async {
+                let state = DurableSession::open_shared(
+                    self.store.clone(),
+                    self.record.session_id.clone(),
+                    None,
+                )
+                .await
+                .map_err(agent_error)?;
+                let mut record = self.record.clone();
+                if let Some(settings) = self.created_with.lock().ok().and_then(|settings| *settings)
+                {
+                    // The child's own model and settings, not its parent's.
+                    record.model = nanocodex_agent::HarnessModel::Codex(settings.model);
+                    record.initial = Some(crate::catalog::InitialSettings {
+                        thinking: settings.thinking,
+                        service_tier: settings.service_tier,
+                    });
+                }
+                let record = state.describe(record).await.map_err(agent_error)?;
+                let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+                self.reopened
+                    .store(checkpoint.is_some(), std::sync::atomic::Ordering::SeqCst);
+                Ok(DurableExecution::ready(
+                    owner,
+                    record.session_id.clone(),
+                    Some(Branches {
+                        store: self.store.clone(),
+                        record: Some(record),
+                    }),
+                ))
+            })
+            .await
+    }
+}
+
+impl ExecutionPolicy for LazyExecution {
+    fn durable_state_id(&self) -> Option<String> {
+        Some(self.record.session_id.clone())
+    }
+
+    fn branch(
+        &self,
+        child: &nanocodex_agent::SessionInfo,
+    ) -> AgentResult<Option<Arc<dyn ExecutionPolicy>>> {
+        let branches = Branches {
+            store: self.store.clone(),
+            record: Some(self.record.clone()),
+        };
+        Ok(Some(Arc::new(Self::new(
+            self.store.clone(),
+            branches.child_record(child)?,
+        ))))
+    }
+
+    fn recover_failure<'a>(
+        &'a self,
+        operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move {
+            match self.get().await {
+                Ok(policy) => policy.recover_failure(operation_id, error).await,
+                Err(_) => error,
+            }
+        })
+    }
+
+    fn shutdown<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            match self.ready.get() {
+                Some(policy) => policy.shutdown().await,
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn commit_checkpoint<'a>(
+        &'a self,
+        snapshot: SessionSnapshot,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.commit_checkpoint(snapshot).await })
+    }
+
+    fn commit_initial_checkpoint<'a>(
+        &'a self,
+        snapshot: Option<SessionSnapshot>,
+        settings: nanocodex_agent::execution::InitialSettings,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            if let Ok(mut created_with) = self.created_with.lock() {
+                *created_with = Some(settings);
+            }
+            // Opening the state records the child in the catalog; a restored
+            // child keeps the history it already holds.
+            let policy = self.get().await?;
+            if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            self.initialized
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            match snapshot {
+                Some(snapshot) => policy.commit_checkpoint(snapshot).await,
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            let Some(policy) = self.ready.get() else {
+                return Ok(());
+            };
+            if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            policy.owner.discard_unused().await.map_err(agent_error)
+        })
+    }
+
+    fn admit<'a>(
+        &'a self,
+        operation_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<ExecutionAdmission>> {
+        Box::pin(async move { self.get().await?.admit(operation_id, input_json).await })
+    }
+
+    fn admit_automatic<'a>(
+        &'a self,
+        candidate_operation_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<(String, ExecutionAdmission)>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .admit_automatic(candidate_operation_id, input_json)
+                .await
+        })
+    }
+
+    fn release<'a>(&'a self, operation_id: String) -> ExecutionFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(policy) = self.ready.get() {
+                policy.release(operation_id).await;
+            }
+        })
+    }
+
+    fn cancel<'a>(
+        &'a self,
+        operation_id: String,
+        snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.cancel(operation_id, snapshot).await })
+    }
+
+    fn begin_attempt<'a>(&'a self, operation_id: String) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.begin_attempt(operation_id).await })
+    }
+
+    fn accept_steer<'a>(
+        &'a self,
+        operation_id: String,
+        accepted_after_model_call_index: u32,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<u32>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .accept_steer(operation_id, accepted_after_model_call_index, input_json)
+                .await
+        })
+    }
+
+    fn supports_steer_receipts(&self) -> bool {
+        true
+    }
+
+    fn accept_identified_steer<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        input_json: String,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, AgentResult<Option<u32>>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .accept_identified_steer(
+                    operation_id,
+                    message_id,
+                    accepted_after_model_call_index,
+                    input_json,
+                    capacity_available,
+                )
+                .await
+        })
+    }
+
+    fn retained_steers<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Vec<ExecutionSteer>>> {
+        Box::pin(async move { self.get().await?.retained_steers(operation_id).await })
+    }
+
+    fn retained_identified_steers<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Vec<IdentifiedExecutionSteer>>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .retained_identified_steers(operation_id)
+                .await
+        })
+    }
+
+    fn withdraw_steer<'a>(
+        &'a self,
+        operation_id: String,
+        steer_index: u32,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .withdraw_steer(operation_id, steer_index)
+                .await
+        })
+    }
+
+    fn bind_steer<'a>(
+        &'a self,
+        operation_id: String,
+        steer_index: u32,
+        model_call_index: u32,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .bind_steer(operation_id, steer_index, model_call_index)
+                .await
+        })
+    }
+
+    fn continuation<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionContinuation>>> {
+        Box::pin(async move { self.get().await?.continuation(operation_id).await })
+    }
+
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.advance(operation_id, continuation).await })
+    }
+
+    fn begin_step<'a>(
+        &'a self,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<ExecutionStepAdmission>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .begin_step(operation_id, step_id, kind, input_json)
+                .await
+        })
+    }
+
+    fn complete_step<'a>(
+        &'a self,
+        operation_id: String,
+        step_id: String,
+        output_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .complete_step(operation_id, step_id, output_json)
+                .await
+        })
+    }
+
+    fn complete<'a>(
+        &'a self,
+        operation_id: String,
+        snapshot: SessionSnapshot,
+        output: ExecutionOutput,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .complete(operation_id, snapshot, output)
+                .await
+        })
+    }
+
+    fn fail_attempt<'a>(
+        &'a self,
+        operation_id: String,
+        error: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.fail_attempt(operation_id, error).await })
+    }
+
+    fn fail<'a>(
+        &'a self,
+        operation_id: String,
+        snapshot: SessionSnapshot,
+        error: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move { self.get().await?.fail(operation_id, snapshot, error).await })
+    }
+}
+
 async fn map_admission(
     owner: &DurableOwner,
     admission: Admission<crate::context::Snapshot, ExecutionOutput>,
@@ -556,7 +999,7 @@ mod tests {
             .admit_typed::<_, u32, String>("turn".into(), &"input")
             .await
             .unwrap();
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, "test".into(), None);
         let failure = policy
             .recover_failure(
                 "turn".into(),
@@ -581,7 +1024,7 @@ mod tests {
             .await
             .unwrap();
         owner.begin_attempt("first".into()).await.unwrap();
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, "test".into(), None);
         let failure = policy
             .recover_failure(
                 "first".into(),
@@ -650,7 +1093,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let policy = DurableExecution::ready(owner);
+        let policy = DurableExecution::ready(owner, "test".into(), None);
         let failure = policy
             .recover_failure("newer".into(), NanocodexError::TurnStopped)
             .await;

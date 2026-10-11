@@ -10,6 +10,7 @@ use nanocodex::claude::{
     ClaudeLifecycleOutcome, ClaudeToolDecision, ClaudeToolHooks, ClaudeToolInvocation,
     ClaudeToolReply,
 };
+use nanocodex::tools::SessionEnvironment;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -165,12 +166,13 @@ impl ClaudeToolHooks for CommandHooks {
     ) -> ClaudeHookFuture<'a, std::result::Result<ClaudeLifecycleOutcome, String>> {
         Box::pin(async move {
             let workspace = (self.workspace)(&call.session_id)?;
+            let session = SessionEnvironment::new(&call.session_id, &call.root_session_id);
             let event = call.event.name();
             let mut payload = serde_json::to_value(call).map_err(|error| error.to_string())?;
             payload["cwd"] = json!(workspace);
             let mut outcome = ClaudeLifecycleOutcome::default();
             for hook in self.matching(event, call.event.matcher_value()) {
-                let output = match execute(hook, &workspace, &payload).await {
+                let output = match execute(hook, &workspace, &session, &payload).await {
                     Ok(output) => output,
                     Err(error) => {
                         // Prompt/compaction gates fail closed. A Stop error must
@@ -257,11 +259,12 @@ impl ClaudeToolHooks for CommandHooks {
     ) -> ClaudeHookFuture<'a, std::result::Result<ClaudeToolDecision, String>> {
         Box::pin(async move {
             let workspace = (self.workspace)(&call.session_id)?;
+            let session = SessionEnvironment::new(&call.session_id, &call.root_session_id);
             let mut current = input.clone();
             let mut updated = false;
             for hook in self.matching("PreToolUse", name) {
                 let payload = self.payload(&workspace, "PreToolUse", name, &current, call);
-                let output = execute(hook, &workspace, &payload).await?;
+                let output = execute(hook, &workspace, &session, &payload).await?;
                 validate_output(&output, "PreToolUse")?;
                 if output.get("continue") == Some(&Value::Bool(false))
                     || output.get("decision").and_then(Value::as_str) == Some("block")
@@ -309,6 +312,7 @@ impl ClaudeToolHooks for CommandHooks {
     ) -> ClaudeHookFuture<'a, std::result::Result<(), String>> {
         Box::pin(async move {
             let workspace = (self.workspace)(&call.session_id)?;
+            let session = SessionEnvironment::new(&call.session_id, &call.root_session_id);
             let event = if reply.is_error {
                 "PostToolUseFailure"
             } else {
@@ -323,7 +327,7 @@ impl ClaudeToolHooks for CommandHooks {
             }
             let mut failures = Vec::new();
             for hook in self.matching(event, name) {
-                match execute(hook, &workspace, &payload).await {
+                match execute(hook, &workspace, &session, &payload).await {
                     Err(error) => failures.push(error),
                     Ok(output) => {
                         if let Err(error) = validate_output(&output, event) {
@@ -434,6 +438,7 @@ async fn read_bounded(mut pipe: impl AsyncRead + Unpin) -> std::result::Result<V
 async fn execute(
     hook: &CommandHook,
     workspace: &Path,
+    session: &SessionEnvironment,
     payload: &Value,
 ) -> std::result::Result<Value, String> {
     let mut input = BoundedInput(Vec::new());
@@ -447,6 +452,7 @@ async fn execute(
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("CLAUDE_PROJECT_DIR", workspace)
+        .envs(session.variables())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -462,10 +468,13 @@ async fn execute(
     let stderr = child.stderr.take().ok_or("hook stderr unavailable")?;
     let operation = async {
         let writer = async {
-            stdin
-                .write_all(&bytes)
-                .await
-                .map_err(|error| error.to_string())?;
+            match stdin.write_all(&bytes).await {
+                // A hook may exit without reading its input, as Claude Code
+                // permits; its exit status and stdout still decide the outcome.
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(error) => return Err(error.to_string()),
+            }
             drop(stdin);
             Ok::<_, String>(())
         };
@@ -509,4 +518,33 @@ async fn execute(
         return Err("command hook stdout must be a JSON object".into());
     }
     Ok(output)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn command_hook_may_exit_without_reading_its_input() {
+        let workspace = tempfile::tempdir().unwrap();
+        let hook = CommandHook {
+            kind: "command".to_owned(),
+            command: r#"printf '%s' '{"decision":"block","reason":"configured-denial"}'"#
+                .to_owned(),
+            timeout: 10.0,
+            _status_message: None,
+        };
+        // Larger than a pipe buffer, so writing it always outlives the hook.
+        let payload = json!({ "tool_input": { "content": "x".repeat(512 * 1024) } });
+
+        let session = SessionEnvironment::new("hook-session", "hook-session");
+        let output = execute(&hook, workspace.path(), &session, &payload)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output,
+            json!({ "decision": "block", "reason": "configured-denial" })
+        );
+    }
 }

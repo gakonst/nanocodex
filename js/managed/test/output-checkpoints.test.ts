@@ -26,7 +26,9 @@ const req = (path: string, body?: unknown) => new Request(`https://session.inter
 });
 async function fixture() {
   const id = crypto.randomUUID();
-  await runInDurableObject(sessions.getByName(id), async (_session, state) => {
+  await runInDurableObject(sessions.getByName(id), async (session, state) => {
+    // Since 9d8b63102 a fresh session creates its schema on its first request.
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,
       authorization_epoch,public_origin,runtime_profile,last_active) VALUES (1,?,?,?,?,1,'https://nanocodex.example','managed',?)`,
       id, actor.userId, actor.organizationId, actor.teamId, Date.now());

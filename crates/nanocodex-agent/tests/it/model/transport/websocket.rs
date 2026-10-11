@@ -54,7 +54,7 @@ async fn websocket_ephemeral_fork_replays_history_on_its_fresh_socket() -> Resul
             .final_message(),
         "done"
     );
-    let (fork, fork_events) = agent.fork_from(&first).await?;
+    let (fork, fork_events) = agent.fork(ForkRequest::at_turn(&first)).await?;
     assert_eq!(
         fork.prompt("branch prompt")
             .await?
@@ -171,7 +171,10 @@ async fn model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change() 
         assert_warmup(&warmup);
         assert_eq!(warmup["model"], "gpt-6-luna");
         assert_eq!(warmup["reasoning"]["effort"], "low");
-        assert_eq!(warmup["input"][1]["content"][0]["text"], "custom prompt");
+        assert_eq!(
+            crate::model::instructions::caller_instructions(&warmup),
+            "custom prompt"
+        );
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
@@ -530,7 +533,19 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
         .map_err(|_| eyre!("first request was not observed"))?;
     let queued = agent.prompt("queued prompt").await?;
     agent.set_thinking(Thinking::High).await?;
-    agent.set_service_tier(ServiceTier::Ultrafast).await?;
+    // Luna does not offer Ultrafast; the explicit request fails without
+    // changing the tier, and the offered Fast tier applies.
+    let rejected = agent
+        .set_service_tier(ServiceTier::Ultrafast)
+        .await
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("supported tiers: standard, fast"),
+        "{rejected}"
+    );
+    agent.set_service_tier(ServiceTier::Fast).await?;
     release_first
         .send(())
         .map_err(|()| eyre!("first request release receiver dropped"))?;
@@ -539,7 +554,9 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     assert_eq!(
         serde_json::to_value(
             queued
-                .snapshot()
+                .checkpoint()
+                .as_ref()
+                .map(conversation)
                 .expect("local turns always retain a snapshot"),
         )?["model"],
         "gpt-6-luna"
@@ -549,7 +566,9 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     assert_eq!(
         serde_json::to_value(
             updated
-                .snapshot()
+                .checkpoint()
+                .as_ref()
+                .map(conversation)
                 .expect("local turns always retain a snapshot"),
         )?["model"],
         "gpt-6-luna"
@@ -557,22 +576,34 @@ async fn queued_prompts_retain_tier_and_effort_captured_when_accepted() -> Resul
     assert_eq!(estimated_tier(&updated)?, ServiceTier::Fast);
     agent.compact().await?;
 
-    let ChildSnapshot::Codex(runtime) = agent.runtime_snapshot().await? else {
-        return Err(eyre!("native agent returned a different checkpoint family"));
-    };
-    assert_eq!(runtime.service_tier, ServiceTier::Ultrafast);
-    let mut encoded = serde_json::to_value(&runtime)?;
-    assert_eq!(encoded["service_tier"], "ultrafast");
-    let fields = encoded
+    let checkpoint = agent.checkpoint().await?;
+    assert_eq!(checkpoint.model(), HarnessModel::Codex(Model::Luna));
+    assert_eq!(checkpoint.thinking(), Thinking::High);
+    let mut encoded = serde_json::to_value(&checkpoint)?;
+    assert_eq!(encoded["payload"]["service_tier"], "fast");
+    let fields = encoded["payload"]
         .as_object_mut()
-        .ok_or_else(|| eyre!("runtime snapshot was not an object"))?;
+        .ok_or_else(|| eyre!("checkpoint payload was not an object"))?;
     fields.remove("service_tier");
     fields.insert("fast_mode".into(), json!(true));
-    let legacy: ChildRuntimeSnapshot = serde_json::from_value(encoded.clone())?;
-    assert_eq!(legacy.service_tier, ServiceTier::Fast);
-    encoded["service_tier"] = json!("ultrafast");
+    // A legacy priority switch restores as the Fast tier.
+    let legacy = SessionCheckpoint::from_json(&encoded.to_string())?;
+    let (restored, restored_events) = Nanocodex::builder(OpenAi::new("test")?)
+        .resume(legacy)?
+        .build()?;
+    assert_eq!(restored.session_id(), agent.session_id());
+    assert_eq!(
+        restored.checkpoint().await?.payload()["service_tier"],
+        serde_json::to_value(ServiceTier::Fast)?
+    );
+    restored.shutdown().await?;
+    drop(restored_events);
+    encoded["payload"]["service_tier"] = json!("ultrafast");
+    let conflicting = SessionCheckpoint::from_json(&encoded.to_string())?;
     assert!(
-        serde_json::from_value::<ChildRuntimeSnapshot>(encoded).is_err(),
+        Nanocodex::builder(OpenAi::new("test")?)
+            .resume(conflicting)
+            .is_err(),
         "conflicting tier fields must be rejected"
     );
 
@@ -597,7 +628,7 @@ async fn supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fas
             assert_warmup(&warmup);
             assert_eq!(warmup["reasoning"]["effort"], "medium");
             assert_eq!(
-                warmup["input"][1]["content"][0]["text"],
+                crate::model::instructions::caller_instructions(&warmup),
                 "Keep this developer prompt byte-for-byte stable."
             );
             send_warmup(&mut socket, "resp-policy-warmup").await?;
@@ -784,7 +815,12 @@ async fn supported_reasoning_updates_preserve_socket_prefix_and_replay_after_fas
                 "done"
             );
         }
-        let snapshot = serde_json::to_value(agent.snapshot().await?)?;
+        let snapshot = serde_json::to_value(
+            agent
+                .checkpoint()
+                .await
+                .map(|checkpoint| conversation(&checkpoint))?,
+        )?;
         agent.shutdown().await?;
         drop((agent, events));
         let history = timeout(std::time::Duration::from_secs(5), server)

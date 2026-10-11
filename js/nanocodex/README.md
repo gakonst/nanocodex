@@ -80,10 +80,14 @@ Worker, Durable Object, or application proxy that owns rotating credentials.
 Authentication modes are constructors rather than a union of mutually
 exclusive fields on `Agent.create`.
 
-### Explicit Claude runtime
+### Claude harness
 
-`Claude.create` is an additive Messages backend with explicit host-owned auth
-and an explicit host tool array, using the existing durability store contract.
+`Agent.create({ harness: "claude", model, auth, tools })` runs the native Rust
+Messages backend and returns the same Agent as a Codex session: identical
+`session`, `turn`, and `events` actions, the same `SessionCheckpoint`/fork/resume
+contract, and the same durability store. `Claude.create` is the equivalent
+constructor for the Claude-only `worker` entry point. Claude sessions take
+explicit host-owned auth and a Claude tool array.
 Host tools can share the `exec_command` and `write_stdin` contracts with Codex.
 It does not silently switch managed providers, install Codex tools, or supply
 a subscription sign-in screen. Managed account connection is documented in the
@@ -990,29 +994,48 @@ Cloudflare requires the QuickJS `.wasm` file to be statically imported and
 passed with `newVariant(..., { wasmModule })`; the complete deployment is in
 `examples/cloudflare-fetch-mcp`.
 
-Completed results can be persisted and resumed by a fresh Node or browser
-agent:
+Every session, Codex or Claude, exposes the same harness-neutral contract.
+A `SessionCheckpoint` is the one portable, family-tagged boundary used to
+resume, fork, and restore. It is JSON-safe; its contents are opaque and only
+the harness that produced it decodes them:
 
 ```js
-const snapshot = await result.snapshot();
+const checkpoint = await result.checkpoint(); // or agent.session.checkpoint()
+await store.put("session", JSON.stringify(checkpoint));
 result.dispose();
 await agent.session.shutdown();
 
 const resumed = await Agent.create({
   transport: Transport.openAi({ apiKey: process.env.OPENAI_API_KEY }),
-  resume: snapshot,
+  resume: JSON.parse(await store.get("session")),
   tools,
 });
 await resumed.session.shutdown();
 ```
 
-The snapshot contains authoritative typed history but no provider response ID,
-so the first resumed request safely replays the committed conversation. Resume
-with the same instructions and tool definitions, and release the original
-agent before handing its snapshot to another writer.
+The checkpoint contains the complete unredacted model-visible conversation but
+no provider response ID, so the first resumed request safely replays the
+committed conversation. Resume with the same instructions and tool definitions,
+and release the original agent before handing its checkpoint to another writer.
+`Agent.create({ harness: "claude", ..., resume })` resumes a Claude checkpoint
+the same way; a checkpoint of another family rejects with
+`code: "checkpoint_family_mismatch"`.
+
+`agent.session.info()` returns `{ sessionId, harness, lineage: { rootSessionId,
+parentSessionId, origin, depth } }`. `agent.session.capabilities()` states which
+lifecycle operations the backend supports and when model, thinking, and service
+tier may change (`setModel`, `setThinking`, `setServiceTier`/`setFastMode`); an
+unsupported operation rejects with
+`code: "unsupported_capability"` and a `capability` name.
+`agent.session.persistence()` reports the durable state backing the session, or
+`null`. `agent.session.fork({ at, origin })` forks the latest boundary, a
+completed `TurnResult`, or a `SessionCheckpoint` of the same conversation;
+`origin: "side_conversation"` records a side exploration in the child's
+lineage. A fork of a durable session, side conversation or not, is durable in
+its own right and reports its own `session.persistence()`.
 
 For crash recovery inside a turn, provide the generic durability host instead
-of manually persisting snapshots. The host stores one opaque Rust state value;
+of manually persisting checkpoints. The host stores one opaque Rust state value;
 model replay, tool ambiguity, operation deduplication, and checkpoint recovery
 remain in Rust/WASM:
 
@@ -1102,23 +1125,31 @@ import { importDurabilityStatePages } from "nanocodex/durability";
 import { createPostgresDurabilityStore } from "nanocodex/durability/postgres";
 
 await cloudflareAgent.session.shutdown();
-const pages = [];
-let cursor;
-let to;
-do {
-  const page = await CloudflareAgent.exportDurabilityState(durableObjectOwner, {
-    from: "0", // exclusive destination revision
-    to,        // omit once, then repeat the selected inclusive source revision
-    cursor,
-  });
-  pages.push(page);
-  to = page.to;
-  cursor = page.nextCursor ?? undefined;
-} while (cursor !== undefined);
+// The root state, then its task-tree journal (`<stateId>:subagents`).
+async function exportPages(selection) {
+  const pages = [];
+  let cursor;
+  let to;
+  do {
+    const page = await CloudflareAgent.exportDurabilityState(durableObjectOwner, {
+      ...selection,
+      from: "0", // exclusive destination revision
+      to,        // omit once, then repeat the selected inclusive source revision
+      cursor,
+    });
+    pages.push(page);
+    to = page.to;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return pages;
+}
+const pages = await exportPages({});
+const subagentPages = await exportPages({ subagents: true });
 
 // Send the pages through an authenticated, encrypted operator path.
 const destination = createPostgresDurabilityStore(vercelPostgresPool);
 await importDurabilityStatePages(destination, JSON.parse(JSON.stringify(pages)));
+await importDurabilityStatePages(destination, JSON.parse(JSON.stringify(subagentPages)));
 
 const vercelAgent = await Agent.create({
   module: wasmModule,
@@ -1165,24 +1196,25 @@ const module = await WebAssembly.compile(await readFile(wasmAssetPath));
 const agent = await Agent.create({ transport: Transport.openAi({ apiKey }), module });
 ```
 
-A Codex-compatible rollout can also be resumed by materializing its committed
-`response_item` history into a snapshot with no `request_prefix`. Nanocodex
-rebuilds the current prefix from the supplied instructions and JavaScript tools
-while preserving the rollout's workspace, lineage, cache key, canonical user
-context, and typed history.
-
 `Agent` and `Actions` are module namespaces, not classes. `Agent.create` returns
 an owned client decorated with matching domain actions:
 
 - `agent.turn.prompt(...)` / `Actions.turn.prompt(agent, ...)`
 - `turn.accepted()` / `Actions.turn.accepted(turn)`
 - `turn.result()` / `Actions.turn.getResult(turn)`
-- `result.snapshot()` / `Actions.turn.getSnapshot(result)`
+- `result.checkpoint()` / `Actions.turn.getCheckpoint(result)`
 - `result.usage()` / `Actions.turn.getUsage(result)`
+- `agent.session.info()` / `Actions.session.info(agent)`
+- `agent.session.capabilities()` / `Actions.session.capabilities(agent)`
+- `agent.session.persistence()` / `Actions.session.persistence(agent)`
+- `agent.session.checkpoint()` / `Actions.session.checkpoint(agent)`
 - `agent.session.fork(...)` / `Actions.session.fork(agent, ...)`
+- `agent.session.setModel(...)` / `Actions.session.setModel(agent, ...)`
+- `agent.session.cancel()` / `Actions.session.cancel(agent)`
 - `agent.session.compact()` / `Actions.session.compact(agent)`
 - `agent.session.setThinking(...)` / `Actions.session.setThinking(agent, ...)`
 - `agent.session.setFastMode(...)` / `Actions.session.setFastMode(agent, ...)`
+- `agent.session.setServiceTier(...)` / `Actions.session.setServiceTier(agent, ...)`
 - `agent.session.shutdown()` / `Actions.session.shutdown(agent)`
 - `agent.session.spawn()` / `Actions.session.spawn(agent)`
 - `agent.events.watch(...)` / `Actions.events.watch(agent, ...)`
@@ -1194,17 +1226,17 @@ acknowledging a request without waiting for model execution or materializing a
 result.
 
 `turn.result()` resolves to a frozen, opaque completed `TurnResult` handle. Its
-`finalMessage` is eager. The async `usage()` and `snapshot()` actions materialize
+`finalMessage` is eager. The async `usage()` and `checkpoint()` actions materialize
 immutable values once and cache their promises. A package Worker completes a
-turn with only the message and hidden result identity; Rust-produced snapshot
+turn with only the message and hidden result identity; Rust-produced checkpoint
 JSON crosses the Worker boundary only on first demand and is parsed once in the
-calling isolate. Historical `fork({ at })` consumes the hidden identity directly,
-never an unfinished turn, clone, snapshot, or provider response ID.
+calling isolate. `fork({ at: result })` consumes the hidden identity directly,
+never an unfinished turn, clone, or provider response ID.
 
 The completed result owns its identity independently from the `Turn`, so
 `turn.dispose()` does not invalidate a successful result. Call `result.dispose()`
 after its last fork/materialization; this releases the retained Worker/native
-checkpoint and invalidates future `snapshot()`, `usage()`, and historical forks.
+checkpoint and invalidates future `checkpoint()`, `usage()`, and turn forks.
 An undisposed result intentionally keeps its package Worker alive after the last
 Agent shuts down so its lazy values remain available. Garbage collection is only
 a fallback for forgotten handles, not deterministic cleanup.

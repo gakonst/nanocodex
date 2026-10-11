@@ -9,6 +9,10 @@ pub struct RolloutSessionInfo {
     preview: Option<String>,
     modified_at: SystemTime,
     archived: bool,
+    model: Option<crate::HarnessModel>,
+    origin: crate::Origin,
+    root_session_id: Option<String>,
+    parent_session_id: Option<String>,
 }
 
 impl RolloutSessionInfo {
@@ -24,7 +28,7 @@ impl RolloutSessionInfo {
         self.workspace.as_deref()
     }
 
-    /// Returns a bounded single-line preview of the first user prompt.
+    /// Returns a bounded single-line saved thread name or first user prompt.
     #[must_use]
     pub fn preview(&self) -> Option<&str> {
         self.preview.as_deref()
@@ -41,6 +45,37 @@ impl RolloutSessionInfo {
     pub const fn is_archived(&self) -> bool {
         self.archived
     }
+
+    /// Model recorded by the first turn, when it is in the shared catalog.
+    /// Distinguishes sessions written by each harness family.
+    #[must_use]
+    pub const fn harness_model(&self) -> Option<crate::HarnessModel> {
+        self.model
+    }
+
+    /// Harness family that recorded the session, when its model is known.
+    #[must_use]
+    pub fn harness_family(&self) -> Option<crate::HarnessFamily> {
+        self.model.map(crate::HarnessModel::family)
+    }
+
+    /// How the session was created, from its recorded conversation role.
+    #[must_use]
+    pub const fn origin(&self) -> crate::Origin {
+        self.origin
+    }
+
+    /// Root of the session's conversation tree; the session itself for a root.
+    #[must_use]
+    pub fn root_session_id(&self) -> &str {
+        self.root_session_id.as_deref().unwrap_or(&self.thread_id)
+    }
+
+    /// Session this one was forked or spawned from, when recorded.
+    #[must_use]
+    pub fn parent_session_id(&self) -> Option<&str> {
+        self.parent_session_id.as_deref()
+    }
 }
 
 /// A completed model boundary materialized from a Codex-compatible rollout.
@@ -54,7 +89,7 @@ pub struct DurableSession {
     rollout_path: PathBuf,
     model: Model,
     snapshot: SessionSnapshot,
-    transcript: Vec<RolloutTranscriptItem>,
+    transcript: Vec<TranscriptItem>,
 }
 
 impl DurableSession {
@@ -125,8 +160,39 @@ impl DurableSession {
 
     /// Returns the visible activity used to restore the originating transcript.
     #[must_use]
-    pub fn transcript(&self) -> &[RolloutTranscriptItem] {
+    pub fn transcript(&self) -> &[TranscriptItem] {
         &self.transcript
+    }
+
+    /// Portable checkpoint of this loaded boundary, accepted by
+    /// [`crate::NanocodexBuilder::resume`] and [`crate::Nanocodex::fork`].
+    ///
+    /// The rollout records no processing tier or reasoning effort for the
+    /// session, so the checkpoint pins the model default effort and the
+    /// standard tier. Pair it with the configuration from [`Self::into_parts`]
+    /// to keep appending to this rollout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the snapshot cannot be encoded.
+    #[cfg(feature = "openai")]
+    pub fn checkpoint(&self) -> crate::Result<crate::SessionCheckpoint> {
+        let payload = serde_json::to_value(serde_json::json!({
+            "service_tier": crate::ServiceTier::Standard,
+            "stateless_http": false,
+            "conversation": &self.snapshot,
+        }))
+        .map_err(|error| crate::NanocodexError::InvalidCheckpoint(error.to_string()))?;
+        Ok(crate::SessionCheckpoint::native(
+            self.thread_id.clone(),
+            crate::HarnessModel::Codex(self.model),
+            self.model.default_thinking(),
+            crate::Lineage::root(self.thread_id.as_str()),
+            self.snapshot.lineage_id(),
+            None,
+            true,
+            payload,
+        ))
     }
 
     /// Splits this loaded boundary into the builder inputs needed to continue it.
@@ -140,76 +206,10 @@ impl DurableSession {
     }
 }
 
-/// User-visible activity reconstructed from a Codex-compatible rollout.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RolloutTranscriptItem {
-    /// A submitted user prompt.
-    User(String),
-    /// A reasoning summary displayed while the assistant was working.
-    Reasoning(String),
-    /// An assistant message displayed by the originating client.
-    Assistant(String),
-    /// A tool invocation displayed by the originating client.
-    Tool {
-        /// Stable call identifier from the rollout.
-        call_id: String,
-        /// Tool name sent by the model.
-        name: String,
-        /// Serialized tool arguments sent by the model.
-        arguments: String,
-        /// Code Mode cell that issued this call, when it is a nested call.
-        parent_call_id: Option<String>,
-    },
-    /// The settled outcome of an earlier [`Self::Tool`] call.
-    ToolResult {
-        /// Call identifier of the matching [`Self::Tool`].
-        call_id: String,
-        /// Bounded model-visible text; media is represented by placeholders.
-        output: String,
-        /// Outcome as recorded; unknown is never presented as failure.
-        outcome: RolloutToolOutcome,
-    },
-}
-
-/// Recorded outcome of a replayed tool call.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RolloutToolOutcome {
-    /// The tool returned without reporting an error.
-    Completed,
-    /// The tool reported an error.
-    Failed,
-    /// No outcome was recorded, or the recorded outcome is unknown.
-    Unknown,
-}
-
-impl RolloutTranscriptItem {
-    /// Maximum retained bytes of one replayed tool outcome.
-    pub const MAX_TOOL_OUTPUT_BYTES: usize = 16 * 1024;
-
-    /// Creates a tool outcome bounded to [`Self::MAX_TOOL_OUTPUT_BYTES`].
-    #[must_use]
-    pub fn tool_result(
-        call_id: impl Into<String>,
-        output: &str,
-        outcome: RolloutToolOutcome,
-    ) -> Self {
-        let mut end = output.len().min(Self::MAX_TOOL_OUTPUT_BYTES);
-        while !output.is_char_boundary(end) {
-            end -= 1;
-        }
-        let mut bounded = output[..end].to_owned();
-        if end < output.len() {
-            bounded.push_str("\n[output truncated]");
-        }
-        Self::ToolResult {
-            call_id: call_id.into(),
-            output: bounded,
-            outcome,
-        }
-    }
-}
+use crate::session::{ToolOutcome, TranscriptItem};
 
 pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<RolloutSessionInfo>> {
+    let names = session_names(codex_home);
     let mut sessions = HashMap::<String, RolloutSessionInfo>::new();
     for (root, archived) in [
         (codex_home.join("sessions"), false),
@@ -235,7 +235,8 @@ pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<RolloutSessionI
                 let Some(thread_id) = rollout_thread_id(&entry.file_name()) else {
                     continue;
                 };
-                let Some(candidate) = rollout_session_info(&entry.path(), thread_id, archived)
+                let Some(candidate) =
+                    rollout_session_info(&entry.path(), thread_id, archived, &names)
                 else {
                     continue;
                 };
@@ -258,6 +259,37 @@ pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<RolloutSessionI
     Ok(sessions)
 }
 
+// Codex appends renames to this shared index. It is optional display metadata:
+// a missing, unreadable, or partially written index must not hide rollouts.
+fn session_names(codex_home: &Path) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    let Ok(file) = File::open(codex_home.join("session_index.jsonl")) else {
+        return names;
+    };
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(id) = value["id"]
+            .as_str()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+            continue;
+        };
+        let Some(name) = value["thread_name"].as_str() else {
+            continue;
+        };
+        let id = id.to_string();
+        if let Some(name) = prompt_preview(name) {
+            names.insert(id, name);
+        } else {
+            names.remove(&id);
+        }
+    }
+    names
+}
+
 fn rollout_thread_id(file_name: &std::ffi::OsStr) -> Option<String> {
     let stem = file_name.to_str()?.strip_suffix(".jsonl")?;
     let start = stem.len().checked_sub(36)?;
@@ -272,11 +304,17 @@ fn rollout_session_info(
     path: &Path,
     thread_id: String,
     archived: bool,
+    names: &HashMap<String, String>,
 ) -> Option<RolloutSessionInfo> {
     let expected_id = uuid::Uuid::parse_str(&thread_id).ok()?;
     let modified_at = path.metadata().ok()?.modified().ok()?;
     let mut workspace = None;
-    let mut preview = None;
+    let mut preview = names.get(&thread_id).cloned();
+    let mut has_history = false;
+    let mut model = None;
+    let mut origin = crate::Origin::Root;
+    let mut root_session_id = None;
+    let mut parent_session_id = None;
     for line in BufReader::new(File::open(path).ok()?).lines() {
         let Ok(line) = line else {
             return None;
@@ -299,9 +337,28 @@ fn rollout_session_info(
                     .get("cwd")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
+                let text = |key: &str| {
+                    payload
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                };
+                origin = match payload
+                    .get("conversation_role")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("subagent") => crate::Origin::Subagent,
+                    Some("branch") => crate::Origin::Fork,
+                    Some("side_conversation") => crate::Origin::SideConversation,
+                    _ => crate::Origin::Root,
+                };
+                root_session_id = text("root_session_id");
+                parent_session_id = text("parent_thread_id");
             }
             Some("event_msg") if preview.is_none() => {
-                let payload = value.get("payload")?;
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
                 if payload.get("type").and_then(serde_json::Value::as_str) == Some("user_message") {
                     preview = payload
                         .get("message")
@@ -309,19 +366,33 @@ fn rollout_session_info(
                         .and_then(prompt_preview);
                 }
             }
+            Some("turn_context") if model.is_none() => {
+                model = value["payload"]["model"]
+                    .as_str()
+                    .and_then(|model| model.parse::<crate::HarnessModel>().ok());
+            }
             Some("response_item" | "compacted") if workspace.is_some() => {
-                return Some(RolloutSessionInfo {
-                    thread_id,
-                    workspace,
-                    preview,
-                    modified_at,
-                    archived,
-                });
+                has_history = true;
             }
             _ => {}
         }
+        // Codex writes developer/environment response items before user_message.
+        // Those establish resumable history, but do not supply a prompt preview.
+        if has_history && preview.is_some() && model.is_some() {
+            break;
+        }
     }
-    None
+    has_history.then_some(RolloutSessionInfo {
+        thread_id,
+        workspace,
+        preview,
+        modified_at,
+        archived,
+        model,
+        origin,
+        root_session_id,
+        parent_session_id,
+    })
 }
 
 pub(super) fn prompt_preview(prompt: &str) -> Option<String> {
@@ -370,7 +441,7 @@ fn sort_sessions(sessions: &mut [RolloutSessionInfo]) {
     });
 }
 
-fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {
+pub(super) fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {
     let suffix = format!("-{thread_id}.jsonl");
     let compressed_suffix = format!("-{thread_id}.jsonl.zst");
     for root in [
@@ -570,7 +641,12 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     // stable thread UUID is the deterministic lineage fallback; Nanocodex-authored
     // rollouts retain the explicit key recorded in session metadata above.
     let prompt_cache_key = prompt_cache_key.unwrap_or_else(|| thread_id.to_owned());
-    let workspace = Path::new(&workspace).canonicalize()?;
+    // A recorded workspace that no longer exists (or lives on another machine)
+    // keeps its stored path: the transcript stays readable, and resuming it
+    // reports the unresolvable workspace when the agent is built.
+    let workspace = Path::new(&workspace)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&workspace));
     let workspace = workspace.into_os_string().into_string().map_err(|path| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -598,30 +674,30 @@ struct MaterializedRollout {
     workspace: String,
     base_instructions: Option<String>,
     history: Vec<ResponseItem>,
-    transcript: Vec<RolloutTranscriptItem>,
+    transcript: Vec<TranscriptItem>,
     context_baseline: Option<ContextBaseline>,
     client_authored: std::collections::BTreeSet<String>,
 }
 
 pub(in crate::rollout) fn visible_rollout_event(
     payload: &serde_json::Value,
-) -> Option<RolloutTranscriptItem> {
+) -> Option<TranscriptItem> {
     match payload.get("type")?.as_str()? {
-        "user_message" => visible_prompt(payload).map(RolloutTranscriptItem::User),
-        "agent_reasoning" => visible_text(payload, "text").map(RolloutTranscriptItem::Reasoning),
-        "agent_message" => visible_text(payload, "message").map(RolloutTranscriptItem::Assistant),
+        "user_message" => visible_prompt(payload).map(TranscriptItem::User),
+        "agent_reasoning" => visible_text(payload, "text").map(TranscriptItem::Reasoning),
+        "agent_message" => visible_text(payload, "message").map(TranscriptItem::Assistant),
         "mcp_tool_call_end" => {
             let invocation = payload.get("invocation")?;
             let server = invocation.get("server")?.as_str()?;
             let tool = invocation.get("tool")?.as_str()?;
-            Some(RolloutTranscriptItem::Tool {
+            Some(TranscriptItem::Tool {
                 call_id: payload.get("call_id")?.as_str()?.to_owned(),
                 name: format!("{server}.{tool}"),
                 arguments: serde_json::to_string(invocation.get("arguments")?).ok()?,
                 parent_call_id: None,
             })
         }
-        "web_search_end" => Some(RolloutTranscriptItem::Tool {
+        "web_search_end" => Some(TranscriptItem::Tool {
             call_id: payload.get("call_id")?.as_str()?.to_owned(),
             name: "web_search".to_owned(),
             arguments: serde_json::to_string(payload.get("action")?).ok()?,
@@ -670,7 +746,7 @@ fn visible_prompt(payload: &serde_json::Value) -> Option<String> {
 /// Model-visible tool output, bounded; media items become placeholders.
 pub(in crate::rollout) fn visible_tool_output(
     payload: &serde_json::Value,
-) -> Option<RolloutTranscriptItem> {
+) -> Option<TranscriptItem> {
     if !matches!(
         payload.get("type")?.as_str()?,
         "function_call_output" | "custom_tool_call_output"
@@ -699,17 +775,17 @@ pub(in crate::rollout) fn visible_tool_output(
         _ => return None,
     };
     let outcome = if success.and_then(serde_json::Value::as_bool) == Some(false) {
-        RolloutToolOutcome::Failed
+        ToolOutcome::Failed
     } else {
-        RolloutToolOutcome::Completed
+        ToolOutcome::Completed
     };
-    Some(RolloutTranscriptItem::tool_result(call_id, &text, outcome))
+    Some(TranscriptItem::tool_result(call_id, &text, outcome))
 }
 
 /// Outcome recorded by a Codex end event for the call it also reconstructs.
 pub(in crate::rollout) fn visible_rollout_outcome(
     payload: &serde_json::Value,
-) -> Option<RolloutTranscriptItem> {
+) -> Option<TranscriptItem> {
     let call_id = payload.get("call_id")?.as_str()?;
     match payload.get("type")?.as_str()? {
         "mcp_tool_call_end" => {
@@ -729,9 +805,9 @@ pub(in crate::rollout) fn visible_rollout_outcome(
                     .join("\n");
                 let failed = ok.get("isError").and_then(serde_json::Value::as_bool) == Some(true);
                 let outcome = if failed {
-                    RolloutToolOutcome::Failed
+                    ToolOutcome::Failed
                 } else {
-                    RolloutToolOutcome::Completed
+                    ToolOutcome::Completed
                 };
                 (text, outcome)
             } else {
@@ -739,16 +815,14 @@ pub(in crate::rollout) fn visible_rollout_outcome(
                 let text = error
                     .as_str()
                     .map_or_else(|| error.to_string(), str::to_owned);
-                (text, RolloutToolOutcome::Failed)
+                (text, ToolOutcome::Failed)
             };
-            Some(RolloutTranscriptItem::tool_result(
-                call_id, &output, outcome,
-            ))
+            Some(TranscriptItem::tool_result(call_id, &output, outcome))
         }
-        "web_search_end" => Some(RolloutTranscriptItem::tool_result(
+        "web_search_end" => Some(TranscriptItem::tool_result(
             call_id,
             "",
-            RolloutToolOutcome::Completed,
+            ToolOutcome::Completed,
         )),
         _ => None,
     }
@@ -762,9 +836,7 @@ fn visible_text(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(in crate::rollout) fn visible_tool_call(
-    payload: &serde_json::Value,
-) -> Option<RolloutTranscriptItem> {
+pub(in crate::rollout) fn visible_tool_call(payload: &serde_json::Value) -> Option<TranscriptItem> {
     let (name, arguments) = match payload.get("type")?.as_str()? {
         "custom_tool_call" => (
             payload.get("name")?.as_str()?.to_owned(),
@@ -776,7 +848,7 @@ pub(in crate::rollout) fn visible_tool_call(
         ),
         _ => return None,
     };
-    Some(RolloutTranscriptItem::Tool {
+    Some(TranscriptItem::Tool {
         call_id: payload.get("call_id")?.as_str()?.to_owned(),
         name,
         arguments,

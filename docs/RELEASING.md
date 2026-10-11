@@ -7,7 +7,9 @@ Foundry's label-grouped, contributor-attributed GitHub release notes.
 ## Nightly releases
 
 The `Nightly Release` workflow runs daily and may also be dispatched manually.
-Each successful run publishes an immutable `nightly-<full SHA>` prerelease and
+Only runs from `master` with no pull request input publish releases; branch and
+pull request builds produce artifacts without changing the rolling nightly.
+Each successful publication creates an immutable `nightly-<full SHA>` prerelease and
 refreshes the rolling `nightly` prerelease with the same gzip-compressed
 binaries and `SHA256SUMS`. The immutable release is assembled as a draft and
 published only after every asset is attached, so updaters never observe a
@@ -17,6 +19,14 @@ pointer instead of uploading a different build under the same tag. The rolling r
 resolves and verifies assets from the corresponding immutable release. Raw
 executables remain only on the rolling release so pre-compression updaters can
 cross the format transition.
+
+The immutable manifest includes both compressed and decompressed executable
+checksums. The raw checksum lets the installer reuse its verified running
+bootstrap without downloading it again; the raw executable need not be a
+release attachment. Publication verifies compressed assets before unpacking
+them, then verifies every raw checksum. For manual verification of downloaded
+compressed assets on Linux, `sha256sum --check --strict --ignore-missing SHA256SUMS`
+checks the files present; unpack an executable and repeat to check its raw bytes.
 
 Each native nightly and stable release builds both role binaries per target in
 one invocation (`cargo build --features nanocodex-bin/tempo`, with the release
@@ -83,8 +93,21 @@ nightly update to promote the bundle-aware manager and a second invocation to
 fetch `nanocodex2`; subsequent nightly updates install the complete bundle in
 one invocation.
 
-To bootstrap an exact published nightly, pin its full commit tag on the shell
-side of the public installer pipeline:
+To install the newest published nightly, including the CLI, Hand, and voice
+bundle, use:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash -s -- --nightly
+```
+
+Use `--help` to inspect the installer options without downloading a binary. For
+an unattended installation into a separate prefix, pass `--no-setup` and
+`--no-modify-path`, and set `NANOCODEX_DIR` on the shell side of the pipe.
+The native updater bounds metadata retries and reports rate-limit reset times;
+a transient failure can be retried with the same command.
+
+To bootstrap or roll back to an exact published nightly, pin its full commit
+tag on the shell side of the public installer pipeline:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | NANOCODEX_RELEASE_TAG='nightly-<full-40-hex-commit>' sh

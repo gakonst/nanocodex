@@ -489,9 +489,14 @@ async function streamRegex() {
   const aborted = new AbortController(); aborted.abort(new Error("fixture cancellation"));
   assert.equal((await runtime.tool.handler({ cmd: "awk '{print}' large.txt" }, context(aborted.signal))).exit_code, 124);
   await recovery(runtime);
-  const safeSed = await runtime.tool.handler({ cmd: "sed -n '1p' large.txt | head -c 5" }, context());
+  // The 100 ms deadline above bounds the refusals; streaming 1 MiB through
+  // sed/awk is ordinary work, so it runs under a realistic deadline (a loaded
+  // CI runner exceeded 100 ms here: run 38023489366).
+  const { runtime: ordinary } = await tracedShell({ executionTimeoutMs: 10_000 });
+  await ordinary.filesystem.writeFile("large.txt", input);
+  const safeSed = await ordinary.tool.handler({ cmd: "sed -n '1p' large.txt | head -c 5" }, context());
   assert.equal(safeSed.output, "aaaaa"); assert.equal(safeSed.exit_code, 0);
-  const safeAwk = await runtime.tool.handler({ cmd: "awk '{print length($0)}' large.txt" }, context());
+  const safeAwk = await ordinary.tool.handler({ cmd: "awk '{print length($0)}' large.txt" }, context());
   assert.equal(safeAwk.output, input.length + "\n"); assert.equal(safeAwk.exit_code, 0);
   trace({ safeSed, safeAwk, expected: "nonregex text operations remain available on 1MiB input" });
 }
@@ -619,7 +624,10 @@ async function recovery(runtime) {
 async function cancellation() {
   for (const mode of ["caller", "deadline"]) {
     const runtime = await justBash({ filesystem: memoryWorkspace(),
-      ...(mode === "deadline" ? { executionTimeoutMs: 1 } : {}) });
+      // The deadline must cut the 13 MiB scan (~450 ms locally) yet admit the
+      // trivial recovery command on the same runtime; 1 ms failed that echo on a
+      // loaded runner (CI run 38035736308), 100 ms leaves >4x and >50x margins.
+      ...(mode === "deadline" ? { executionTimeoutMs: 100 } : {}) });
     await runtime.filesystem.writeFile("large.txt", "a".repeat(13 * 1024 * 1024));
     const abort = new AbortController();
     const cmd = "rg -o '.{0,50}MISSING.{0,50}' large.txt";

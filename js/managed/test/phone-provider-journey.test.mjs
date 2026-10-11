@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 const account = "AC" + "1".repeat(32), token = "synthetic-phone-provider-secret";
 const output = new URL(`../../../output/phone-provider/${Date.now()}/`, import.meta.url);

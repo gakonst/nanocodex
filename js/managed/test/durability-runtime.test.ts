@@ -1,8 +1,10 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { Agent } from "nanocodex/cloudflare";
 import { Subagents } from "nanocodex/host";
 import { createTools } from "nanocodex/tools";
+// Cloudflare Code Mode is mandatory and needs an explicit evaluator (eda4a21e3).
+import { managedCodeEvaluator } from "../src/code-evaluator";
 
 it("shares one owner's cached prefix and key across independent Worker sessions", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
@@ -30,7 +32,7 @@ it("shares one owner's cached prefix and key across independent Worker sessions"
       const owner = { ctx, env: { NANOCODEX: { async fetch() {
         return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
       } } } };
-      const options = { instructions: "Stable host instructions", eventPersistence: "caller" as const };
+      const options = { instructions: "Stable host instructions", eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
       Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { promptCacheKey: "owner-team-key" },
       });
@@ -75,7 +77,7 @@ it("persists voice start and end in Worker SQLite while Responses preconnect sta
       opened += 1;
       return { status: 101, headers: new Headers(), webSocket: socket };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
       value: { waitForPreconnect: false },
     });
@@ -128,7 +130,7 @@ it("admits more than eight children with prepared tools and keeps live messaging
       };
     } } } };
     const tools = await createTools({ tools: [] });
-    const options = { tools, eventPersistence: "caller" as const };
+    const options = { tools, eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     try {
       const attempts = await Promise.allSettled(Array.from({ length: 16 }, (_, index) => Subagents.spawn(agent, {
@@ -145,7 +147,7 @@ it("admits more than eight children with prepared tools and keeps live messaging
   });
 }, 30_000);
 
-it("discards children and bounds new delegation after Worker SQLite reconstruction", async () => {
+it("restores and resumes children within the replacement host's bounds after Worker SQLite reconstruction", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
     // Transport stays open without making provider calls, so both children
@@ -156,7 +158,7 @@ it("discards children and bounds new delegation after Worker SQLite reconstructi
         webSocket: { addEventListener() {}, accept() {}, send() {}, close() {} },
       };
     } } } };
-    const agent = await Agent.create(owner, { eventPersistence: "caller" });
+    const agent = await Agent.create(owner, { eventPersistence: "caller", codeEvaluator: managedCodeEvaluator() });
     let reopened: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {
       const children = await Promise.all(["one", "two"].map((role) => Subagents.spawn(agent, {
@@ -171,7 +173,7 @@ it("discards children and bounds new delegation after Worker SQLite reconstructi
       expect((await Subagents.list(agent)).agents).toHaveLength(2);
       // A new context over retained storage models an evicted DO. Explicit
       // session.shutdown closes children, so it is not a restart simulation.
-      const restoredOptions = { eventPersistence: "caller" as const };
+      const restoredOptions = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
       Object.defineProperty(restoredOptions, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
         value: { subagentMaxConcurrency: 1 },
       });
@@ -180,20 +182,31 @@ it("discards children and bounds new delegation after Worker SQLite reconstructi
         acceptWebSocket: ctx.acceptWebSocket.bind(ctx), getWebSockets: ctx.getWebSockets.bind(ctx),
       } }, restoredOptions);
       agent.dispose();
-      const restoredChildren = (await Subagents.list(reopened, { includeCompleted: true })).agents;
-      expect(restoredChildren).toEqual([]);
+      // Task trees are durable since 291b9d554/0c4d1a54f (docs/DURABILITY.md):
+      // reconstruction restores children with their IDs and resumes in-flight
+      // turns, replacing the discard-on-restart contract of 7f8b6859c.
+      const directory = async () => (await Subagents.list(reopened!, { includeCompleted: true })).agents
+        .map(({ agent_id, role, task, status, ...rest }) => ({ agent_id, role, task, state: status.state,
+          resuming: (rest as { resuming?: boolean }).resuming }));
+      expect(await directory()).toEqual(children.map((child, index) => ({
+        agent_id: child.agent_id, role: ["one", "two"][index], task: "Research fixture " + ["one", "two"][index],
+        state: "interrupted", resuming: true,
+      })));
+      // Resumption obeys the replacement host's limit of one active child.
+      await vi.waitFor(async () => expect((await directory()).map(({ state }) => state).sort()).toEqual(["interrupted", "running"]));
       for (const child of children) {
         await expect(Subagents.send(reopened, {
-          agentId: child.agent_id, priority: "urgent", message: "Do not resurrect",
-        })).rejects.toThrow();
+          agentId: child.agent_id, priority: "urgent", message: "Still yours after reconstruction?",
+        })).resolves.toMatchObject({ to_agent_id: child.agent_id });
       }
-      // Fresh work still obeys the replacement host's concurrency policy.
-      const fresh = await Subagents.spawn(reopened, {
-        role: "replacement", task: "Continue research after restart", outputSchema: { type: "object" },
-      });
       await expect(Subagents.spawn(reopened, {
         role: "excess", task: "Exceed the replacement host limit", outputSchema: { type: "object" },
       })).rejects.toThrow("sub-agent concurrency limit of 1");
+      // Releasing the restored work frees capacity for fresh delegation.
+      for (const child of children) await Subagents.close(reopened, child.agent_id);
+      const fresh = await Subagents.spawn(reopened, {
+        role: "replacement", task: "Continue research after restart", outputSchema: { type: "object" },
+      });
       await expect(Subagents.send(reopened, {
         agentId: fresh.agent_id, priority: "urgent", message: "Still available after reconstruction?",
       })).resolves.toMatchObject({ to_agent_id: fresh.agent_id });
@@ -239,7 +252,7 @@ it("keeps a delayed compaction owned until its checkpoint survives SQLite recons
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
       return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {
@@ -306,7 +319,7 @@ it("reconstructs SQLite ownership while provider compaction is pending and compl
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
       return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
     } } } };
-    const options = { eventPersistence: "caller" as const };
+    const options = { eventPersistence: "caller" as const, codeEvaluator: managedCodeEvaluator() };
     const agent = await Agent.create(owner, options);
     let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
     try {

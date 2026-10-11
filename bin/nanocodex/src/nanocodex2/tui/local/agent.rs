@@ -54,7 +54,7 @@ pub(crate) struct LocalBackend {
     pub(crate) parts: LocalParts,
     capabilities: Capabilities,
     /// Visible history of a resumed session, replayed once on connect.
-    pub(crate) transcript: Vec<nanocodex::agent::rollout::RolloutTranscriptItem>,
+    pub(crate) transcript: Vec<nanocodex::agent::session::TranscriptItem>,
     mpp_adapter: Option<crate::mpp::MppAdapter>,
     vm: Option<crate::vm::ConfiguredVm>,
     child_agents: Option<Arc<ChildAgents>>,
@@ -68,8 +68,11 @@ impl LocalBackend {
         agent: ConfiguredAgent,
     ) -> (Self, nanocodex::AgentEvents) {
         let ConfiguredAgent {
-            claude_scheduler,
-            claude_interactions,
+            host:
+                crate::config::HostChannels {
+                    interactions: claude_interactions,
+                    scheduler: claude_scheduler,
+                },
             handle,
             events,
             realtime,

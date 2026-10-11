@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 import { createTools } from 'nanocodex/tools';
 import { createAttachment } from 'nanocodex-tools/attachment';
 import { createNodeProcessTools } from 'nanocodex-tools/node';
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Real public HTTP, reverse WebSocket publishers, workerd SQLite and /bin/sh.
 // Optional baseline overrides only the two archived source files, not helpers.

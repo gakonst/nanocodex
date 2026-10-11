@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {encryptedVaultFixture} from './private-input-vault-fixture.mjs';
+import { fetch } from "./support/miniflare-fetch.mjs";
 const root=fileURLToPath(new URL('..',import.meta.url)),output=join(root,'../../output/private-input-tui');
 await mkdir(output,{recursive:true});const trace=[];
 async function bundle(contents){const assets=[];let assetIndex=0;const b=await build({stdin:{contents,resolveDir:root},bundle:true,write:false,format:'esm',platform:'node',conditions:['workerd'],target:'es2022',external:['cloudflare:*','node:*'],banner:{js:'import {createRequire} from "node:module";const require=createRequire("/worker.mjs");'},alias:{'nanocodex-tools/user-data':join(root,'../nanocodex-tools/dist/user-data.js'),'node-rsa':join(root,'../nanocodex/tools/browser/unsupportedNodeRsa.mjs')},plugins:[{name:'wasm',setup(b){b.onResolve({filter:/(?:\.wasm$|^nanocodex\/wasm$)/},async a=>{const path=a.path==='nanocodex/wasm'?join(root,'../nanocodex/pkg-web/nanocodex_bg.wasm'):join(a.resolveDir,a.path);const name=`fixture-${assetIndex++}.wasm`;assets.push({type:'CompiledWasm',path:name,contents:await readFile(path)});return {path:'./'+name,external:true};});}}],logLevel:'silent'});return [{type:'ESModule',path:'worker.mjs',contents:b.outputFiles[0].text},...assets];}

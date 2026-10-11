@@ -23,6 +23,9 @@ class TerminalScreen:
   self.rows,self.columns=rows,columns;self.x=self.y=0
   self.cells=[[' ']*columns for _ in range(rows)]
   self.decoder=codecs.getincrementaldecoder('utf-8')();self.pending=''
+  # The TUI wraps each frame in synchronized output (DEC mode 2026). Like a
+  # supporting terminal, show the last complete frame while one is drawn.
+  self.frame=None
  def feed(self,data):
   self.pending+=self.decoder.decode(data)
   while self.pending:
@@ -32,6 +35,7 @@ class TerminalScreen:
     match=re.match(r'\x1b\[([0-?]*)([ -/]*)([@-~])',self.pending)
     if match is None:return
     params,intermediate,command=match.groups();self.pending=self.pending[match.end():]
+    if params=='?2026' and command in 'hl':self.frame=[row[:] for row in self.cells] if command=='h' else None
     require(not intermediate,'unsupported terminal intermediate')
     values=[int(v) if v else 0 for v in params.lstrip('?><=').split(';')]
     first=values[0] or 1
@@ -65,7 +69,7 @@ class TerminalScreen:
    self.cells[self.y][self.x]=char
    if width==2 and self.x+1<self.columns:self.cells[self.y][self.x+1]=''
    self.x+=width
- def text(self):return '\n'.join(''.join(row) for row in self.cells)
+ def text(self):return '\n'.join(''.join(row) for row in (self.cells if self.frame is None else self.frame))
 
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,default=Path('output/claude-scheduler-monitor-cli')/uuid4().hex);a=p.parse_args()
@@ -143,6 +147,11 @@ def main():
    time.sleep(.03)
   raise AssertionError(label)
  def visible(label,text):return text in screens[label].text()
+ def settled(label,marker):
+  # "Turn completed" renders from the committed run terminal record, after the
+  # streamed answer, lifecycle hooks and the durable settle. Exiting before it
+  # abandons the turn and the reopened CLI must refuse to overlap it (#969).
+  text=screens[label].text();index=text.rfind(marker);return index>=0 and 'Turn completed' in text[index:]
  def finish(proc,fd,drain):os.write(fd,b'\x03\x03');wait(lambda:proc.poll() is not None,drain,'CLI did not exit after Ctrl-C',10);drain();os.close(fd)
  outcome={'success':False}
  try:
@@ -158,8 +167,8 @@ def main():
   wait(lambda:fired('cron-once-marker') and fired('dynamic-real-clock-marker'),drain,'normal idle firings absent',20)
   require(not fired('deleted-must-not-fire'),'deleted schedule fired');checks.append('ID-derived recurring half-interval/hourly cap jitter and :30 early/non-boundary exact one-shot receipts persisted');checks.append('real 60-second wakeup and cron fire only after composer cleared; deletion suppresses fire')
   phase('prepare-reopen',[('ScheduleWakeup',{'delaySeconds':60,'prompt':'discard-on-reopen','reason':'restart policy','noop':False},False,None)])
-  os.write(fd,b'Prepare restart\r');wait(lambda:visible('initial','prepare-reopen-complete'),drain,'restart setup missing');finish(proc,fd,drain)
-  manifests=list((codex_home/'claude/sessions').glob('*.json'));require(len(manifests)==1,'session manifest missing');session=json.loads(manifests[0].read_text())['id']
+  os.write(fd,b'Prepare restart\r');wait(lambda:visible('initial','prepare-reopen-complete'),drain,'restart setup missing');wait(lambda:settled('initial','prepare-reopen-complete'),drain,'restart turn never reached its terminal record');finish(proc,fd,drain)
+  sessions=h.durable_sessions(codex_home);require(len(sessions)==1,'session manifest missing');session=sessions[0]
   # Simulate an offline gap through persisted records, never a production clock
   # override. The actual reopen must discard expired/elapsed work and skip backlog.
   journals=list((codex_home/'claude/schedules').glob('*.json'));require(len(journals)==1,'scheduler journal missing');jp=journals[0];journal=json.loads(jp.read_text());past=int(time.time())-120

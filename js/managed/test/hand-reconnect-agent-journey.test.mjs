@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { createTools } from "nanocodex/tools";
 import { createAttachment } from "nanocodex-tools/attachment";
 import { createNodeProcessTools } from "nanocodex-tools/node";
+import { fetch } from "./support/miniflare-fetch.mjs";
 
 // Agent-side public provider (exactly as the agent DO builds it, with durable
 // call routes) -> real AccountHostedTools /invoke -> broker -> real WebSocket

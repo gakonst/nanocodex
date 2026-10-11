@@ -25,7 +25,8 @@ Steps (state is kept in OUTPUT/state.json, so steps can run in separate calls):
   modes  for each prefix with NEW active: ncl run + ncl TUI turn against a
       synthetic loopback Responses server; managed TUI start boundary with an
       empty HOME (may legitimately stop at login); hand status (no owner).
-  old-modes  ncl run on the currently active OLD version of prefix A.
+  old-modes  modes on the currently active OLD version of prefix A (the CLI layout,
+      pre-unified or unified, is detected from bin/nanocodex run --help).
 
 Independent verification streams each payload once (cached in OUTPUT/verify),
 checking SHA256SUMS and comparing the decompressed bytes and voice members with
@@ -836,8 +837,16 @@ def modes(p, label, sha):
     server, url, reqs = responses_server()
     common = ["--api-key", "synthetic-test-key", "--api-base-url", url, "--responses-transport", "https", "--browser=none",
               "--mcp-defaults", "false", "--web-search", "false", "--image-generation", "false"]
-    unified = sha != OLD
-    # OLD (pre-unified) ships the local tree as bin/nanocodex and the managed CLI as bin/nanocodex2.
+    # Select the local and managed CLIs from what the installed bin/nanocodex offers, not
+    # from which release it is: a pre-unified release ships the local tree as bin/nanocodex
+    # (its "run" takes --api-key) and the managed CLI as bin/nanocodex2; a unified release
+    # serves the managed tree as bin/nanocodex and the local tree as bin/ncl.
+    layout = run("nanocodex-run-help", [str(store / "bin/nanocodex"), "run", "--help"], env, timeout=30)
+    unified = not (layout["exit"] == 0 and "--api-key" in layout["out"])
+    check(f"{label}: bin/nanocodex run --help identifies the CLI layout", layout["exit"] == 0,
+          layout="unified" if unified else "pre-unified", head=layout["out"].splitlines()[:1], err=layout["err"][-400:])
+    if sha != OLD:
+        check(f"{label}: the release ships the unified CLI (bin/nanocodex run is the managed tree)", unified)
     ncl = store / ("bin/ncl" if unified else "bin/nanocodex")
     managed = store / ("bin/nanocodex" if unified else "bin/nanocodex2")
     if unified:

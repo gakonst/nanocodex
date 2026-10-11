@@ -20,9 +20,9 @@ const IMAGE_PATCH: u32 = 28;
 const MAX_IMAGES: usize = 20;
 const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
 /// Anthropic accepts PDFs up to 32 MB per request; bound each decoded document
-/// and every prompt's combined media below that after base64 expansion.
+/// and every prompt's combined media below that after base64 expansion. The
+/// number of documents is bounded only by that combined media size.
 const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_DOCUMENTS: usize = 5;
 const MAX_FILENAME_BYTES: usize = 255;
 
 fn invalid(message: impl Into<String>) -> NanocodexError {
@@ -380,7 +380,6 @@ pub(crate) async fn freeze(mut prompt: Prompt, resolution: ImageResolution) -> R
         if images > MAX_IMAGES {
             return Err(invalid("Claude prompt exceeds 20 images"));
         }
-        let mut documents = 0;
         let mut total = 0;
         for item in items {
             let (image_url, detail, local) = match item {
@@ -388,10 +387,6 @@ pub(crate) async fn freeze(mut prompt: Prompt, resolution: ImageResolution) -> R
                     file_data,
                     filename,
                 } => {
-                    documents += 1;
-                    if documents > MAX_DOCUMENTS {
-                        return Err(invalid("Claude prompt exceeds 5 documents"));
-                    }
                     total += document_block(file_data, filename.as_deref())?.1;
                     if total > MAX_TOTAL_BYTES {
                         return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
@@ -463,7 +458,6 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
                 return Err(invalid("Claude prompt exceeds 100 content items"));
             }
             let mut images = 0;
-            let mut documents = 0;
             let mut bytes = 0;
             let mut content = Vec::with_capacity(items.len());
             for item in items {
@@ -477,10 +471,9 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
                         ContentBlock::Image { source, extra: Default::default() }
                     }
                     UserInput::File { file_data, filename } => {
-                        documents += 1;
                         let (block, size) = document_block(file_data, filename.as_deref())?;
                         bytes += size;
-                        if documents > MAX_DOCUMENTS || bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 5 documents or 20 MiB of media data")); }
+                        if bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 20 MiB of media data")); }
                         block
                     }
                     UserInput::LocalImage { .. } => return Err(invalid("Claude local image was not frozen before execution")),

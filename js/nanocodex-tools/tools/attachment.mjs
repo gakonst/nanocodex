@@ -385,17 +385,24 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     }
     clearTimeout(deadline);
     if (state.calls.get(callId) !== call || call.encoded) return;
+    let outputJson;
     if (!outcome) {
       try {
         const output = wireOutput(value);
-        outcome = utf8ByteLength(JSON.stringify(output)) > frame.output_byte_budget
-          ? { status: "ambiguous", message: "tool attachment output exceeded the admitted byte budget after dispatch" }
-          : { status: "completed", output };
+        // Serialize the output once: the budget applies to exactly these UTF-8
+        // bytes, and the receipt embeds the same text.
+        const encoded = JSON.stringify(output);
+        if (exceedsUtf8Budget(encoded, frame.output_byte_budget)) {
+          outcome = { status: "ambiguous", message: "tool attachment output exceeded the admitted byte budget after dispatch" };
+        } else {
+          outcome = { status: "completed", output };
+          outputJson = encoded;
+        }
       } catch {
         outcome = { status: "ambiguous", message: "tool attachment result was not valid bounded wire output after dispatch" };
       }
     }
-    retainAndSend(callId, outcome, state.socket, timing);
+    retainAndSend(callId, outcome, state.socket, timing, outputJson);
     if (state.socket) maybeFinishDrain(state.socket);
   }
 
@@ -415,7 +422,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     maybeFinishDrain(socket);
   }
 
-  function retainAndSend(callId, outcome, socket, clock) {
+  function retainAndSend(callId, outcome, socket, clock, outputJson) {
     const result = { type: "result", call_id: callId, outcome };
     const encodeStarted = performance.now();
     const task = clock.taskStarted ?? encodeStarted;
@@ -432,7 +439,12 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     try {
       // Encode the business receipt once. The small metadata append and socket
       // handoff remain in the broker's combined transit/return residual.
-      const encoded = JSON.stringify(result);
+      // JSON.stringify of a plain object concatenates its members' encodings in
+      // insertion order, so splicing the already-encoded output is exactly
+      // JSON.stringify(result) without serializing the output again.
+      const encoded = outputJson === undefined
+        ? JSON.stringify(result)
+        : `{"type":"result","call_id":${JSON.stringify(callId)},"outcome":{"status":"completed","output":${outputJson}}}`;
       const encodingMs = performance.now() - encodeStarted;
       timing.result_encode_ms += encodingMs;
       timing.host_elapsed_ms += encodingMs;
@@ -578,6 +590,14 @@ function createClient(endpoint, transport, options, admission, machines, attachm
   }
 }
 
+// Exact test of utf8ByteLength(text) > budget. Each UTF-16 code unit encodes
+// to one to three UTF-8 bytes, so only lengths between those bounds need the
+// exact count.
+function exceedsUtf8Budget(text, budget) {
+  if (text.length > budget) return true;
+  if (text.length * 3 <= budget) return false;
+  return utf8ByteLength(text) > budget;
+}
 function wireOutput(value) {
   if (value?.[TOOL_RESULT]) return {
     output: outputBody(value.output), success: value.success,

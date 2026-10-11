@@ -126,7 +126,7 @@ async function outputFixture(t) {
   await put("js/nanocodex/Cargo.toml", "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n");
   await put("js/nanocodex/src/lib.rs", "fixture Rust input");
   await put("js/nanocodex/package.json", '{"devDependencies":{"binaryen":"132.0.0"}}');
-  for (const path of ["js/nanocodex-vite/scripts/build-js-package.sh", "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs", "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs", "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"]) await put(path, "fixture build policy");
+  for (const path of ["js/nanocodex-vite/scripts/build-js-package.sh", "js/nanocodex-vite/scripts/wasm-output-cache.mjs", "js/nanocodex-vite/scripts/wasm-memory-views.mjs", "js/nanocodex-vite/scripts/native-binaryen.mjs", "js/nanocodex/scripts/deduplicate-wasm.mjs", "js/nanocodex/scripts/write-package-types.mjs", "js/nanocodex/scripts/write-wasm-attestation.mjs", "js/nanocodex/scripts/check-managed-wasm.mjs"]) await put(path, "fixture build policy");
   for (const name of managedWasmArtifactNames) await put(`js/nanocodex/pkg-web/${name}`, `web ${name}`);
   for (const name of ["nanocodex.js", "nanocodex.d.ts", "package.json"]) await put(`js/nanocodex/pkg-node/${name}`, `node ${name}`);
   await put("raw.wasm", "raw WASM fixture");

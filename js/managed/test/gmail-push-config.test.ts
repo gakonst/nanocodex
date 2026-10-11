@@ -14,6 +14,8 @@ it("checks account ownership and bounded configuration before enabling Gmail pus
   let configuredAgent: string | undefined;
   const sessions = (env as unknown as {NANOCODEX_SESSIONS:DurableObjectNamespace<DurableAgentSession>}).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(agentId), async (session,state) => {
+    // A fresh Session creates its schema on its first real request (9d8b63102).
+    await session.fetch(new Request("https://session.internal/sites"));
     state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
       authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES(1,?,'11111111-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',1,'https://nanocodex.example','managed',?)`,agentId,Date.now());

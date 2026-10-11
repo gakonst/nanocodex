@@ -148,6 +148,10 @@ impl ClaudeLifecycleEvent {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClaudeLifecycleInvocation {
     pub session_id: String,
+    /// Root of this session's conversation tree; equal to `session_id` for a
+    /// root. Hosts export it to hook processes; it is not hook input.
+    #[serde(skip)]
+    pub root_session_id: String,
     pub turn_id: String,
     pub event_id: String,
     pub model: String,

@@ -478,6 +478,11 @@ pub(super) fn sanitized_environment(
     let mut environment = Vec::new();
     let mut secrets = Vec::new();
     for (name, value) in env::vars_os() {
+        // The launching process's own session identity never leaks into a
+        // tool; only an explicitly bound session (an override) provides it.
+        if crate::SessionEnvironment::controls(&name) {
+            continue;
+        }
         if is_sensitive_name(&name) {
             if let Some(value) = value.to_str().filter(|value| value.len() >= 8) {
                 secrets.push(value.to_owned());
